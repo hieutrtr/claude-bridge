@@ -15,6 +15,7 @@ from claude_bridge.cli import (
     cmd_team_dispatch, cmd_team_status,
     build_parser,
 )
+from claude_bridge.on_complete import main as on_complete_main
 from claude_bridge.db import BridgeDB
 
 
@@ -948,3 +949,162 @@ class TestTeamStatus:
         args = parser.parse_args(["team-status", "fullstack"])
         assert args.command == "team-status"
         assert args.name == "fullstack"
+
+
+class TestTeamEndToEnd:
+    """End-to-end test of the full team workflow."""
+
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    def test_full_team_lifecycle(self, mock_spawn, cli_env, capsys, monkeypatch):
+        db = cli_env["db"]
+
+        # 1. Create agents
+        with patch("claude_bridge.cli.init_claude_md", return_value={"success": True, "message": "ok"}):
+            cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="API dev", model=None))
+            project2 = cli_env["home"] / "project2"
+            project2.mkdir(exist_ok=True)
+            cmd_create_agent(db, _Args(name="frontend", path=str(project2), purpose="UI dev", model=None))
+
+        # 2. Create team
+        result = cmd_create_team(db, _Args(name="fullstack", lead="backend", members="frontend"))
+        assert result == 0
+
+        # 3. Team dispatch
+        result = cmd_team_dispatch(db, _Args(name="fullstack", prompt="build user profile page"))
+        assert result == 0
+
+        # Verify parent task
+        lead = db.get_agent("backend")
+        history = db.get_task_history(lead["session_id"])
+        assert len(history) == 1
+        parent_task = history[0]
+        assert parent_task["task_type"] == "team"
+        assert parent_task["status"] == "running"
+        parent_id = parent_task["id"]
+
+        # 4. Simulate lead dispatching sub-task (what the lead agent would do via Bash)
+        frontend = db.get_agent("frontend")
+        sub_id = db.create_task(frontend["session_id"], "build profile UI component", parent_task_id=parent_id)
+        sub_result_file = str(cli_env["home"] / f"task-{sub_id}-result.json")
+        db.update_task(sub_id, status="running", pid=222, result_file=sub_result_file)
+        db.update_agent_state(frontend["session_id"], "running")
+
+        # 5. Team status — should show in-progress
+        capsys.readouterr()  # clear
+        result = cmd_team_status(db, _Args(name="fullstack"))
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "0/1" in captured.out  # 0 of 1 sub-tasks complete
+        assert "frontend" in captured.out
+
+        # 6. Sub-task completes
+        with open(sub_result_file, "w") as f:
+            json.dump({
+                "is_error": False,
+                "result": "Built profile UI with avatar and bio sections",
+                "cost_usd": 0.06,
+                "duration_ms": 180000,
+                "num_turns": 8,
+            }, f)
+
+        monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", frontend["session_id"]])
+        on_complete_main(db=db)
+
+        # 7. Verify sub-task done
+        sub = db.get_task(sub_id)
+        assert sub["status"] == "done"
+        assert sub["cost_usd"] == 0.06
+
+        # 8. Verify parent aggregated
+        parent = db.get_task(parent_id)
+        assert parent["status"] == "done"
+        assert parent["cost_usd"] >= 0.06
+        assert parent["completed_at"] is not None
+        assert "frontend" in parent["result_summary"]
+
+        # 9. Team status after completion
+        capsys.readouterr()
+        result = cmd_team_status(db, _Args(name="fullstack"))
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "1/1" in captured.out
+
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    def test_team_with_multiple_subtasks_partial_failure(self, mock_spawn, cli_env, capsys, monkeypatch):
+        db = cli_env["db"]
+
+        with patch("claude_bridge.cli.init_claude_md", return_value={"success": True, "message": "ok"}):
+            cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="API dev", model=None))
+            project2 = cli_env["home"] / "project2"
+            project2.mkdir(exist_ok=True)
+            cmd_create_agent(db, _Args(name="frontend", path=str(project2), purpose="UI dev", model=None))
+
+        cmd_create_team(db, _Args(name="fullstack", lead="backend", members="frontend"))
+        cmd_team_dispatch(db, _Args(name="fullstack", prompt="build dashboard"))
+
+        lead = db.get_agent("backend")
+        parent_id = db.get_task_history(lead["session_id"])[0]["id"]
+
+        # Two sub-tasks — both dispatched to frontend (different prompts)
+        frontend = db.get_agent("frontend")
+        sub1 = db.create_task(frontend["session_id"], "charts component", parent_task_id=parent_id)
+        sub1_file = str(cli_env["home"] / f"task-{sub1}-result.json")
+        db.update_task(sub1, status="running", pid=222, result_file=sub1_file)
+        db.update_agent_state(frontend["session_id"], "running")
+
+        # Create a third agent for sub2
+        with patch("claude_bridge.cli.init_claude_md", return_value={"success": True, "message": "ok"}):
+            project3 = cli_env["home"] / "project3"
+            project3.mkdir(exist_ok=True)
+            cmd_create_agent(db, _Args(name="devops", path=str(project3), purpose="Infra", model=None))
+        devops = db.get_agent("devops")
+        sub2 = db.create_task(devops["session_id"], "API endpoints", parent_task_id=parent_id)
+        sub2_file = str(cli_env["home"] / f"task-{sub2}-result.json")
+        db.update_task(sub2, status="running", pid=333, result_file=sub2_file)
+        db.update_agent_state(devops["session_id"], "running")
+
+        # Sub1 succeeds
+        with open(sub1_file, "w") as f:
+            json.dump({"is_error": False, "result": "Charts done", "cost_usd": 0.04, "duration_ms": 60000, "num_turns": 3}, f)
+        monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", frontend["session_id"]])
+        on_complete_main(db=db)
+
+        # Parent still running (sub2 not done)
+        assert db.get_task(parent_id)["status"] == "running"
+
+        # Sub2 fails
+        with open(sub2_file, "w") as f:
+            json.dump({"is_error": True, "result": "DB connection failed", "cost_usd": 0.02, "duration_ms": 30000, "num_turns": 2}, f)
+        monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", devops["session_id"]])
+        on_complete_main(db=db)
+
+        # Parent should be done (all sub-tasks in terminal state)
+        parent = db.get_task(parent_id)
+        assert parent["status"] == "done"
+        assert parent["cost_usd"] >= 0.06  # 0.04 + 0.02
+        assert "Charts done" in parent["result_summary"]
+        assert "DB connection failed" in parent["result_summary"]
+
+    def test_delete_team_after_completion(self, cli_env):
+        """Deleting a team preserves task history."""
+        db = cli_env["db"]
+        with patch("claude_bridge.cli.init_claude_md", return_value={"success": True, "message": "ok"}):
+            cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model=None))
+            project2 = cli_env["home"] / "project2"
+            project2.mkdir(exist_ok=True)
+            cmd_create_agent(db, _Args(name="frontend", path=str(project2), purpose="UI", model=None))
+
+        cmd_create_team(db, _Args(name="fullstack", lead="backend", members="frontend"))
+
+        # Create some task history
+        lead = db.get_agent("backend")
+        tid = db.create_task(lead["session_id"], "old task", task_type="team")
+        db.update_task(tid, status="done")
+
+        # Delete team
+        cmd_delete_team(db, _Args(name="fullstack"))
+
+        # Task history preserved
+        history = db.get_task_history(lead["session_id"])
+        assert len(history) == 1
+        assert history[0]["task_type"] == "team"
