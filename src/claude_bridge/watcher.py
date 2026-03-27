@@ -15,9 +15,11 @@ from .dispatcher import pid_alive, kill_process
 DEFAULT_TIMEOUT_MINUTES = 30
 
 
-def watch(timeout_minutes: int = DEFAULT_TIMEOUT_MINUTES):
+def watch(timeout_minutes: int = DEFAULT_TIMEOUT_MINUTES, db: BridgeDB | None = None):
     """Check running tasks and handle completions/timeouts."""
-    db = BridgeDB()
+    own_db = db is None
+    if own_db:
+        db = BridgeDB()
 
     try:
         running_tasks = db.get_running_tasks()
@@ -36,7 +38,7 @@ def watch(timeout_minutes: int = DEFAULT_TIMEOUT_MINUTES):
                     error_message="No PID recorded",
                     completed_at=datetime.now().isoformat(),
                 )
-                db.update_agent_state(session_id, "failed")
+                db.update_agent_state(session_id, "idle")
                 continue
 
             if not pid_alive(pid):
@@ -69,7 +71,7 @@ def watch(timeout_minutes: int = DEFAULT_TIMEOUT_MINUTES):
                         exit_code=-1,
                         completed_at=datetime.now().isoformat(),
                     )
-                    db.update_agent_state(session_id, "failed")
+                    db.update_agent_state(session_id, "idle")
                     db.increment_agent_tasks(session_id)
                     print(f"[watcher] Task #{task_id} ({session_id}) failed (hook missed)")
 
@@ -85,7 +87,7 @@ def watch(timeout_minutes: int = DEFAULT_TIMEOUT_MINUTES):
                         error_message=f"Timed out after {timeout_minutes} minutes",
                         completed_at=datetime.now().isoformat(),
                     )
-                    db.update_agent_state(session_id, "timeout")
+                    db.update_agent_state(session_id, "idle")
                     print(f"[watcher] Task #{task_id} ({session_id}) timed out after {timeout_minutes}m")
 
         # Report unreported completions
@@ -105,7 +107,8 @@ def watch(timeout_minutes: int = DEFAULT_TIMEOUT_MINUTES):
             db.mark_task_reported(task["id"])
 
     finally:
-        db.close()
+        if own_db:
+            db.close()
 
 
 def main():

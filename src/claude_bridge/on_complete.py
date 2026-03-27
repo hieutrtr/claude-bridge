@@ -36,12 +36,14 @@ def parse_result_file(result_file: str) -> dict | None:
         return None
 
 
-def main():
+def main(db: BridgeDB | None = None):
     parser = argparse.ArgumentParser(description="Claude Bridge stop hook handler")
     parser.add_argument("--session-id", required=True, help="Session ID of the completed task")
     args = parser.parse_args()
 
-    db = BridgeDB()
+    own_db = db is None
+    if own_db:
+        db = BridgeDB()
 
     try:
         # Find the running task for this session
@@ -121,7 +123,8 @@ def main():
                 print(f"  Error: {error[:200]}")
 
     finally:
-        db.close()
+        if own_db:
+            db.close()
 
 
 if __name__ == "__main__":
