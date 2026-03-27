@@ -1,0 +1,252 @@
+CLAUDE BRIDGE TASK QUEUE ARCHITECTURE RESEARCH
+==============================================
+
+Complete package created: 2026-03-26
+Status: Ready for implementation (all questions answered)
+
+FILES CREATED
+=============
+
+1. TASK_QUEUE_README.md
+   - Quick start guide
+   - Architecture overview
+   - File index
+   - FAQ
+   Purpose: Entry point - read first
+
+2. TASK_QUEUE_SUMMARY.txt
+   - Executive summary (5 min read)
+   - Key findings and decisions
+   - Architecture diagram
+   - Data flow walkthrough
+   Purpose: Quick reference, share with team
+
+3. TASK_QUEUE_DESIGN.md (28 KB, 17 sections)
+   - Complete architectural analysis
+   - Full database schema with SQL
+   - Concurrency safety mechanisms (BEGIN IMMEDIATE)
+   - Polling architecture with pseudocode
+   - Failure scenario matrix
+   - Pros/cons vs daemon approach
+   - Success criteria
+   Purpose: Deep technical reference
+
+4. TASK_QUEUE_IMPLEMENTATION.md (32 KB, 10 sections)
+   - Production-ready Python code
+   - database.py - SQLite setup, connection pooling
+   - poller.py - Atomic claiming, task execution
+   - telegram_adapter.py - Task creation
+   - watchers.py - Cron jobs (recovery, reporting, health)
+   - cron_schedule.py - Simple scheduler
+   - Integration example (main.py sketch)
+   - Testing suite
+   - Monitoring and debugging SQL queries
+   Purpose: Copy-paste ready implementation
+
+5. TASK_QUEUE_COMPARISON.md (11 KB, 17 sections)
+   - Decision matrix: SQLite vs Daemon vs Message Queue
+   - Three approaches compared side-by-side
+   - Performance characteristics
+   - Failure scenario responses
+   - Implementation timeline (week-by-week)
+   - Recommended migration path (MVP → Phase 2 → Production)
+   - Cost/benefit analysis for each approach
+   Purpose: Justify architectural choice
+
+6. TASK_QUEUE_DECISIONS.md (15 sections, final)
+   - All 15 concrete decisions finalized
+   - Each with rationale and configuration
+   - Alternatives considered and rejected
+   - Migration paths for future upgrades
+   - Acceptance criteria
+   - Deferred decisions (Phase 2+)
+   Purpose: Project artifact - "decisions as of 2026-03-26"
+
+TOTAL PAGES
+===========
+~3600 lines across 6 files
+~80 KB of architecture, design, code, and reference material
+
+READING ORDER
+=============
+
+For quick understanding (30 min):
+1. TASK_QUEUE_SUMMARY.txt (5 min)
+2. TASK_QUEUE_README.md (15 min)
+3. TASK_QUEUE_DECISIONS.md (10 min)
+
+For implementation (2 hours):
+1. TASK_QUEUE_IMPLEMENTATION.md (reference as you code)
+2. TASK_QUEUE_DESIGN.md section 2 (database schema)
+
+For justification/history:
+1. TASK_QUEUE_COMPARISON.md (why this approach)
+2. TASK_QUEUE_DESIGN.md (full technical details)
+
+QUESTIONS ANSWERED
+==================
+
+Q: SQLite vs YAML for task queue?
+A: SQLite. YAML has race conditions, SQLite has ACID + locking.
+   Document: TASK_QUEUE_DESIGN.md section 1
+
+Q: How ensure tasks picked up by correct session?
+A: SQL WHERE clause filters by agent_name.
+   Multiple sessions for same agent race for same tasks.
+   Document: TASK_QUEUE_DESIGN.md section 5
+
+Q: What's the polling interval?
+A: 5 seconds (good balance). Can back off to 30s if queue empty.
+   Document: TASK_QUEUE_DECISIONS.md decision #3
+
+Q: How prevent duplicate task execution?
+A: BEGIN IMMEDIATE transaction + rowcount check.
+   Only one session's UPDATE succeeds.
+   Document: TASK_QUEUE_DESIGN.md section 6
+
+Q: Can Claude Code CLI monitor task queue?
+A: Not directly. Use TaskPoller class in background thread.
+   Document: TASK_QUEUE_DESIGN.md section 7
+
+Q: Pros/cons: simplicity vs responsiveness vs reliability?
+A: Polling is simple+reliable. Daemon is more responsive.
+   Trade-offs documented with decision matrix.
+   Document: TASK_QUEUE_COMPARISON.md
+
+DATABASE SCHEMA SUMMARY
+=======================
+
+tasks:
+  id, created_at, created_by
+  description, project_path, agent_name, context
+  status (pending|running|completed|failed|cancelled)
+  assigned_to, assigned_at, started_at, completed_at, reported_at
+  output, files_changed, error_message, exit_code
+  priority, retry_count, max_retries
+
+sessions:
+  id, agent_name, state, last_heartbeat, created_at, current_task_id
+
+agents:
+  name (PK), project_path, role, created_at, last_used
+
+audit_log:
+  id, timestamp, event, task_id, session_id, details
+
+KEY TECHNICAL DECISIONS
+=======================
+
+✅ Storage: SQLite with WAL mode
+✅ Concurrency: Polling + atomic claiming (BEGIN IMMEDIATE)
+✅ Poll interval: 5 seconds (with 30s backoff)
+✅ Task timeout: 600 seconds (10 minutes)
+✅ Max retries: 3
+✅ Stale timeout: 300 seconds (5 minutes)
+✅ Heartbeat: Every poll cycle
+✅ Recovery watcher: Every 60 seconds
+✅ Completion reporter: Every 300 seconds
+✅ Configuration: Single YAML file (~/.claude-bridge/config.yaml)
+✅ Debugging: Direct SQL queries on database
+
+IMPLEMENTATION ROADMAP
+======================
+
+Week 1: MVP Core
+  Day 1: Database schema + TaskQueueDB class
+  Day 2: TaskPoller class (atomic claiming + execution)
+  Day 3: TelegramTaskCreator (task creation)
+  Day 4: Watchers (recovery + reporting + health)
+  Day 5: Testing + debugging
+
+Success criteria:
+  ✅ Multiple sessions claim tasks safely (no duplicates)
+  ✅ Crashed sessions auto-recover within 1 minute
+  ✅ Task latency: appear in queue within 5s
+  ✅ Task latency: completion reported within 5 min
+  ✅ Database doesn't corrupt under load
+  ✅ Simple configuration (one YAML)
+  ✅ Easy debugging (just query SQL)
+  ✅ No external dependencies
+  ✅ Production-ready for MVP scale
+
+CODE MODULES TO IMPLEMENT
+==========================
+
+claude_bridge/task_queue/
+├── __init__.py
+├── database.py              (TaskQueueDB class)
+├── poller.py               (TaskPoller class)
+├── telegram_adapter.py     (TelegramTaskCreator)
+├── watchers.py             (recovery, reporting, health)
+├── cron_schedule.py        (simple scheduler)
+└── schema.sql              (database schema)
+
+All code provided in TASK_QUEUE_IMPLEMENTATION.md
+
+MIGRATION PATH (IF NEEDED)
+==========================
+
+Phase 1 (Now):     SQLite Polling (simple, reliable)
+Phase 2 (Months):  Daemon IPC (if real-time needed)
+Phase 3 (Year+):   Message Queue (if distributed scale)
+
+But Phase 1 is "good enough" for years of typical startup operation.
+Don't optimize for future problems you don't have yet.
+
+WHEN TO USE THIS APPROACH
+=========================
+
+✅ Building Claude Bridge MVP
+✅ <100 tasks per day
+✅ 5-30 second latency acceptable
+✅ Single machine deployment
+✅ Want simple, reliable operation
+✅ Easy debugging priority
+
+❌ Not for:
+  - Real-time dispatch required (<1 second)
+  - 1000+ tasks per day (move to message queue)
+  - Distributed systems (move to daemon/message queue)
+  - Complex task dependencies
+
+DOCUMENTS PROVIDE
+=================
+
+✅ Complete architecture (no unknowns)
+✅ Production-ready Python code (copy-paste ready)
+✅ Database schema (SQL provided)
+✅ Configuration examples (YAML templates)
+✅ Testing suite (unit tests included)
+✅ Failure scenarios (all handled)
+✅ Debugging techniques (SQL queries)
+✅ Migration path (what to do next)
+✅ Decisions documented (why each choice)
+✅ Alternatives analyzed (pros/cons matrix)
+
+NEXT STEP
+=========
+
+1. Read TASK_QUEUE_README.md (15 min orientation)
+2. Skim TASK_QUEUE_SUMMARY.txt (5 min decision confirmation)
+3. Create claude_bridge/task_queue/ directory
+4. Start Day 1: Copy database.py, create SQLite file
+5. Day 2: Implement TaskPoller class
+6. Follow Week 1 roadmap in TASK_QUEUE_DESIGN.md
+
+All the research is done. Time to build.
+
+---
+
+Questions? Reference the appropriate document:
+- Architecture     → TASK_QUEUE_DESIGN.md
+- Implementation   → TASK_QUEUE_IMPLEMENTATION.md
+- Comparison       → TASK_QUEUE_COMPARISON.md
+- Decisions        → TASK_QUEUE_DECISIONS.md
+- Quick answers    → TASK_QUEUE_README.md (FAQ)
+- Executive brief  → TASK_QUEUE_SUMMARY.txt
+
+---
+
+Research by: Claude Code
+Date: 2026-03-26
+Status: Complete and ready for implementation

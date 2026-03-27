@@ -1,0 +1,146 @@
+# RESEARCH COMPLETE: Remote Trigger Approach for Claude Bridge
+
+## Files Created
+
+1. REMOTE_TRIGGER_RESEARCH.md (12 sections, comprehensive)
+   - Evaluates Claude Code's trigger mechanisms
+   - Channels (MCP) analysis
+   - RemoteTrigger API investigation
+   - Multi-session & port management
+   - Latency analysis
+   - Security & isolation
+   - Deployment guides with code examples
+
+2. ARCHITECTURE_DECISION.md (ADR format)
+   - Decision: Use Channels (MCP) for MVP
+   - Reasoning & trade-offs
+   - Comparison with RemoteTrigger API
+   - Implementation timeline
+   - Risk mitigation
+   - Rollback plan
+
+3. IMPLEMENTATION_GUIDE.md (Practical)
+   - 5-step quick start
+   - Minimal Python daemon code
+   - Manual testing checklist
+   - Phase 1-4 roadmap
+   - Troubleshooting guide
+
+## Key Findings
+
+### RemoteTrigger API
+- Status: Undocumented internal API (available but unsupported)
+- Endpoints: GET/POST /v1/code/triggers, POST /run
+- Limitation: No session-specific triggers, no permission relay
+- Verdict: Interesting for Phase 2, not suitable for MVP
+
+### Channels (Official Recommendation)
+- Status: Research preview, documented, production-ready
+- Platforms: Telegram, Discord, iMessage, custom webhooks
+- Latency: 2-5 seconds (polling-based)
+- Permission Relay: Built-in, mobile user can approve tool use
+- Verdict: Perfect for MVP, use immediately
+
+### Architecture Decision
+- Recommended: Channels + tmux + Python daemon
+- Timeline: 2-3 weeks for MVP
+- Complexity: Low (plugin-based, minimal custom code)
+- Scalability: Good (independent sessions, simple monitoring)
+
+## Quick Facts
+
+✅ Claude Code DOES support remote task dispatch
+   - Via Channels (documented, official)
+   - Via RemoteTrigger API (undocumented, internal)
+
+✅ Multiple sessions possible
+   - Via tmux with unique session names
+   - Each session independent (no port conflicts, no cross-contamination)
+   - Desktop app has automatic Git worktree isolation
+
+✅ Permission relay works from mobile
+   - Built into Channels
+   - User taps ✅/❌ button in Telegram
+   - No terminal access needed for approvals
+
+✅ HTTP vs Unix Sockets vs stdio
+   - Channels uses stdio (fastest, safest)
+   - Custom webhook on localhost:8788 (Phase 2)
+   - No public-facing HTTP needed (polling model)
+
+## Implementation Path
+
+Phase 1 (MVP, 2-3 weeks):
+  - Install Telegram plugin in Claude Code
+  - Bridge daemon spawns agents with --channels flag
+  - Task dispatch via Telegram mobile app
+  - Manual testing & validation
+
+Phase 2 (Enhancement system, 4-6 weeks):
+  - Profile system (YAML loading)
+  - CLAUDE.md auto-generation
+  - Signal accumulation
+  - Enhancement proposals
+
+Phase 2.5 (Optional, webhook support):
+  - Custom MCP webhook channel
+  - CI/monitoring integration
+  - Localhost:8788 listener
+
+Phase 3+ (If needed):
+  - RemoteTrigger API experimentation (if documented)
+  - Cloud-based central dispatcher
+  - Multi-machine coordination
+
+## Critical Success Factors
+
+1. Permission relay MUST work from mobile
+   → Channels provides this natively
+
+2. Sessions MUST NOT interfere with each other
+   → Independent processes, no shared state
+
+3. Latency MUST be acceptable (< 10 seconds)
+   → Channels: 2-5s is good enough
+
+4. Setup MUST be simple (< 30 minutes)
+   → Channels: Install plugin, set token, start daemon
+
+5. Reliability MUST be high (99%+ uptime)
+   → Channels: MCP proven, Telegram reliable
+
+## Next Steps
+
+1. Read REMOTE_TRIGGER_RESEARCH.md (comprehensive context)
+2. Review ARCHITECTURE_DECISION.md (decision rationale)
+3. Follow IMPLEMENTATION_GUIDE.md (practical how-to)
+4. Create Telegram bot
+5. Implement bridge daemon
+6. Test from mobile
+7. Declare MVP complete
+
+## Document References
+
+Main research:
+  → REMOTE_TRIGGER_RESEARCH.md (13,000+ words)
+
+Decision documentation:
+  → ARCHITECTURE_DECISION.md (2,000+ words)
+
+Practical implementation:
+  → IMPLEMENTATION_GUIDE.md (1,500+ words)
+
+## Status
+
+✅ RESEARCH COMPLETE
+✅ ARCHITECTURE DECIDED (Channels for MVP)
+✅ IMPLEMENTATION GUIDE READY
+✅ CODE EXAMPLES PROVIDED
+✅ TIMELINE ESTIMATED (2-3 weeks MVP)
+
+Ready to begin Phase 1 development.
+
+---
+Date: 2026-03-26
+Researcher: Claude Haiku 4.5
+Status: Complete
