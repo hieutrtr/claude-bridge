@@ -65,3 +65,19 @@ No pip dependencies for the core package.
 - Agent .md files in native Claude Code format (YAML frontmatter + markdown)
 - Error messages go to stderr, output goes to stdout
 - Exit code 0 = success, non-zero = error
+
+## Development Workflow
+
+Implementation follows a strict TDD process defined in `.claude/rules/phase-plan-approach.md`.
+This process is reusable across all phases (1, 2, 3).
+
+**Per task:** task spec → write tests → fix code → code review → commit
+**Per milestone:** run full suite → write milestone report
+
+Key rules:
+- Task spec created BEFORE writing any code (specs/tasks/M{M}-T{T}.md)
+- Tests written BEFORE fixing code (TDD)
+- Code review checklist applied after each task (`.claude/rules/code-review.md`)
+- Milestone report after each milestone (specs/reports/milestone-{N}-report.md)
+- Commit format: `M{M}.T{T}: {description}`
+- Never call real `claude` CLI in tests — always mock subprocess
