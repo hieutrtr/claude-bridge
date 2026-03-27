@@ -82,7 +82,7 @@ If ambiguous, ask for clarification. Example: "Which agent should I send this to
 
 Periodically run to check for completed tasks:
 ```bash
-python3 -m claude_bridge.watcher
+PYTHONPATH=~/projects/claude-bridge/src python3 -m claude_bridge.watcher
 ```
 
 If there is output, relay it to the user as task completion reports.
