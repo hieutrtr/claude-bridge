@@ -237,6 +237,28 @@ class TestDeleteAgent:
         assert db.get_agent("backend") is not None  # Agent should still exist
 
 
+class TestListAgents:
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_lists_agents(self, mock_init, cli_env, capsys):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        args = _Args(name="backend", path=str(cli_env["project"]), purpose="dev")
+        cmd_create_agent(db, args)
+
+        result = cmd_list_agents(db, _Args())
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "backend" in captured.out
+        assert "created" in captured.out
+
+    def test_empty_list(self, cli_env, capsys):
+        db = cli_env["db"]
+        result = cmd_list_agents(db, _Args())
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "No agents" in captured.out
+
+
 class TestBuildParser:
     def test_create_agent_subcommand(self):
         parser = build_parser()
