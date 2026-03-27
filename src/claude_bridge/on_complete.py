@@ -100,9 +100,33 @@ def main(db: BridgeDB | None = None):
             completed_at=datetime.now().isoformat(),
         )
 
-        # Update agent state
-        db.update_agent_state(args.session_id, "idle")
+        # Update agent and check queue
         db.increment_agent_tasks(args.session_id)
+
+        # Auto-dequeue next task if any
+        next_task = db.dequeue_next_task(args.session_id)
+        if next_task:
+            from .dispatcher import spawn_task, get_result_file
+            from .session import derive_agent_file_name
+
+            agent = db.get_agent_by_session(args.session_id)
+            agent_file_name = derive_agent_file_name(args.session_id)
+            next_task_id = next_task["id"]
+            next_result_file = get_result_file(args.session_id, next_task_id)
+
+            pid = spawn_task(
+                agent_file_name, args.session_id,
+                agent["project_dir"], next_task["prompt"], next_task_id,
+            )
+            db.update_task(
+                next_task_id,
+                status="running", pid=pid,
+                result_file=next_result_file,
+                started_at=datetime.now().isoformat(),
+            )
+            # Agent stays running
+        else:
+            db.update_agent_state(args.session_id, "idle")
 
         # Print report (Bridge Bot picks this up)
         if duration:

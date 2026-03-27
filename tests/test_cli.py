@@ -10,6 +10,7 @@ import pytest
 from claude_bridge.cli import (
     cmd_create_agent, cmd_delete_agent, cmd_list_agents,
     cmd_dispatch, cmd_status, cmd_kill, cmd_history, cmd_memory,
+    cmd_queue, cmd_cancel,
     build_parser,
 )
 from claude_bridge.db import BridgeDB
@@ -440,6 +441,67 @@ class TestHistory:
         assert result == 0
         captured = capsys.readouterr()
         assert "No tasks" in captured.out
+
+
+class TestQueueCommand:
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_shows_queued_tasks(self, mock_init, mock_spawn, cli_env, capsys):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev"))
+        cmd_dispatch(db, _Args(name="backend", prompt="task 1"))
+        cmd_dispatch(db, _Args(name="backend", prompt="task 2"))
+
+        result = cmd_queue(db, _Args(name="backend"))
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "task 2" in captured.out
+        assert "pos:1" in captured.out
+
+    def test_empty_queue(self, cli_env, capsys):
+        db = cli_env["db"]
+        result = cmd_queue(db, _Args(name=None))
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "No tasks in queue" in captured.out
+
+
+class TestCancelCommand:
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_cancel_queued_task(self, mock_init, mock_spawn, cli_env):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev"))
+        cmd_dispatch(db, _Args(name="backend", prompt="task 1"))
+        cmd_dispatch(db, _Args(name="backend", prompt="task 2"))
+
+        # Find the queued task
+        agent = db.get_agent("backend")
+        queued = db.get_queued_tasks(agent["session_id"])
+        assert len(queued) == 1
+
+        result = cmd_cancel(db, _Args(task_id=queued[0]["id"]))
+        assert result == 0
+        assert db.get_queued_tasks(agent["session_id"]) == []
+
+    def test_cancel_nonexistent_task(self, cli_env):
+        db = cli_env["db"]
+        result = cmd_cancel(db, _Args(task_id=9999))
+        assert result == 1
+
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_cancel_running_task_fails(self, mock_init, mock_spawn, cli_env):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev"))
+        cmd_dispatch(db, _Args(name="backend", prompt="task 1"))
+
+        # Task 1 is running, not queued
+        result = cmd_cancel(db, _Args(task_id=1))
+        assert result == 1
 
 
 class TestBuildParser:

@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+from unittest.mock import patch
 
 import pytest
 
@@ -119,6 +120,41 @@ class TestOnCompleteIntegration:
 
         monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", "backend--api"])
         main(db=db)  # Should not raise
+
+    @patch("claude_bridge.dispatcher.spawn_task", return_value=99999)
+    def test_auto_dequeues_next_task(self, mock_spawn, db, setup_running_task, monkeypatch):
+        """After task completes, next queued task should auto-dispatch."""
+        info = setup_running_task
+        with open(info["result_file"], "w") as f:
+            json.dump({"is_error": False, "result": "done", "cost_usd": 0.01, "duration_ms": 5000, "num_turns": 1}, f)
+
+        # Queue a task
+        t2 = db.create_task(info["session_id"], "queued task")
+        db.update_task(t2, status="queued", position=1)
+
+        monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", info["session_id"]])
+        main(db=db)
+
+        # Queued task should now be running
+        task2 = db.get_task(t2)
+        assert task2["status"] == "running"
+        assert task2["pid"] == 99999
+
+        # Agent should still be running (not idle)
+        agent = db.get_agent("backend")
+        assert agent["state"] == "running"
+
+    def test_no_queue_sets_idle(self, db, setup_running_task, monkeypatch):
+        """No queued tasks → agent goes idle."""
+        info = setup_running_task
+        with open(info["result_file"], "w") as f:
+            json.dump({"is_error": False, "result": "done", "cost_usd": 0.01, "duration_ms": 5000, "num_turns": 1}, f)
+
+        monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", info["session_id"]])
+        main(db=db)
+
+        agent = db.get_agent("backend")
+        assert agent["state"] == "idle"
 
     def test_malformed_json_result(self, db, setup_running_task, monkeypatch):
         info = setup_running_task

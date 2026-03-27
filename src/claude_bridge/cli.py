@@ -61,6 +61,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("memory", help="Show agent Auto Memory")
     p.add_argument("name", help="Agent name")
 
+    # queue
+    p = sub.add_parser("queue", help="Show queued tasks")
+    p.add_argument("name", nargs="?", default=None, help="Agent name (optional)")
+
+    # cancel
+    p = sub.add_parser("cancel", help="Cancel a queued task")
+    p.add_argument("task_id", type=int, help="Task ID to cancel")
+
     # setup
     sub.add_parser("setup", help="Generate Bridge Bot CLAUDE.md and print setup instructions")
 
@@ -323,6 +331,44 @@ def cmd_setup(db: BridgeDB, args):
     return 0
 
 
+def cmd_queue(db: BridgeDB, args):
+    if args.name:
+        agent = db.get_agent(args.name)
+        if not agent:
+            print(f"Error: Agent '{args.name}' not found.", file=sys.stderr)
+            return 1
+        queued = db.get_queued_tasks(agent["session_id"])
+    else:
+        # All queued tasks across all agents
+        queued = []
+        for agent in db.list_agents():
+            queued.extend(db.get_queued_tasks(agent["session_id"]))
+
+    if not queued:
+        print("No tasks in queue.")
+        return 0
+
+    print("QUEUED TASKS:")
+    for t in queued:
+        prompt_short = t["prompt"][:50] + "..." if len(t["prompt"]) > 50 else t["prompt"]
+        print(f"  #{t['id']}  pos:{t['position']}  {t['session_id']}  \"{prompt_short}\"")
+    return 0
+
+
+def cmd_cancel(db: BridgeDB, args):
+    task = db.get_task(args.task_id)
+    if not task:
+        print(f"Error: Task #{args.task_id} not found.", file=sys.stderr)
+        return 1
+
+    if db.cancel_queued_task(args.task_id):
+        print(f"Task #{args.task_id} cancelled and removed from queue.")
+        return 0
+    else:
+        print(f"Error: Task #{args.task_id} is not in the queue (status: {task['status']}).", file=sys.stderr)
+        return 1
+
+
 COMMANDS = {
     "create-agent": cmd_create_agent,
     "delete-agent": cmd_delete_agent,
@@ -332,6 +378,8 @@ COMMANDS = {
     "kill": cmd_kill,
     "history": cmd_history,
     "memory": cmd_memory,
+    "queue": cmd_queue,
+    "cancel": cmd_cancel,
     "setup": cmd_setup,
 }
 
