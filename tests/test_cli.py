@@ -12,7 +12,7 @@ from claude_bridge.cli import (
     cmd_dispatch, cmd_status, cmd_kill, cmd_history, cmd_memory,
     cmd_queue, cmd_cancel, cmd_set_model, cmd_cost,
     cmd_create_team, cmd_list_teams, cmd_delete_team,
-    cmd_team_dispatch,
+    cmd_team_dispatch, cmd_team_status,
     build_parser,
 )
 from claude_bridge.db import BridgeDB
@@ -880,3 +880,71 @@ class TestTeamDispatch:
         assert args.command == "team-dispatch"
         assert args.name == "fullstack"
         assert args.prompt == "build it"
+
+
+class TestTeamStatus:
+    def _setup_team_with_tasks(self, db, cli_env):
+        """Create agents, team, and a running team task with sub-tasks."""
+        with patch("claude_bridge.cli.init_claude_md", return_value={"success": True, "message": "ok"}):
+            cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="API dev", model=None))
+            project2 = cli_env["home"] / "project2"
+            project2.mkdir(exist_ok=True)
+            cmd_create_agent(db, _Args(name="frontend", path=str(project2), purpose="UI dev", model=None))
+        cmd_create_team(db, _Args(name="fullstack", lead="backend", members="frontend"))
+
+        # Create parent team task
+        lead = db.get_agent("backend")
+        parent_id = db.create_task(lead["session_id"], "build profile page", task_type="team")
+        db.update_task(parent_id, status="running", pid=111)
+
+        # Create sub-task
+        frontend = db.get_agent("frontend")
+        sub_id = db.create_task(frontend["session_id"], "build UI component", parent_task_id=parent_id)
+        db.update_task(sub_id, status="done")
+
+        return parent_id, sub_id
+
+    def test_shows_lead_and_subtasks(self, cli_env, capsys):
+        db = cli_env["db"]
+        self._setup_team_with_tasks(db, cli_env)
+
+        result = cmd_team_status(db, _Args(name="fullstack"))
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "backend" in captured.out
+        assert "frontend" in captured.out
+        assert "build UI component" in captured.out
+
+    def test_shows_progress(self, cli_env, capsys):
+        db = cli_env["db"]
+        self._setup_team_with_tasks(db, cli_env)
+
+        result = cmd_team_status(db, _Args(name="fullstack"))
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "1/1" in captured.out  # 1 sub-task done out of 1
+
+    def test_no_active_task(self, cli_env, capsys):
+        db = cli_env["db"]
+        with patch("claude_bridge.cli.init_claude_md", return_value={"success": True, "message": "ok"}):
+            cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model=None))
+            project2 = cli_env["home"] / "project2"
+            project2.mkdir(exist_ok=True)
+            cmd_create_agent(db, _Args(name="frontend", path=str(project2), purpose="UI", model=None))
+        cmd_create_team(db, _Args(name="fullstack", lead="backend", members="frontend"))
+
+        result = cmd_team_status(db, _Args(name="fullstack"))
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "No active team task" in captured.out
+
+    def test_nonexistent_team_errors(self, cli_env):
+        db = cli_env["db"]
+        result = cmd_team_status(db, _Args(name="nope"))
+        assert result == 1
+
+    def test_parser_has_team_status(self):
+        parser = build_parser()
+        args = parser.parse_args(["team-status", "fullstack"])
+        assert args.command == "team-status"
+        assert args.name == "fullstack"

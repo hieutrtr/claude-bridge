@@ -105,6 +105,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("delete-team", help="Delete a team")
     p.add_argument("name", help="Team name")
 
+    # team-status
+    p = sub.add_parser("team-status", help="Show team task status")
+    p.add_argument("name", help="Team name")
+
     # team-dispatch
     p = sub.add_parser("team-dispatch", help="Dispatch a task to a team")
     p.add_argument("name", help="Team name")
@@ -642,6 +646,53 @@ def cmd_team_dispatch(db: BridgeDB, args):
     return 0
 
 
+def cmd_team_status(db: BridgeDB, args):
+    """Show team task status with sub-task progress."""
+    team = db.get_team(args.name)
+    if not team:
+        print(f"Error: Team '{args.name}' not found.", file=sys.stderr)
+        return 1
+
+    lead = db.get_agent(team["lead_agent"])
+    if not lead:
+        print(f"Error: Lead agent '{team['lead_agent']}' not found.", file=sys.stderr)
+        return 1
+
+    # Find latest team task for this lead
+    history = db.get_task_history(lead["session_id"], limit=20)
+    team_task = None
+    for t in history:
+        if t["task_type"] == "team":
+            team_task = t
+            break
+
+    if not team_task:
+        print(f"No active team task for '{args.name}'.")
+        return 0
+
+    print(f"Team: {args.name}")
+    print(f"Lead: {team['lead_agent']} — {team_task['status']}")
+    prompt_short = team_task["prompt"][:80].split("\n")[0]
+    print(f"  Task #{team_task['id']}: {prompt_short}")
+    print()
+
+    # Show sub-tasks
+    subtasks = db.get_subtasks(team_task["id"])
+    if subtasks:
+        done = sum(1 for s in subtasks if s["status"] in ("done", "failed"))
+        total = len(subtasks)
+        print(f"Sub-tasks: {done}/{total} complete")
+        for s in subtasks:
+            agent = db.get_agent_by_session(s["session_id"])
+            agent_name = agent["name"] if agent else s["session_id"]
+            prompt_short = s["prompt"][:50]
+            print(f"  #{s['id']} {agent_name:<15} {s['status']:<10} {prompt_short}")
+    else:
+        print("Sub-tasks: none yet (lead is still decomposing)")
+
+    return 0
+
+
 COMMANDS = {
     "create-agent": cmd_create_agent,
     "delete-agent": cmd_delete_agent,
@@ -659,6 +710,7 @@ COMMANDS = {
     "list-teams": cmd_list_teams,
     "delete-team": cmd_delete_team,
     "team-dispatch": cmd_team_dispatch,
+    "team-status": cmd_team_status,
     "permissions": cmd_permissions,
     "approve": cmd_approve,
     "deny": cmd_deny,
