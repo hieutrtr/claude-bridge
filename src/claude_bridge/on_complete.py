@@ -36,6 +36,48 @@ def parse_result_file(result_file: str) -> dict | None:
         return None
 
 
+def _check_team_aggregation(db: BridgeDB, parent_task_id: int):
+    """Check if all sub-tasks for a parent are done. If so, mark parent done."""
+    parent = db.get_task(parent_task_id)
+    if not parent or parent["status"] not in ("running", "pending"):
+        return
+
+    subtasks = db.get_subtasks(parent_task_id)
+    if not subtasks:
+        return
+
+    # Check if all sub-tasks are in a terminal state
+    terminal = {"done", "failed", "killed", "timeout", "cancelled"}
+    if not all(s["status"] in terminal for s in subtasks):
+        return
+
+    # All sub-tasks complete — aggregate
+    total_cost = sum((s["cost_usd"] or 0) for s in subtasks)
+    total_cost += parent["cost_usd"] or 0
+
+    summaries = []
+    for s in subtasks:
+        agent = db.get_agent_by_session(s["session_id"])
+        name = agent["name"] if agent else s["session_id"]
+        status = s["status"]
+        summary = s["result_summary"] or s["error_message"] or ""
+        summaries.append(f"[{name}] {status}: {summary[:100]}")
+
+    aggregated_summary = "\n".join(summaries)
+
+    db.update_task(
+        parent_task_id,
+        status="done",
+        cost_usd=total_cost,
+        result_summary=aggregated_summary[:500],
+        completed_at=datetime.now().isoformat(),
+    )
+
+    done_count = sum(1 for s in subtasks if s["status"] == "done")
+    total_count = len(subtasks)
+    print(f"🏁 Team task #{parent_task_id} complete — {done_count}/{total_count} sub-tasks succeeded, total cost: ${total_cost:.3f}")
+
+
 def main(db: BridgeDB | None = None):
     parser = argparse.ArgumentParser(description="Claude Bridge stop hook handler")
     parser.add_argument("--session-id", required=True, help="Session ID of the completed task")
@@ -99,6 +141,10 @@ def main(db: BridgeDB | None = None):
             error_message=error,
             completed_at=datetime.now().isoformat(),
         )
+
+        # Check if this is a sub-task — aggregate parent if all siblings done
+        if task["parent_task_id"]:
+            _check_team_aggregation(db, task["parent_task_id"])
 
         # Update agent and check queue
         db.increment_agent_tasks(args.session_id)

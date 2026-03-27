@@ -167,3 +167,101 @@ class TestOnCompleteIntegration:
         task = db.get_task(info["task_id"])
         assert task["status"] in ("done", "failed")
         assert task["completed_at"] is not None
+
+
+class TestTeamAggregation:
+    """Tests for sub-task completion triggering parent task aggregation."""
+
+    def _setup_team_tasks(self, db, tmp_path):
+        """Create lead + member agents, parent team task, and a running sub-task."""
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "API dev")
+        db.create_agent("frontend", "/p/web", "frontend--web", "/b.md", "UI dev")
+
+        # Parent team task (already completed by lead)
+        parent_id = db.create_task("backend--api", "build profile", task_type="team")
+        db.update_task(parent_id, status="running", pid=111)
+
+        # Sub-task for frontend (running)
+        sub_id = db.create_task("frontend--web", "build UI", parent_task_id=parent_id)
+        result_file = str(tmp_path / f"task-{sub_id}-result.json")
+        db.update_task(sub_id, status="running", pid=222, result_file=result_file)
+        db.update_agent_state("frontend--web", "running")
+
+        return {"parent_id": parent_id, "sub_id": sub_id, "result_file": result_file}
+
+    def test_last_subtask_completes_parent(self, db, tmp_path, monkeypatch):
+        info = self._setup_team_tasks(db, tmp_path)
+
+        with open(info["result_file"], "w") as f:
+            json.dump({"is_error": False, "result": "UI built", "cost_usd": 0.03, "duration_ms": 60000, "num_turns": 4}, f)
+
+        monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", "frontend--web"])
+        main(db=db)
+
+        # Sub-task should be done
+        sub = db.get_task(info["sub_id"])
+        assert sub["status"] == "done"
+
+        # Parent should be done (all sub-tasks complete)
+        parent = db.get_task(info["parent_id"])
+        assert parent["status"] == "done"
+        assert parent["completed_at"] is not None
+
+    def test_not_last_subtask_leaves_parent_running(self, db, tmp_path, monkeypatch):
+        info = self._setup_team_tasks(db, tmp_path)
+
+        # Add another sub-task that's still running
+        sub2_id = db.create_task("backend--api", "build API", parent_task_id=info["parent_id"])
+        db.update_task(sub2_id, status="running", pid=333)
+
+        with open(info["result_file"], "w") as f:
+            json.dump({"is_error": False, "result": "UI built", "cost_usd": 0.03, "duration_ms": 60000, "num_turns": 4}, f)
+
+        monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", "frontend--web"])
+        main(db=db)
+
+        # Parent should still be running
+        parent = db.get_task(info["parent_id"])
+        assert parent["status"] == "running"
+
+    def test_aggregated_cost(self, db, tmp_path, monkeypatch):
+        info = self._setup_team_tasks(db, tmp_path)
+
+        # Complete the parent task's own cost first
+        db.update_task(info["parent_id"], cost_usd=0.05)
+
+        with open(info["result_file"], "w") as f:
+            json.dump({"is_error": False, "result": "UI built", "cost_usd": 0.03, "duration_ms": 60000, "num_turns": 4}, f)
+
+        monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", "frontend--web"])
+        main(db=db)
+
+        parent = db.get_task(info["parent_id"])
+        # Parent cost should include sub-task costs
+        assert parent["cost_usd"] >= 0.03  # At least the sub-task cost
+
+    def test_standalone_task_no_aggregation(self, db, setup_running_task, monkeypatch):
+        """A task with no parent_task_id should not trigger aggregation."""
+        info = setup_running_task
+        with open(info["result_file"], "w") as f:
+            json.dump({"is_error": False, "result": "done", "cost_usd": 0.01, "duration_ms": 5000, "num_turns": 1}, f)
+
+        monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", info["session_id"]])
+        main(db=db)
+
+        # Should complete normally without errors
+        task = db.get_task(info["task_id"])
+        assert task["status"] == "done"
+
+    def test_subtask_failed_still_aggregates(self, db, tmp_path, monkeypatch):
+        """Even if a sub-task fails, parent should complete when all sub-tasks are done."""
+        info = self._setup_team_tasks(db, tmp_path)
+
+        with open(info["result_file"], "w") as f:
+            json.dump({"is_error": True, "result": "build failed", "cost_usd": 0.02, "duration_ms": 30000, "num_turns": 2}, f)
+
+        monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", "frontend--web"])
+        main(db=db)
+
+        parent = db.get_task(info["parent_id"])
+        assert parent["status"] == "done"  # Still done, even though sub-task failed
