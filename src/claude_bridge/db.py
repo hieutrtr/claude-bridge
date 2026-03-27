@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     session_id TEXT NOT NULL REFERENCES agents(session_id) ON DELETE CASCADE,
     prompt TEXT NOT NULL,
     status TEXT DEFAULT 'pending',
+    position INTEGER,
     pid INTEGER,
     result_file TEXT,
     result_summary TEXT,
@@ -173,3 +174,63 @@ class BridgeDB:
             "UPDATE tasks SET reported = 1 WHERE id = ?", (task_id,)
         )
         self.conn.commit()
+
+    # --- Queue operations ---
+
+    def get_queued_tasks(self, session_id: str) -> list[sqlite3.Row]:
+        """Get queued tasks for a session, ordered by position."""
+        return self.conn.execute(
+            "SELECT * FROM tasks WHERE session_id = ? AND status = 'queued' ORDER BY position",
+            (session_id,),
+        ).fetchall()
+
+    def get_next_queue_position(self, session_id: str) -> int:
+        """Get the next queue position for a session (1-indexed)."""
+        result = self.conn.execute(
+            "SELECT MAX(position) FROM tasks WHERE session_id = ? AND status = 'queued'",
+            (session_id,),
+        ).fetchone()
+        max_pos = result[0] if result[0] is not None else 0
+        return max_pos + 1
+
+    def dequeue_next_task(self, session_id: str) -> sqlite3.Row | None:
+        """Dequeue the next task (lowest position). Returns the task row or None."""
+        task = self.conn.execute(
+            "SELECT * FROM tasks WHERE session_id = ? AND status = 'queued' ORDER BY position LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        if not task:
+            return None
+        self.conn.execute(
+            "UPDATE tasks SET status = 'pending', position = NULL WHERE id = ?",
+            (task["id"],),
+        )
+        # Shift remaining positions down
+        self.conn.execute(
+            "UPDATE tasks SET position = position - 1 WHERE session_id = ? AND status = 'queued'",
+            (session_id,),
+        )
+        self.conn.commit()
+        return task
+
+    def cancel_queued_task(self, task_id: int) -> bool:
+        """Cancel a queued task. Returns True if cancelled, False if not queued."""
+        task = self.get_task(task_id)
+        if not task or task["status"] != "queued":
+            return False
+
+        session_id = task["session_id"]
+        position = task["position"]
+
+        self.conn.execute(
+            "UPDATE tasks SET status = 'cancelled', position = NULL WHERE id = ?",
+            (task_id,),
+        )
+        # Shift remaining positions down
+        if position is not None:
+            self.conn.execute(
+                "UPDATE tasks SET position = position - 1 WHERE session_id = ? AND status = 'queued' AND position > ?",
+                (session_id, position),
+            )
+        self.conn.commit()
+        return True

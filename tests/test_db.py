@@ -177,3 +177,89 @@ class TestTaskAdvanced:
 
     def test_get_nonexistent_task(self, db):
         assert db.get_task(9999) is None
+
+
+class TestTaskQueue:
+    def test_create_queued_task(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        tid = db.create_task("backend--api", "queued task")
+        db.update_task(tid, status="queued", position=1)
+        task = db.get_task(tid)
+        assert task["status"] == "queued"
+        assert task["position"] == 1
+
+    def test_get_queued_tasks(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        t1 = db.create_task("backend--api", "task 1")
+        t2 = db.create_task("backend--api", "task 2")
+        t3 = db.create_task("backend--api", "task 3")
+        db.update_task(t1, status="queued", position=1)
+        db.update_task(t2, status="queued", position=2)
+        db.update_task(t3, status="queued", position=3)
+
+        queued = db.get_queued_tasks("backend--api")
+        assert len(queued) == 3
+        assert queued[0]["position"] == 1
+        assert queued[1]["position"] == 2
+        assert queued[2]["position"] == 3
+
+    def test_get_queued_tasks_empty(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        assert db.get_queued_tasks("backend--api") == []
+
+    def test_get_next_queue_position(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        assert db.get_next_queue_position("backend--api") == 1
+
+        t1 = db.create_task("backend--api", "task 1")
+        db.update_task(t1, status="queued", position=1)
+        assert db.get_next_queue_position("backend--api") == 2
+
+    def test_dequeue_next_task(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        t1 = db.create_task("backend--api", "task 1")
+        t2 = db.create_task("backend--api", "task 2")
+        db.update_task(t1, status="queued", position=1)
+        db.update_task(t2, status="queued", position=2)
+
+        next_task = db.dequeue_next_task("backend--api")
+        assert next_task is not None
+        assert next_task["id"] == t1
+        # Task should now be pending (ready to dispatch)
+        task = db.get_task(t1)
+        assert task["status"] == "pending"
+        assert task["position"] is None
+
+    def test_dequeue_empty_queue(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        assert db.dequeue_next_task("backend--api") is None
+
+    def test_cancel_queued_task(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        t1 = db.create_task("backend--api", "task 1")
+        t2 = db.create_task("backend--api", "task 2")
+        db.update_task(t1, status="queued", position=1)
+        db.update_task(t2, status="queued", position=2)
+
+        result = db.cancel_queued_task(t1)
+        assert result is True
+
+        task = db.get_task(t1)
+        assert task["status"] == "cancelled"
+
+        # t2 position should shift down
+        remaining = db.get_queued_tasks("backend--api")
+        assert len(remaining) == 1
+        assert remaining[0]["position"] == 1
+
+    def test_cancel_nonqueued_task_fails(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        tid = db.create_task("backend--api", "running task")
+        db.update_task(tid, status="running")
+        assert db.cancel_queued_task(tid) is False
+
+    def test_position_null_for_nonqueued(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        tid = db.create_task("backend--api", "normal task")
+        task = db.get_task(tid)
+        assert task["position"] is None
