@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS agents (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_task_at TIMESTAMP,
     total_tasks INTEGER DEFAULT 0,
+    model TEXT DEFAULT 'sonnet',
     PRIMARY KEY (name, project_dir)
 );
 
@@ -40,6 +41,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     num_turns INTEGER,
     exit_code INTEGER,
     error_message TEXT,
+    model TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
@@ -80,11 +82,12 @@ class BridgeDB:
         session_id: str,
         agent_file: str,
         purpose: str = "",
+        model: str = "sonnet",
     ) -> sqlite3.Row:
         self.conn.execute(
-            """INSERT INTO agents (name, project_dir, session_id, agent_file, purpose)
-               VALUES (?, ?, ?, ?, ?)""",
-            (name, project_dir, session_id, agent_file, purpose),
+            """INSERT INTO agents (name, project_dir, session_id, agent_file, purpose, model)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (name, project_dir, session_id, agent_file, purpose, model),
         )
         self.conn.commit()
         return self.get_agent(name)
@@ -121,6 +124,13 @@ class BridgeDB:
             """UPDATE agents SET total_tasks = total_tasks + 1,
                last_task_at = ? WHERE session_id = ?""",
             (datetime.now().isoformat(), session_id),
+        )
+        self.conn.commit()
+
+    def update_agent_model(self, session_id: str, model: str):
+        self.conn.execute(
+            "UPDATE agents SET model = ? WHERE session_id = ?",
+            (model, session_id),
         )
         self.conn.commit()
 

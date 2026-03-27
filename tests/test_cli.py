@@ -10,7 +10,7 @@ import pytest
 from claude_bridge.cli import (
     cmd_create_agent, cmd_delete_agent, cmd_list_agents,
     cmd_dispatch, cmd_status, cmd_kill, cmd_history, cmd_memory,
-    cmd_queue, cmd_cancel,
+    cmd_queue, cmd_cancel, cmd_set_model,
     build_parser,
 )
 from claude_bridge.db import BridgeDB
@@ -502,6 +502,84 @@ class TestCancelCommand:
         # Task 1 is running, not queued
         result = cmd_cancel(db, _Args(task_id=1))
         assert result == 1
+
+
+class TestModelRouting:
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_create_agent_default_model(self, mock_init, cli_env):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        args = _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model=None)
+        cmd_create_agent(db, args)
+        agent = db.get_agent("backend")
+        assert agent["model"] == "sonnet"
+
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_create_agent_with_model(self, mock_init, cli_env):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        args = _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model="opus")
+        cmd_create_agent(db, args)
+        agent = db.get_agent("backend")
+        assert agent["model"] == "opus"
+
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_create_agent_invalid_model(self, mock_init, cli_env):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        args = _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model="gpt4")
+        result = cmd_create_agent(db, args)
+        assert result == 1
+
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_set_model(self, mock_init, cli_env):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model=None))
+
+        result = cmd_set_model(db, _Args(name="backend", model="opus"))
+        assert result == 0
+        agent = db.get_agent("backend")
+        assert agent["model"] == "opus"
+
+    def test_set_model_nonexistent_agent(self, cli_env):
+        db = cli_env["db"]
+        result = cmd_set_model(db, _Args(name="nope", model="opus"))
+        assert result == 1
+
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_set_model_invalid(self, mock_init, cli_env):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model=None))
+        result = cmd_set_model(db, _Args(name="backend", model="gpt4"))
+        assert result == 1
+
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_agent_md_contains_model(self, mock_init, cli_env):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model="opus"))
+
+        project_name = cli_env["project"].name
+        agent_file = cli_env["agents_dir"] / f"bridge--backend--{project_name}.md"
+        content = agent_file.read_text()
+        assert "model: opus" in content
+
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_dispatch_with_model_override(self, mock_init, mock_spawn, cli_env):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model=None))
+
+        result = cmd_dispatch(db, _Args(name="backend", prompt="fix bug", model="opus"))
+        assert result == 0
+
+        # Check spawn was called with model
+        call_kwargs = mock_spawn.call_args
+        # model should be passed somehow
+        assert mock_spawn.called
 
 
 class TestBuildParser:

@@ -31,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("name", help="Agent name (e.g., backend)")
     p.add_argument("path", help="Project directory path")
     p.add_argument("--purpose", required=True, help="Agent purpose description")
+    p.add_argument("--model", default=None, help="Model (sonnet/opus/haiku, default: sonnet)")
 
     # delete-agent
     p = sub.add_parser("delete-agent", help="Delete an agent")
@@ -40,6 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("dispatch", help="Dispatch a task to an agent")
     p.add_argument("name", help="Agent name")
     p.add_argument("prompt", help="Task prompt")
+    p.add_argument("--model", default=None, help="Model override for this task")
 
     # list-agents
     sub.add_parser("list-agents", help="List all agents")
@@ -69,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("cancel", help="Cancel a queued task")
     p.add_argument("task_id", type=int, help="Task ID to cancel")
 
+    # set-model
+    p = sub.add_parser("set-model", help="Change agent default model")
+    p.add_argument("name", help="Agent name")
+    p.add_argument("model", help="Model (sonnet/opus/haiku)")
+
     # setup
     sub.add_parser("setup", help="Generate Bridge Bot CLAUDE.md and print setup instructions")
 
@@ -92,19 +99,26 @@ def cmd_create_agent(db: BridgeDB, args):
         print(f"Error: Agent '{args.name}' already exists.", file=sys.stderr)
         return 1
 
+    # Validate model
+    VALID_MODELS = ("sonnet", "opus", "haiku")
+    model = getattr(args, "model", None) or "sonnet"
+    if model not in VALID_MODELS:
+        print(f"Error: Invalid model '{model}'. Valid: {', '.join(VALID_MODELS)}", file=sys.stderr)
+        return 1
+
     # Derive session identity
     session_id = derive_session_id(args.name, project_dir)
     agent_file_name = derive_agent_file_name(session_id)
 
     # Generate agent .md
-    content = generate_agent_md(session_id, args.name, project_dir, args.purpose)
+    content = generate_agent_md(session_id, args.name, project_dir, args.purpose, model=model)
     agent_file_path = write_agent_md(session_id, content)
 
     # Create workspace
     create_workspace(session_id, args.name, project_dir, args.purpose)
 
     # Register in SQLite
-    db.create_agent(args.name, project_dir, session_id, agent_file_path, args.purpose)
+    db.create_agent(args.name, project_dir, session_id, agent_file_path, args.purpose, model=model)
 
     # Init CLAUDE.md (async-ish — report result but don't block on failure)
     print(f"Agent '{args.name}' created for {project_dir}")
@@ -174,8 +188,11 @@ def cmd_dispatch(db: BridgeDB, args):
     result_file = get_result_file(session_id, task_id)
     agent_file_name = derive_agent_file_name(session_id)
 
+    # Determine model (override or agent default)
+    model = getattr(args, "model", None) or agent["model"]
+
     # Spawn
-    pid = spawn_task(agent_file_name, session_id, agent["project_dir"], args.prompt, task_id)
+    pid = spawn_task(agent_file_name, session_id, agent["project_dir"], args.prompt, task_id, model=model)
 
     # Update state
     db.update_task(
@@ -183,6 +200,7 @@ def cmd_dispatch(db: BridgeDB, args):
         status="running",
         pid=pid,
         result_file=result_file,
+        model=model,
         started_at=datetime.now().isoformat(),
     )
     db.update_agent_state(session_id, "running")
@@ -331,6 +349,30 @@ def cmd_setup(db: BridgeDB, args):
     return 0
 
 
+def cmd_set_model(db: BridgeDB, args):
+    VALID_MODELS = ("sonnet", "opus", "haiku")
+    if args.model not in VALID_MODELS:
+        print(f"Error: Invalid model '{args.model}'. Valid: {', '.join(VALID_MODELS)}", file=sys.stderr)
+        return 1
+
+    agent = db.get_agent(args.name)
+    if not agent:
+        print(f"Error: Agent '{args.name}' not found.", file=sys.stderr)
+        return 1
+
+    db.update_agent_model(agent["session_id"], args.model)
+
+    # Regenerate agent .md with new model
+    content = generate_agent_md(
+        agent["session_id"], args.name, agent["project_dir"],
+        agent["purpose"], model=args.model,
+    )
+    write_agent_md(agent["session_id"], content)
+
+    print(f"Agent '{args.name}' model changed to {args.model}.")
+    return 0
+
+
 def cmd_queue(db: BridgeDB, args):
     if args.name:
         agent = db.get_agent(args.name)
@@ -380,6 +422,7 @@ COMMANDS = {
     "memory": cmd_memory,
     "queue": cmd_queue,
     "cancel": cmd_cancel,
+    "set-model": cmd_set_model,
     "setup": cmd_setup,
 }
 

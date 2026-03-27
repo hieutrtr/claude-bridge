@@ -15,6 +15,7 @@ def spawn_task(
     project_dir: str,
     prompt: str,
     task_id: int,
+    model: str | None = None,
 ) -> int:
     """Spawn claude -p as background process.
 
@@ -28,15 +29,19 @@ def spawn_task(
 
     expanded_dir = os.path.expanduser(project_dir)
 
+    cmd = [
+        "claude",
+        "--agent", agent_file_name,
+        "--session-id", session_id,
+        "--output-format", "json",
+    ]
+    if model:
+        cmd.extend(["--model", model])
+    cmd.extend(["-p", prompt])
+
     with open(result_file, "w") as out_f, open(stderr_file, "w") as err_f:
         process = subprocess.Popen(
-            [
-                "claude",
-                "--agent", agent_file_name,
-                "--session-id", session_id,
-                "--output-format", "json",
-                "-p", prompt,
-            ],
+            cmd,
             stdout=out_f,
             stderr=err_f,
             cwd=expanded_dir,

@@ -263,3 +263,28 @@ class TestTaskQueue:
         tid = db.create_task("backend--api", "normal task")
         task = db.get_task(tid)
         assert task["position"] is None
+
+
+class TestModelRouting:
+    def test_default_model_is_sonnet(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        agent = db.get_agent("backend")
+        assert agent["model"] == "sonnet"
+
+    def test_create_agent_with_model(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev", model="opus")
+        agent = db.get_agent("backend")
+        assert agent["model"] == "opus"
+
+    def test_update_model(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        db.update_agent_model("backend--api", "opus")
+        agent = db.get_agent("backend")
+        assert agent["model"] == "opus"
+
+    def test_task_records_model(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        tid = db.create_task("backend--api", "fix bug")
+        db.update_task(tid, model="opus")
+        task = db.get_task(tid)
+        assert task["model"] == "opus"

@@ -7,7 +7,7 @@ AGENT_TEMPLATE = """---
 name: {agent_file_name}
 description: "{purpose}"
 tools: Read, Edit, Write, Bash, Grep, Glob
-model: sonnet
+model: {model}
 isolation: worktree
 memory: project
 hooks:
@@ -36,6 +36,7 @@ def generate_agent_md(
     agent_name: str,
     project_dir: str,
     purpose: str,
+    model: str = "sonnet",
 ) -> str:
     """Generate agent .md file content in native Claude Code format."""
     agent_file_name = f"bridge--{session_id}"
@@ -47,6 +48,7 @@ def generate_agent_md(
         agent_name=agent_name,
         project_dir=project_dir,
         purpose=purpose,
+        model=model,
         on_complete_path=on_complete_path,
     ).lstrip()
 
