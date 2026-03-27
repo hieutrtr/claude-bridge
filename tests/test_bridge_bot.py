@@ -21,6 +21,7 @@ class TestBridgeBotClaudeMd:
     def test_contains_cli_invocations(self):
         content = generate_bridge_bot_claude_md()
         assert "python3 -m claude_bridge.cli" in content
+        assert "PYTHONPATH=" in content
 
     def test_contains_natural_language_rules(self):
         content = generate_bridge_bot_claude_md()

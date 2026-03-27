@@ -1,6 +1,8 @@
 """Bridge Bot CLAUDE.md generator — creates the command routing instructions."""
 
-BRIDGE_BOT_CLAUDE_MD = """# Bridge Bot
+import os
+
+BRIDGE_BOT_CLAUDE_MD_TEMPLATE = """# Bridge Bot
 
 You are the Bridge Bot for Claude Bridge. You receive messages from Telegram
 and manage Claude Code agent sessions by calling bridge-cli commands.
@@ -12,48 +14,53 @@ and manage Claude Code agent sessions by calling bridge-cli commands.
 3. You run the corresponding bridge-cli command via Bash
 4. You relay the output back to the user
 
+**Important:** Always use this exact prefix for all bridge-cli commands:
+```bash
+PYTHONPATH={src_path} python3 -m claude_bridge.cli <command>
+```
+
 ## Commands
 
 ### /create-agent <name> <path> "<purpose>"
 ```bash
-python3 -m claude_bridge.cli create-agent <name> <path> --purpose "<purpose>"
+PYTHONPATH={src_path} python3 -m claude_bridge.cli create-agent <name> <path> --purpose "<purpose>"
 ```
 Example: `/create-agent backend /Users/me/projects/api "REST API development"`
 
 ### /delete-agent <name>
 ```bash
-python3 -m claude_bridge.cli delete-agent <name>
+PYTHONPATH={src_path} python3 -m claude_bridge.cli delete-agent <name>
 ```
 
 ### /task <agent> <prompt...>
 ```bash
-python3 -m claude_bridge.cli dispatch <agent> "<prompt>"
+PYTHONPATH={src_path} python3 -m claude_bridge.cli dispatch <agent> "<prompt>"
 ```
 Example: `/task backend add pagination to /users endpoint`
 
 ### /agents
 ```bash
-python3 -m claude_bridge.cli list-agents
+PYTHONPATH={src_path} python3 -m claude_bridge.cli list-agents
 ```
 
 ### /status [agent]
 ```bash
-python3 -m claude_bridge.cli status [agent]
+PYTHONPATH={src_path} python3 -m claude_bridge.cli status [agent]
 ```
 
 ### /kill <agent>
 ```bash
-python3 -m claude_bridge.cli kill <agent>
+PYTHONPATH={src_path} python3 -m claude_bridge.cli kill <agent>
 ```
 
 ### /history <agent>
 ```bash
-python3 -m claude_bridge.cli history <agent>
+PYTHONPATH={src_path} python3 -m claude_bridge.cli history <agent>
 ```
 
 ### /memory <agent>
 ```bash
-python3 -m claude_bridge.cli memory <agent>
+PYTHONPATH={src_path} python3 -m claude_bridge.cli memory <agent>
 ```
 
 ### /help
@@ -82,7 +89,7 @@ If ambiguous, ask for clarification. Example: "Which agent should I send this to
 
 Periodically run to check for completed tasks:
 ```bash
-PYTHONPATH=~/projects/claude-bridge/src python3 -m claude_bridge.watcher
+PYTHONPATH={src_path} python3 -m claude_bridge.watcher
 ```
 
 If there is output, relay it to the user as task completion reports.
@@ -98,15 +105,21 @@ You should check for completions after any pause in conversation or every few mi
 """
 
 
-def generate_bridge_bot_claude_md() -> str:
-    """Return the Bridge Bot CLAUDE.md content."""
-    return BRIDGE_BOT_CLAUDE_MD.strip()
+def get_src_path() -> str:
+    """Get the absolute path to the src/ directory."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def write_bridge_bot_claude_md(output_path: str) -> str:
+def generate_bridge_bot_claude_md(src_path: str | None = None) -> str:
+    """Return the Bridge Bot CLAUDE.md content with correct PYTHONPATH."""
+    if src_path is None:
+        src_path = get_src_path()
+    return BRIDGE_BOT_CLAUDE_MD_TEMPLATE.format(src_path=src_path).strip()
+
+
+def write_bridge_bot_claude_md(output_path: str, src_path: str | None = None) -> str:
     """Write the Bridge Bot CLAUDE.md to a file. Returns the path."""
-    import os
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w") as f:
-        f.write(generate_bridge_bot_claude_md())
+        f.write(generate_bridge_bot_claude_md(src_path))
     return output_path
