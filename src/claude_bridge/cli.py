@@ -76,6 +76,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("name", help="Agent name")
     p.add_argument("model", help="Model (sonnet/opus/haiku)")
 
+    # cost
+    p = sub.add_parser("cost", help="Show cost summary")
+    p.add_argument("name", nargs="?", default=None, help="Agent name (optional)")
+    p.add_argument("--period", default="all", choices=["today", "week", "month", "all"])
+
     # setup
     sub.add_parser("setup", help="Generate Bridge Bot CLAUDE.md and print setup instructions")
 
@@ -373,6 +378,26 @@ def cmd_set_model(db: BridgeDB, args):
     return 0
 
 
+def cmd_cost(db: BridgeDB, args):
+    session_id = None
+    if args.name:
+        agent = db.get_agent(args.name)
+        if not agent:
+            print(f"Error: Agent '{args.name}' not found.", file=sys.stderr)
+            return 1
+        session_id = agent["session_id"]
+
+    summary = db.get_cost_summary(session_id, args.period)
+    scope = f"Agent: {args.name}" if args.name else "All agents"
+    period = args.period if args.period != "all" else "all time"
+
+    print(f"Cost Summary ({scope}, {period})")
+    print(f"  Total:   ${summary['total']:.2f}")
+    print(f"  Tasks:   {summary['count']}")
+    print(f"  Average: ${summary['average']:.3f} per task")
+    return 0
+
+
 def cmd_queue(db: BridgeDB, args):
     if args.name:
         agent = db.get_agent(args.name)
@@ -423,6 +448,7 @@ COMMANDS = {
     "queue": cmd_queue,
     "cancel": cmd_cancel,
     "set-model": cmd_set_model,
+    "cost": cmd_cost,
     "setup": cmd_setup,
 }
 

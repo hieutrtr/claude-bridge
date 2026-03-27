@@ -185,6 +185,33 @@ class BridgeDB:
         )
         self.conn.commit()
 
+    def get_cost_summary(self, session_id: str | None = None, period: str = "all") -> dict:
+        """Get aggregated cost summary. Returns dict with total, count, average."""
+        where_clauses = ["status IN ('done', 'failed')"]
+        params = []
+
+        if session_id:
+            where_clauses.append("session_id = ?")
+            params.append(session_id)
+
+        if period == "today":
+            where_clauses.append("DATE(completed_at) = DATE('now')")
+        elif period == "week":
+            where_clauses.append("completed_at >= DATE('now', '-7 days')")
+        elif period == "month":
+            where_clauses.append("completed_at >= DATE('now', '-30 days')")
+
+        where = " AND ".join(where_clauses)
+        row = self.conn.execute(
+            f"SELECT COALESCE(SUM(cost_usd), 0) as total, COUNT(*) as count FROM tasks WHERE {where}",
+            params,
+        ).fetchone()
+
+        total = row["total"] or 0
+        count = row["count"] or 0
+        avg = total / count if count > 0 else 0
+        return {"total": total, "count": count, "average": avg}
+
     # --- Queue operations ---
 
     def get_queued_tasks(self, session_id: str) -> list[sqlite3.Row]:

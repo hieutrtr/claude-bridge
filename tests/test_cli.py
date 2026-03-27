@@ -10,7 +10,7 @@ import pytest
 from claude_bridge.cli import (
     cmd_create_agent, cmd_delete_agent, cmd_list_agents,
     cmd_dispatch, cmd_status, cmd_kill, cmd_history, cmd_memory,
-    cmd_queue, cmd_cancel, cmd_set_model,
+    cmd_queue, cmd_cancel, cmd_set_model, cmd_cost,
     build_parser,
 )
 from claude_bridge.db import BridgeDB
@@ -580,6 +580,53 @@ class TestModelRouting:
         call_kwargs = mock_spawn.call_args
         # model should be passed somehow
         assert mock_spawn.called
+
+
+class TestCost:
+    def test_no_tasks(self, cli_env, capsys):
+        db = cli_env["db"]
+        result = cmd_cost(db, _Args(name=None, period="all"))
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "$0.00" in captured.out or "0 tasks" in captured.out.lower()
+
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_cost_with_tasks(self, mock_init, cli_env, capsys):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model=None))
+        agent = db.get_agent("backend")
+
+        t1 = db.create_task(agent["session_id"], "task 1")
+        db.update_task(t1, status="done", cost_usd=0.04)
+        t2 = db.create_task(agent["session_id"], "task 2")
+        db.update_task(t2, status="done", cost_usd=0.06)
+
+        result = cmd_cost(db, _Args(name=None, period="all"))
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "$0.10" in captured.out or "0.10" in captured.out
+        assert "2" in captured.out  # 2 tasks
+
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_cost_per_agent(self, mock_init, cli_env, capsys):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model=None))
+        agent = db.get_agent("backend")
+
+        t1 = db.create_task(agent["session_id"], "task 1")
+        db.update_task(t1, status="done", cost_usd=0.05)
+
+        result = cmd_cost(db, _Args(name="backend", period="all"))
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "0.05" in captured.out
+
+    def test_cost_nonexistent_agent(self, cli_env):
+        db = cli_env["db"]
+        result = cmd_cost(db, _Args(name="nope", period="all"))
+        assert result == 1
 
 
 class TestBuildParser:
