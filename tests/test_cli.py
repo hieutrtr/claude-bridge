@@ -11,6 +11,7 @@ from claude_bridge.cli import (
     cmd_create_agent, cmd_delete_agent, cmd_list_agents,
     cmd_dispatch, cmd_status, cmd_kill, cmd_history, cmd_memory,
     cmd_queue, cmd_cancel, cmd_set_model, cmd_cost,
+    cmd_create_team, cmd_list_teams, cmd_delete_team,
     build_parser,
 )
 from claude_bridge.db import BridgeDB
@@ -660,3 +661,141 @@ class TestBuildParser:
         parser = build_parser()
         args = parser.parse_args(["status", "backend"])
         assert args.name == "backend"
+
+    def test_create_team_subcommand(self):
+        parser = build_parser()
+        args = parser.parse_args(["create-team", "fullstack", "--lead", "backend", "--members", "frontend,devops"])
+        assert args.command == "create-team"
+        assert args.name == "fullstack"
+        assert args.lead == "backend"
+        assert args.members == "frontend,devops"
+
+    def test_list_teams_subcommand(self):
+        parser = build_parser()
+        args = parser.parse_args(["list-teams"])
+        assert args.command == "list-teams"
+
+    def test_delete_team_subcommand(self):
+        parser = build_parser()
+        args = parser.parse_args(["delete-team", "fullstack"])
+        assert args.command == "delete-team"
+        assert args.name == "fullstack"
+
+
+class TestCreateTeam:
+    def _create_agents(self, db, cli_env):
+        """Helper to create test agents."""
+        with patch("claude_bridge.cli.init_claude_md", return_value={"success": True, "message": "ok"}):
+            cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="API dev", model=None))
+            # Need a second project dir for frontend
+            project2 = cli_env["home"] / "project2"
+            project2.mkdir(exist_ok=True)
+            cmd_create_agent(db, _Args(name="frontend", path=str(project2), purpose="UI dev", model=None))
+            project3 = cli_env["home"] / "project3"
+            project3.mkdir(exist_ok=True)
+            cmd_create_agent(db, _Args(name="devops", path=str(project3), purpose="Infra", model=None))
+
+    def test_create_team(self, cli_env, capsys):
+        db = cli_env["db"]
+        self._create_agents(db, cli_env)
+        args = _Args(name="fullstack", lead="backend", members="frontend,devops")
+        result = cmd_create_team(db, args)
+        assert result == 0
+        team = db.get_team("fullstack")
+        assert team is not None
+        assert team["lead_agent"] == "backend"
+
+    def test_create_team_shows_confirmation(self, cli_env, capsys):
+        db = cli_env["db"]
+        self._create_agents(db, cli_env)
+        args = _Args(name="fullstack", lead="backend", members="frontend,devops")
+        cmd_create_team(db, args)
+        captured = capsys.readouterr()
+        assert "fullstack" in captured.out
+        assert "backend" in captured.out
+
+    def test_lead_in_members_errors(self, cli_env):
+        db = cli_env["db"]
+        self._create_agents(db, cli_env)
+        args = _Args(name="bad", lead="backend", members="backend,frontend")
+        result = cmd_create_team(db, args)
+        assert result == 1
+
+    def test_nonexistent_lead_errors(self, cli_env):
+        db = cli_env["db"]
+        self._create_agents(db, cli_env)
+        args = _Args(name="bad", lead="nonexistent", members="frontend")
+        result = cmd_create_team(db, args)
+        assert result == 1
+
+    def test_nonexistent_member_errors(self, cli_env):
+        db = cli_env["db"]
+        self._create_agents(db, cli_env)
+        args = _Args(name="bad", lead="backend", members="frontend,nonexistent")
+        result = cmd_create_team(db, args)
+        assert result == 1
+
+    def test_duplicate_team_name_errors(self, cli_env):
+        db = cli_env["db"]
+        self._create_agents(db, cli_env)
+        cmd_create_team(db, _Args(name="fullstack", lead="backend", members="frontend"))
+        result = cmd_create_team(db, _Args(name="fullstack", lead="devops", members="frontend"))
+        assert result == 1
+
+
+class TestListTeams:
+    def test_empty(self, cli_env, capsys):
+        db = cli_env["db"]
+        result = cmd_list_teams(db, _Args())
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "No teams" in captured.out
+
+    def test_lists_teams(self, cli_env, capsys):
+        db = cli_env["db"]
+        with patch("claude_bridge.cli.init_claude_md", return_value={"success": True, "message": "ok"}):
+            cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model=None))
+            project2 = cli_env["home"] / "project2"
+            project2.mkdir(exist_ok=True)
+            cmd_create_agent(db, _Args(name="frontend", path=str(project2), purpose="UI", model=None))
+        cmd_create_team(db, _Args(name="fullstack", lead="backend", members="frontend"))
+        capsys.readouterr()  # clear
+
+        result = cmd_list_teams(db, _Args())
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "fullstack" in captured.out
+        assert "backend" in captured.out
+
+
+class TestDeleteTeam:
+    def test_delete_team(self, cli_env):
+        db = cli_env["db"]
+        with patch("claude_bridge.cli.init_claude_md", return_value={"success": True, "message": "ok"}):
+            cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model=None))
+            project2 = cli_env["home"] / "project2"
+            project2.mkdir(exist_ok=True)
+            cmd_create_agent(db, _Args(name="frontend", path=str(project2), purpose="UI", model=None))
+        cmd_create_team(db, _Args(name="fullstack", lead="backend", members="frontend"))
+
+        result = cmd_delete_team(db, _Args(name="fullstack"))
+        assert result == 0
+        assert db.get_team("fullstack") is None
+
+    def test_delete_nonexistent_team(self, cli_env):
+        db = cli_env["db"]
+        result = cmd_delete_team(db, _Args(name="nope"))
+        assert result == 1
+
+    def test_delete_team_preserves_agents(self, cli_env):
+        db = cli_env["db"]
+        with patch("claude_bridge.cli.init_claude_md", return_value={"success": True, "message": "ok"}):
+            cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model=None))
+            project2 = cli_env["home"] / "project2"
+            project2.mkdir(exist_ok=True)
+            cmd_create_agent(db, _Args(name="frontend", path=str(project2), purpose="UI", model=None))
+        cmd_create_team(db, _Args(name="fullstack", lead="backend", members="frontend"))
+        cmd_delete_team(db, _Args(name="fullstack"))
+
+        assert db.get_agent("backend") is not None
+        assert db.get_agent("frontend") is not None

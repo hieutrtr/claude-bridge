@@ -92,6 +92,19 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("deny", help="Deny a permission request")
     p.add_argument("request_id", help="Permission request ID")
 
+    # create-team
+    p = sub.add_parser("create-team", help="Create an agent team")
+    p.add_argument("name", help="Team name")
+    p.add_argument("--lead", required=True, help="Lead agent name")
+    p.add_argument("--members", required=True, help="Comma-separated member agent names")
+
+    # list-teams
+    sub.add_parser("list-teams", help="List all teams")
+
+    # delete-team
+    p = sub.add_parser("delete-team", help="Delete a team")
+    p.add_argument("name", help="Team name")
+
     # setup
     sub.add_parser("setup", help="Generate Bridge Bot CLAUDE.md and print setup instructions")
 
@@ -479,6 +492,62 @@ def cmd_cancel(db: BridgeDB, args):
         return 1
 
 
+def cmd_create_team(db: BridgeDB, args):
+    """Create a team with a lead agent and member agents."""
+    members = [m.strip() for m in args.members.split(",") if m.strip()]
+
+    # Validate lead exists
+    if not db.get_agent(args.lead):
+        print(f"Error: Lead agent '{args.lead}' does not exist.", file=sys.stderr)
+        return 1
+
+    # Validate lead not in members
+    if args.lead in members:
+        print(f"Error: Lead agent '{args.lead}' cannot also be a member.", file=sys.stderr)
+        return 1
+
+    # Validate all members exist
+    for member in members:
+        if not db.get_agent(member):
+            print(f"Error: Member agent '{member}' does not exist.", file=sys.stderr)
+            return 1
+
+    # Check for duplicate team name
+    if db.get_team(args.name):
+        print(f"Error: Team '{args.name}' already exists.", file=sys.stderr)
+        return 1
+
+    db.create_team(args.name, args.lead, members)
+    print(f"Team '{args.name}' created.")
+    print(f"  Lead: {args.lead}")
+    print(f"  Members: {', '.join(members)}")
+    return 0
+
+
+def cmd_list_teams(db: BridgeDB, args):
+    """List all teams."""
+    teams = db.list_teams()
+    if not teams:
+        print("No teams registered.")
+        return 0
+
+    print(f"{'NAME':<20} {'LEAD':<15} {'MEMBERS'}")
+    for team in teams:
+        members = db.get_team_members(team["name"])
+        print(f"{team['name']:<20} {team['lead_agent']:<15} {', '.join(members)}")
+    return 0
+
+
+def cmd_delete_team(db: BridgeDB, args):
+    """Delete a team (agents are preserved)."""
+    if db.delete_team(args.name):
+        print(f"Team '{args.name}' deleted. Agents preserved.")
+        return 0
+    else:
+        print(f"Error: Team '{args.name}' not found.", file=sys.stderr)
+        return 1
+
+
 COMMANDS = {
     "create-agent": cmd_create_agent,
     "delete-agent": cmd_delete_agent,
@@ -492,6 +561,9 @@ COMMANDS = {
     "cancel": cmd_cancel,
     "set-model": cmd_set_model,
     "cost": cmd_cost,
+    "create-team": cmd_create_team,
+    "list-teams": cmd_list_teams,
+    "delete-team": cmd_delete_team,
     "permissions": cmd_permissions,
     "approve": cmd_approve,
     "deny": cmd_deny,
