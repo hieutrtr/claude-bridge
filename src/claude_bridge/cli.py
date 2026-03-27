@@ -121,10 +121,15 @@ def cmd_delete_agent(db: BridgeDB, args):
 
     session_id = agent["session_id"]
 
-    # Kill running task if any
+    # Reject if agent has a running task
     running = db.get_running_task(session_id)
-    if running and running["pid"]:
-        kill_process(running["pid"])
+    if running:
+        print(
+            f"Error: Agent '{args.name}' has a running task (#{running['id']}). "
+            f"Use 'kill {args.name}' first.",
+            file=sys.stderr,
+        )
+        return 1
 
     # Clean up
     delete_agent_md(session_id)

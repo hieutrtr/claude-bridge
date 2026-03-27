@@ -165,6 +165,78 @@ class TestCreateAgent:
         assert mock_init.call_args[0][2] == "API dev"
 
 
+class TestDeleteAgent:
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_deletes_agent_from_db(self, mock_init, cli_env):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        args_create = _Args(name="backend", path=str(cli_env["project"]), purpose="dev")
+        cmd_create_agent(db, args_create)
+
+        args_delete = _Args(name="backend")
+        result = cmd_delete_agent(db, args_delete)
+
+        assert result == 0
+        assert db.get_agent("backend") is None
+
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_removes_agent_md_file(self, mock_init, cli_env):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        args_create = _Args(name="backend", path=str(cli_env["project"]), purpose="dev")
+        cmd_create_agent(db, args_create)
+
+        project_name = cli_env["project"].name
+        agent_file = cli_env["agents_dir"] / f"bridge--backend--{project_name}.md"
+        assert agent_file.is_file()
+
+        args_delete = _Args(name="backend")
+        cmd_delete_agent(db, args_delete)
+
+        assert not agent_file.exists()
+
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_removes_workspace(self, mock_init, cli_env):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        project_name = cli_env["project"].name
+        session_id = f"backend--{project_name}"
+        args_create = _Args(name="backend", path=str(cli_env["project"]), purpose="dev")
+        cmd_create_agent(db, args_create)
+
+        workspace = cli_env["bridge_dir"] / "workspaces" / session_id
+        assert workspace.is_dir()
+
+        args_delete = _Args(name="backend")
+        cmd_delete_agent(db, args_delete)
+
+        assert not workspace.exists()
+
+    def test_nonexistent_agent_returns_error(self, cli_env):
+        db = cli_env["db"]
+        args = _Args(name="nonexistent")
+        result = cmd_delete_agent(db, args)
+        assert result == 1
+
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_running_task_returns_error(self, mock_init, cli_env):
+        """Should error if agent has running task — not silently kill."""
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        args_create = _Args(name="backend", path=str(cli_env["project"]), purpose="dev")
+        cmd_create_agent(db, args_create)
+
+        agent = db.get_agent("backend")
+        tid = db.create_task(agent["session_id"], "running task")
+        db.update_task(tid, status="running", pid=99999)
+
+        args_delete = _Args(name="backend")
+        result = cmd_delete_agent(db, args_delete)
+
+        assert result == 1  # Should fail, not silently kill
+        assert db.get_agent("backend") is not None  # Agent should still exist
+
+
 class TestBuildParser:
     def test_create_agent_subcommand(self):
         parser = build_parser()

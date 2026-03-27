@@ -61,7 +61,7 @@ def pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
         return True
-    except ProcessNotFoundError:
+    except ProcessLookupError:
         return False
     except PermissionError:
         return True  # Process exists but we can't signal it
@@ -78,5 +78,5 @@ def kill_process(pid: int, graceful: bool = True) -> bool:
                     return True
         os.kill(pid, signal.SIGKILL)
         return True
-    except ProcessNotFoundError:
+    except ProcessLookupError:
         return False
