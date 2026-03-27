@@ -44,8 +44,9 @@ class TestSpawnTask:
         assert "bridge--backend--api" in cmd
         assert "--session-id" in cmd
         assert "backend--api" in cmd
-        assert "--project-dir" in cmd
         assert "--output-format" in cmd
+        # project dir passed as cwd, not --project-dir
+        assert "--project-dir" not in cmd
         assert "json" in cmd
         assert "-p" in cmd
         assert "fix the bug" in cmd

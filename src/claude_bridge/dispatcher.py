@@ -34,12 +34,12 @@ def spawn_task(
                 "claude",
                 "--agent", agent_file_name,
                 "--session-id", session_id,
-                "--project-dir", expanded_dir,
                 "--output-format", "json",
                 "-p", prompt,
             ],
             stdout=out_f,
             stderr=err_f,
+            cwd=expanded_dir,
             start_new_session=True,
         )
 

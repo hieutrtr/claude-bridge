@@ -307,7 +307,7 @@ def cmd_setup(db: BridgeDB, args):
     print("   /telegram:configure <your-bot-token>")
     print()
     print("4. Start the Bridge Bot with Telegram channel:")
-    print(f"   claude --channels plugin:telegram@claude-plugins-official --project-dir {bridge_home}")
+    print(f"   cd {bridge_home} && claude --channels plugin:telegram@claude-plugins-official")
     print()
     print("5. Pair your Telegram account:")
     print("   - Send any message to your bot in Telegram")

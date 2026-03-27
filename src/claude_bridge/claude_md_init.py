@@ -68,13 +68,13 @@ def init_claude_md(
             [
                 "claude",
                 "-p", prompt,
-                "--project-dir", expanded_dir,
                 "--allowedTools", "Read,Grep,Glob,Write",
                 "--output-format", "json",
             ],
             capture_output=True,
             text=True,
             timeout=timeout,
+            cwd=expanded_dir,
         )
 
         if result.returncode == 0:

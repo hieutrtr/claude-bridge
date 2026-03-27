@@ -59,7 +59,10 @@ class TestNewProject:
         init_claude_md(project_dir, "backend", "dev")
 
         call_args = mock_run.call_args[0][0]
-        assert "--project-dir" in call_args
+        call_kwargs = mock_run.call_args[1]
+        # project dir passed as cwd, not --project-dir
+        assert "--project-dir" not in call_args
+        assert call_kwargs.get("cwd") == project_dir
         assert "--allowedTools" in call_args
         assert "--output-format" in call_args
 
