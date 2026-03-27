@@ -18,6 +18,7 @@ from .session import (
 from .agent_md import generate_agent_md, write_agent_md, delete_agent_md
 from .claude_md_init import init_claude_md
 from .dispatcher import spawn_task, get_result_file, pid_alive, kill_process
+from .bridge_bot_claude_md import write_bridge_bot_claude_md
 from .memory import format_memory_report
 
 
@@ -59,6 +60,9 @@ def build_parser() -> argparse.ArgumentParser:
     # memory
     p = sub.add_parser("memory", help="Show agent Auto Memory")
     p.add_argument("name", help="Agent name")
+
+    # setup
+    sub.add_parser("setup", help="Generate Bridge Bot CLAUDE.md and print setup instructions")
 
     return parser
 
@@ -285,6 +289,32 @@ def cmd_memory(db: BridgeDB, args):
     return 0
 
 
+def cmd_setup(db: BridgeDB, args):
+    bridge_home = os.path.expanduser("~/.claude-bridge")
+    claude_md_path = os.path.join(bridge_home, "CLAUDE.md")
+
+    write_bridge_bot_claude_md(claude_md_path)
+    print(f"Bridge Bot CLAUDE.md written to {claude_md_path}")
+    print()
+    print("=== Setup Instructions ===")
+    print()
+    print("1. Create a Telegram bot via @BotFather and get the bot token")
+    print()
+    print("2. Install the Telegram MCP plugin:")
+    print("   claude plugin install telegram@claude-plugins-official")
+    print()
+    print("3. Start the Bridge Bot:")
+    print(f"   claude --channel plugin:telegram@claude-plugins-official --project-dir {bridge_home}")
+    print()
+    print("4. Send /help to your Telegram bot to verify it works")
+    print()
+    print("5. (Optional) Set up the fallback watcher cron:")
+    print("   crontab -e")
+    print(f"   */5 * * * * PYTHONPATH={os.path.dirname(os.path.dirname(__file__))} "
+          f"python3 -m claude_bridge.watcher >> {bridge_home}/watcher.log 2>&1")
+    return 0
+
+
 COMMANDS = {
     "create-agent": cmd_create_agent,
     "delete-agent": cmd_delete_agent,
@@ -294,6 +324,7 @@ COMMANDS = {
     "kill": cmd_kill,
     "history": cmd_history,
     "memory": cmd_memory,
+    "setup": cmd_setup,
 }
 
 
