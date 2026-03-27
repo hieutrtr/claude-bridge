@@ -263,6 +263,60 @@ class TestListAgents:
         assert "No agents" in captured.out
 
 
+class TestDispatchQueue:
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_dispatch_busy_queues_task(self, mock_init, mock_spawn, cli_env, capsys):
+        """Dispatch to busy agent should queue, not reject."""
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        args_create = _Args(name="backend", path=str(cli_env["project"]), purpose="dev")
+        cmd_create_agent(db, args_create)
+
+        # First dispatch — immediate
+        cmd_dispatch(db, _Args(name="backend", prompt="task 1"))
+
+        # Second dispatch — should queue
+        result = cmd_dispatch(db, _Args(name="backend", prompt="task 2"))
+        assert result == 0  # Should succeed (queued), not error
+
+        captured = capsys.readouterr()
+        assert "queued" in captured.out.lower() or "position" in captured.out.lower()
+
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_dispatch_busy_shows_position(self, mock_init, mock_spawn, cli_env, capsys):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        args_create = _Args(name="backend", path=str(cli_env["project"]), purpose="dev")
+        cmd_create_agent(db, args_create)
+
+        cmd_dispatch(db, _Args(name="backend", prompt="task 1"))
+        cmd_dispatch(db, _Args(name="backend", prompt="task 2"))
+        capsys.readouterr()  # clear
+
+        cmd_dispatch(db, _Args(name="backend", prompt="task 3"))
+        captured = capsys.readouterr()
+        assert "2" in captured.out  # position 2
+
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    @patch("claude_bridge.cli.init_claude_md")
+    def test_queued_task_in_db(self, mock_init, mock_spawn, cli_env):
+        mock_init.return_value = {"success": True, "message": "ok"}
+        db = cli_env["db"]
+        args_create = _Args(name="backend", path=str(cli_env["project"]), purpose="dev")
+        cmd_create_agent(db, args_create)
+
+        cmd_dispatch(db, _Args(name="backend", prompt="task 1"))
+        cmd_dispatch(db, _Args(name="backend", prompt="task 2"))
+
+        agent = db.get_agent("backend")
+        queued = db.get_queued_tasks(agent["session_id"])
+        assert len(queued) == 1
+        assert queued[0]["prompt"] == "task 2"
+        assert queued[0]["position"] == 1
+
+
 class TestStatus:
     def test_no_running_tasks(self, cli_env, capsys):
         db = cli_env["db"]

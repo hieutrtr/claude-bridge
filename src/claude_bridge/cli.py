@@ -152,15 +152,14 @@ def cmd_dispatch(db: BridgeDB, args):
 
     session_id = agent["session_id"]
 
-    # Check not busy
+    # Check if busy — queue instead of reject
     running = db.get_running_task(session_id)
     if running:
-        print(
-            f"Error: Agent '{args.name}' is busy with task #{running['id']}. "
-            f"Use 'kill {args.name}' to cancel.",
-            file=sys.stderr,
-        )
-        return 1
+        task_id = db.create_task(session_id, args.prompt)
+        position = db.get_next_queue_position(session_id)
+        db.update_task(task_id, status="queued", position=position)
+        print(f"Agent '{args.name}' is busy. Task #{task_id} queued at position {position}.")
+        return 0
 
     # Create task
     task_id = db.create_task(session_id, args.prompt)

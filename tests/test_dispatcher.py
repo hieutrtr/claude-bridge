@@ -194,10 +194,10 @@ class TestDispatchCommand:
         args_dispatch = _Args(name="backend", prompt="task 1")
         cmd_dispatch(db, args_dispatch)
 
-        # Second dispatch should fail (busy)
+        # Second dispatch should queue (not fail)
         args_dispatch2 = _Args(name="backend", prompt="task 2")
         result = cmd_dispatch(db, args_dispatch2)
-        assert result == 1
+        assert result == 0  # Queued successfully
 
 
 # Reuse _Args and cli_env from test_cli.py
