@@ -1,1 +1,23 @@
+# Claude Code
 .claude/worktrees/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Bridge runtime
+*.db
+*.log
+
+# OS
+.DS_Store
