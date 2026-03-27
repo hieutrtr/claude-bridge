@@ -288,3 +288,118 @@ class TestModelRouting:
         db.update_task(tid, model="opus")
         task = db.get_task(tid)
         assert task["model"] == "opus"
+
+
+class TestTeamCRUD:
+    """Tests for team creation, listing, and deletion."""
+
+    def _setup_agents(self, db):
+        """Helper to create test agents."""
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "API dev")
+        db.create_agent("frontend", "/p/web", "frontend--web", "/b.md", "UI dev")
+        db.create_agent("devops", "/p/infra", "devops--infra", "/c.md", "Infra")
+
+    def test_create_team(self, db):
+        self._setup_agents(db)
+        db.create_team("fullstack", "backend", ["frontend", "devops"])
+        team = db.get_team("fullstack")
+        assert team is not None
+        assert team["name"] == "fullstack"
+        assert team["lead_agent"] == "backend"
+
+    def test_get_team_members(self, db):
+        self._setup_agents(db)
+        db.create_team("fullstack", "backend", ["frontend", "devops"])
+        members = db.get_team_members("fullstack")
+        assert sorted(members) == ["devops", "frontend"]
+
+    def test_list_teams(self, db):
+        self._setup_agents(db)
+        db.create_team("fullstack", "backend", ["frontend"])
+        db.create_team("infra", "devops", ["backend"])
+        teams = db.list_teams()
+        assert len(teams) == 2
+
+    def test_delete_team(self, db):
+        self._setup_agents(db)
+        db.create_team("fullstack", "backend", ["frontend"])
+        assert db.delete_team("fullstack") is True
+        assert db.get_team("fullstack") is None
+
+    def test_delete_team_preserves_agents(self, db):
+        self._setup_agents(db)
+        db.create_team("fullstack", "backend", ["frontend"])
+        db.delete_team("fullstack")
+        assert db.get_agent("backend") is not None
+        assert db.get_agent("frontend") is not None
+
+    def test_delete_nonexistent_team(self, db):
+        assert db.delete_team("nope") is False
+
+    def test_get_nonexistent_team(self, db):
+        assert db.get_team("nope") is None
+
+    def test_duplicate_team_name_raises(self, db):
+        self._setup_agents(db)
+        db.create_team("fullstack", "backend", ["frontend"])
+        with pytest.raises(sqlite3.IntegrityError):
+            db.create_team("fullstack", "devops", ["backend"])
+
+    def test_team_with_single_member(self, db):
+        self._setup_agents(db)
+        db.create_team("solo", "backend", ["frontend"])
+        members = db.get_team_members("solo")
+        assert members == ["frontend"]
+
+    def test_cascade_delete_team_members(self, db):
+        """Deleting a team removes its member rows."""
+        self._setup_agents(db)
+        db.create_team("fullstack", "backend", ["frontend", "devops"])
+        db.delete_team("fullstack")
+        members = db.get_team_members("fullstack")
+        assert members == []
+
+
+class TestTaskParentChild:
+    """Tests for parent_task_id and task_type columns."""
+
+    def test_task_default_type_is_standard(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        tid = db.create_task("backend--api", "normal task")
+        task = db.get_task(tid)
+        assert task["task_type"] == "standard"
+
+    def test_create_team_task(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        parent_id = db.create_task("backend--api", "team task", task_type="team")
+        task = db.get_task(parent_id)
+        assert task["task_type"] == "team"
+
+    def test_create_subtask_with_parent(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        db.create_agent("frontend", "/p/web", "frontend--web", "/b.md", "UI")
+        parent_id = db.create_task("backend--api", "team task", task_type="team")
+        sub_id = db.create_task("frontend--web", "sub task", parent_task_id=parent_id)
+        sub = db.get_task(sub_id)
+        assert sub["parent_task_id"] == parent_id
+
+    def test_get_subtasks(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        db.create_agent("frontend", "/p/web", "frontend--web", "/b.md", "UI")
+        db.create_agent("devops", "/p/infra", "devops--infra", "/c.md", "Infra")
+        parent_id = db.create_task("backend--api", "team task", task_type="team")
+        db.create_task("frontend--web", "sub 1", parent_task_id=parent_id)
+        db.create_task("devops--infra", "sub 2", parent_task_id=parent_id)
+        subtasks = db.get_subtasks(parent_id)
+        assert len(subtasks) == 2
+
+    def test_get_subtasks_empty(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        tid = db.create_task("backend--api", "no children")
+        assert db.get_subtasks(tid) == []
+
+    def test_parent_task_id_null_by_default(self, db):
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        tid = db.create_task("backend--api", "normal task")
+        task = db.get_task(tid)
+        assert task["parent_task_id"] is None

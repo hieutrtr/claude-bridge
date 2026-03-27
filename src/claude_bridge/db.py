@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     exit_code INTEGER,
     error_message TEXT,
     model TEXT,
+    task_type TEXT DEFAULT 'standard',
+    parent_task_id INTEGER REFERENCES tasks(id),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
@@ -61,9 +63,22 @@ CREATE TABLE IF NOT EXISTS permissions (
     timeout_seconds INTEGER DEFAULT 300
 );
 
+CREATE TABLE IF NOT EXISTS teams (
+    name TEXT PRIMARY KEY,
+    lead_agent TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS team_members (
+    team_name TEXT NOT NULL REFERENCES teams(name) ON DELETE CASCADE,
+    agent_name TEXT NOT NULL,
+    PRIMARY KEY (team_name, agent_name)
+);
+
 CREATE INDEX IF NOT EXISTS idx_permissions_status ON permissions(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_unreported ON tasks(status, reported)
     WHERE status IN ('done', 'failed', 'timeout') AND reported = 0;
 """
@@ -150,10 +165,16 @@ class BridgeDB:
 
     # --- Task operations ---
 
-    def create_task(self, session_id: str, prompt: str) -> int:
+    def create_task(
+        self,
+        session_id: str,
+        prompt: str,
+        task_type: str = "standard",
+        parent_task_id: int | None = None,
+    ) -> int:
         cursor = self.conn.execute(
-            "INSERT INTO tasks (session_id, prompt) VALUES (?, ?)",
-            (session_id, prompt),
+            "INSERT INTO tasks (session_id, prompt, task_type, parent_task_id) VALUES (?, ?, ?, ?)",
+            (session_id, prompt, task_type, parent_task_id),
         )
         self.conn.commit()
         return cursor.lastrowid
@@ -337,3 +358,53 @@ class BridgeDB:
             )
         self.conn.commit()
         return True
+
+    # --- Team operations ---
+
+    def create_team(self, name: str, lead_agent: str, members: list[str]):
+        """Create a team with a lead agent and member agents."""
+        self.conn.execute(
+            "INSERT INTO teams (name, lead_agent) VALUES (?, ?)",
+            (name, lead_agent),
+        )
+        for member in members:
+            self.conn.execute(
+                "INSERT INTO team_members (team_name, agent_name) VALUES (?, ?)",
+                (name, member),
+            )
+        self.conn.commit()
+
+    def get_team(self, name: str) -> sqlite3.Row | None:
+        """Get a team by name."""
+        return self.conn.execute(
+            "SELECT * FROM teams WHERE name = ?", (name,)
+        ).fetchone()
+
+    def get_team_members(self, team_name: str) -> list[str]:
+        """Get member agent names for a team."""
+        rows = self.conn.execute(
+            "SELECT agent_name FROM team_members WHERE team_name = ? ORDER BY agent_name",
+            (team_name,),
+        ).fetchall()
+        return [row["agent_name"] for row in rows]
+
+    def list_teams(self) -> list[sqlite3.Row]:
+        """List all teams."""
+        return self.conn.execute(
+            "SELECT * FROM teams ORDER BY created_at DESC"
+        ).fetchall()
+
+    def delete_team(self, name: str) -> bool:
+        """Delete a team. Returns True if it existed."""
+        cursor = self.conn.execute("DELETE FROM teams WHERE name = ?", (name,))
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    # --- Sub-task operations ---
+
+    def get_subtasks(self, parent_task_id: int) -> list[sqlite3.Row]:
+        """Get all sub-tasks for a parent task."""
+        return self.conn.execute(
+            "SELECT * FROM tasks WHERE parent_task_id = ? ORDER BY id",
+            (parent_task_id,),
+        ).fetchall()
