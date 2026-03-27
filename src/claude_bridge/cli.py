@@ -105,6 +105,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("delete-team", help="Delete a team")
     p.add_argument("name", help="Team name")
 
+    # team-dispatch
+    p = sub.add_parser("team-dispatch", help="Dispatch a task to a team")
+    p.add_argument("name", help="Team name")
+    p.add_argument("prompt", help="Task prompt")
+
     # setup
     sub.add_parser("setup", help="Generate Bridge Bot CLAUDE.md and print setup instructions")
 
@@ -548,6 +553,95 @@ def cmd_delete_team(db: BridgeDB, args):
         return 1
 
 
+def _build_team_prompt(original_prompt: str, team_name: str, members: list[dict]) -> str:
+    """Build augmented prompt for team lead with team context."""
+    member_lines = []
+    for m in members:
+        member_lines.append(f"- {m['name']}: {m['purpose']} (project: {m['project_dir']})")
+
+    return f"""TEAM TASK
+=========
+{original_prompt}
+
+TEAM CONTEXT
+============
+You are the lead of team '{team_name}'.
+Your teammates:
+{chr(10).join(member_lines)}
+
+To dispatch sub-tasks to teammates, use the Bash tool:
+  PYTHONPATH={os.path.dirname(os.path.dirname(os.path.abspath(__file__)))} python3 -m claude_bridge.cli dispatch <agent_name> "<sub-task prompt>"
+
+To check teammate status:
+  PYTHONPATH={os.path.dirname(os.path.dirname(os.path.abspath(__file__)))} python3 -m claude_bridge.cli status <agent_name>
+
+INSTRUCTIONS
+============
+1. Decompose the task into sub-tasks for your teammates
+2. Dispatch each sub-task using the commands above
+3. Monitor progress with the status command
+4. When all sub-tasks are done, aggregate results and provide a final summary
+"""
+
+
+def cmd_team_dispatch(db: BridgeDB, args):
+    """Dispatch a task to a team's lead agent with augmented prompt."""
+    team = db.get_team(args.name)
+    if not team:
+        print(f"Error: Team '{args.name}' not found.", file=sys.stderr)
+        return 1
+
+    lead = db.get_agent(team["lead_agent"])
+    if not lead:
+        print(f"Error: Lead agent '{team['lead_agent']}' not found.", file=sys.stderr)
+        return 1
+
+    # Get member info for prompt
+    member_names = db.get_team_members(args.name)
+    members = []
+    for name in member_names:
+        agent = db.get_agent(name)
+        if agent:
+            members.append({"name": name, "purpose": agent["purpose"], "project_dir": agent["project_dir"]})
+
+    # Build augmented prompt
+    augmented = _build_team_prompt(args.prompt, args.name, members)
+
+    session_id = lead["session_id"]
+
+    # Check if busy — queue
+    running = db.get_running_task(session_id)
+    if running:
+        task_id = db.create_task(session_id, augmented, task_type="team")
+        position = db.get_next_queue_position(session_id)
+        db.update_task(task_id, status="queued", position=position)
+        print(f"Lead '{team['lead_agent']}' is busy. Team task #{task_id} queued at position {position}.")
+        return 0
+
+    # Create parent task
+    task_id = db.create_task(session_id, augmented, task_type="team")
+    result_file = get_result_file(session_id, task_id)
+    agent_file_name = derive_agent_file_name(session_id)
+    model = lead["model"]
+
+    pid = spawn_task(agent_file_name, session_id, lead["project_dir"], augmented, task_id, model=model)
+
+    db.update_task(
+        task_id,
+        status="running",
+        pid=pid,
+        result_file=result_file,
+        model=model,
+        started_at=datetime.now().isoformat(),
+    )
+    db.update_agent_state(session_id, "running")
+
+    print(f"Team task #{task_id} dispatched to lead '{team['lead_agent']}' (PID {pid})")
+    print(f"  Prompt: {args.prompt}")
+    print(f"  Members: {', '.join(member_names)}")
+    return 0
+
+
 COMMANDS = {
     "create-agent": cmd_create_agent,
     "delete-agent": cmd_delete_agent,
@@ -564,6 +658,7 @@ COMMANDS = {
     "create-team": cmd_create_team,
     "list-teams": cmd_list_teams,
     "delete-team": cmd_delete_team,
+    "team-dispatch": cmd_team_dispatch,
     "permissions": cmd_permissions,
     "approve": cmd_approve,
     "deny": cmd_deny,

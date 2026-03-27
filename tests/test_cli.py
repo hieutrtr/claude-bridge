@@ -12,6 +12,7 @@ from claude_bridge.cli import (
     cmd_dispatch, cmd_status, cmd_kill, cmd_history, cmd_memory,
     cmd_queue, cmd_cancel, cmd_set_model, cmd_cost,
     cmd_create_team, cmd_list_teams, cmd_delete_team,
+    cmd_team_dispatch,
     build_parser,
 )
 from claude_bridge.db import BridgeDB
@@ -799,3 +800,83 @@ class TestDeleteTeam:
 
         assert db.get_agent("backend") is not None
         assert db.get_agent("frontend") is not None
+
+
+class TestTeamDispatch:
+    def _setup_team(self, db, cli_env):
+        """Helper to create agents and a team."""
+        with patch("claude_bridge.cli.init_claude_md", return_value={"success": True, "message": "ok"}):
+            cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="API dev", model=None))
+            project2 = cli_env["home"] / "project2"
+            project2.mkdir(exist_ok=True)
+            cmd_create_agent(db, _Args(name="frontend", path=str(project2), purpose="UI dev", model=None))
+        cmd_create_team(db, _Args(name="fullstack", lead="backend", members="frontend"))
+
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    def test_creates_parent_task_with_team_type(self, mock_spawn, cli_env):
+        db = cli_env["db"]
+        self._setup_team(db, cli_env)
+
+        result = cmd_team_dispatch(db, _Args(name="fullstack", prompt="build user profile"))
+        assert result == 0
+
+        agent = db.get_agent("backend")
+        history = db.get_task_history(agent["session_id"])
+        assert len(history) == 1
+        assert history[0]["task_type"] == "team"
+
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    def test_augmented_prompt_contains_team_context(self, mock_spawn, cli_env):
+        db = cli_env["db"]
+        self._setup_team(db, cli_env)
+
+        cmd_team_dispatch(db, _Args(name="fullstack", prompt="build user profile"))
+
+        # Check the prompt passed to spawn_task contains team context
+        call_args = mock_spawn.call_args
+        prompt = call_args[0][3]  # 4th positional arg is prompt
+        assert "build user profile" in prompt
+        assert "frontend" in prompt
+        assert "UI dev" in prompt
+        assert "bridge-cli" in prompt or "dispatch" in prompt
+
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    def test_spawns_to_lead_agent(self, mock_spawn, cli_env):
+        db = cli_env["db"]
+        self._setup_team(db, cli_env)
+
+        cmd_team_dispatch(db, _Args(name="fullstack", prompt="build it"))
+
+        assert mock_spawn.called
+        call_args = mock_spawn.call_args
+        agent_file = call_args[0][0]  # 1st positional arg
+        assert "backend" in agent_file
+
+    def test_nonexistent_team_errors(self, cli_env):
+        db = cli_env["db"]
+        result = cmd_team_dispatch(db, _Args(name="nope", prompt="do stuff"))
+        assert result == 1
+
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    def test_busy_lead_queues_task(self, mock_spawn, cli_env):
+        db = cli_env["db"]
+        self._setup_team(db, cli_env)
+
+        # First dispatch to make lead busy
+        cmd_team_dispatch(db, _Args(name="fullstack", prompt="task 1"))
+
+        # Second dispatch should queue
+        result = cmd_team_dispatch(db, _Args(name="fullstack", prompt="task 2"))
+        assert result == 0
+
+        agent = db.get_agent("backend")
+        queued = db.get_queued_tasks(agent["session_id"])
+        assert len(queued) == 1
+
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    def test_parser_has_team_dispatch(self, mock_spawn):
+        parser = build_parser()
+        args = parser.parse_args(["team-dispatch", "fullstack", "build it"])
+        assert args.command == "team-dispatch"
+        assert args.name == "fullstack"
+        assert args.prompt == "build it"
