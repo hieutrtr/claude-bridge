@@ -11,6 +11,15 @@ model: {model}
 isolation: worktree
 memory: project
 hooks:
+  PreToolUse:
+    - matcher: "Bash(git push *)"
+      hooks:
+        - type: command
+          command: "PYTHONPATH={src_path} python3 -m claude_bridge.permission_relay --session-id {session_id} --tool Bash --command 'git push'"
+    - matcher: "Bash(rm -rf *)"
+      hooks:
+        - type: command
+          command: "PYTHONPATH={src_path} python3 -m claude_bridge.permission_relay --session-id {session_id} --tool Bash --command 'rm -rf'"
   Stop:
     - hooks:
         - type: command
@@ -42,6 +51,8 @@ def generate_agent_md(
     agent_file_name = f"bridge--{session_id}"
     on_complete_path = os.path.expanduser("~/.claude-bridge/on-complete.py")
 
+    src_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
     return AGENT_TEMPLATE.format(
         agent_file_name=agent_file_name,
         session_id=session_id,
@@ -49,6 +60,7 @@ def generate_agent_md(
         project_dir=project_dir,
         purpose=purpose,
         model=model,
+        src_path=src_path,
         on_complete_path=on_complete_path,
     ).lstrip()
 

@@ -81,6 +81,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("name", nargs="?", default=None, help="Agent name (optional)")
     p.add_argument("--period", default="all", choices=["today", "week", "month", "all"])
 
+    # permissions
+    sub.add_parser("permissions", help="List pending permission requests")
+
+    # approve
+    p = sub.add_parser("approve", help="Approve a permission request")
+    p.add_argument("request_id", help="Permission request ID")
+
+    # deny
+    p = sub.add_parser("deny", help="Deny a permission request")
+    p.add_argument("request_id", help="Permission request ID")
+
     # setup
     sub.add_parser("setup", help="Generate Bridge Bot CLAUDE.md and print setup instructions")
 
@@ -378,6 +389,38 @@ def cmd_set_model(db: BridgeDB, args):
     return 0
 
 
+def cmd_permissions(db: BridgeDB, args):
+    pending = db.get_pending_permissions()
+    if not pending:
+        print("No pending permission requests.")
+        return 0
+
+    print("PENDING PERMISSIONS:")
+    for p in pending:
+        print(f"  [{p['id']}] {p['session_id']}: {p['tool_name']} {p['command']}")
+        if p["description"]:
+            print(f"         {p['description']}")
+    return 0
+
+
+def cmd_approve(db: BridgeDB, args):
+    if db.respond_permission(args.request_id, approved=True):
+        print(f"Permission {args.request_id} approved.")
+        return 0
+    else:
+        print(f"Error: Permission '{args.request_id}' not found or already responded.", file=sys.stderr)
+        return 1
+
+
+def cmd_deny(db: BridgeDB, args):
+    if db.respond_permission(args.request_id, approved=False):
+        print(f"Permission {args.request_id} denied.")
+        return 0
+    else:
+        print(f"Error: Permission '{args.request_id}' not found or already responded.", file=sys.stderr)
+        return 1
+
+
 def cmd_cost(db: BridgeDB, args):
     session_id = None
     if args.name:
@@ -449,6 +492,9 @@ COMMANDS = {
     "cancel": cmd_cancel,
     "set-model": cmd_set_model,
     "cost": cmd_cost,
+    "permissions": cmd_permissions,
+    "approve": cmd_approve,
+    "deny": cmd_deny,
     "setup": cmd_setup,
 }
 

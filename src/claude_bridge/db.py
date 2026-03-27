@@ -48,6 +48,20 @@ CREATE TABLE IF NOT EXISTS tasks (
     reported INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS permissions (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    command TEXT,
+    description TEXT,
+    status TEXT DEFAULT 'pending',
+    response TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    responded_at TIMESTAMP,
+    timeout_seconds INTEGER DEFAULT 300
+);
+
+CREATE INDEX IF NOT EXISTS idx_permissions_status ON permissions(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_unreported ON tasks(status, reported)
@@ -211,6 +225,58 @@ class BridgeDB:
         count = row["count"] or 0
         avg = total / count if count > 0 else 0
         return {"total": total, "count": count, "average": avg}
+
+    # --- Permission operations ---
+
+    def create_permission(
+        self, request_id: str, session_id: str, tool_name: str,
+        command: str = "", description: str = "", timeout_seconds: int = 300,
+    ) -> str:
+        self.conn.execute(
+            """INSERT INTO permissions (id, session_id, tool_name, command, description, timeout_seconds)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (request_id, session_id, tool_name, command, description, timeout_seconds),
+        )
+        self.conn.commit()
+        return request_id
+
+    def get_permission(self, request_id: str) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM permissions WHERE id = ?", (request_id,)
+        ).fetchone()
+
+    def get_pending_permissions(self, session_id: str | None = None) -> list[sqlite3.Row]:
+        if session_id:
+            return self.conn.execute(
+                "SELECT * FROM permissions WHERE status = 'pending' AND session_id = ? ORDER BY created_at",
+                (session_id,),
+            ).fetchall()
+        return self.conn.execute(
+            "SELECT * FROM permissions WHERE status = 'pending' ORDER BY created_at"
+        ).fetchall()
+
+    def respond_permission(self, request_id: str, approved: bool) -> bool:
+        """Respond to a permission request. Returns True if found and updated."""
+        from datetime import datetime
+        response = "approved" if approved else "denied"
+        cursor = self.conn.execute(
+            "UPDATE permissions SET status = ?, response = ?, responded_at = ? WHERE id = ? AND status = 'pending'",
+            (response, response, datetime.now().isoformat(), request_id),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def timeout_permissions(self) -> int:
+        """Auto-deny permissions that exceeded their timeout. Returns count."""
+        from datetime import datetime
+        cursor = self.conn.execute(
+            """UPDATE permissions SET status = 'denied', response = 'timeout',
+               responded_at = ? WHERE status = 'pending'
+               AND (julianday('now') - julianday(created_at)) * 86400 > timeout_seconds""",
+            (datetime.now().isoformat(),),
+        )
+        self.conn.commit()
+        return cursor.rowcount
 
     # --- Queue operations ---
 
