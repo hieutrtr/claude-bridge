@@ -121,7 +121,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--message-id", default=None, help="Channel message ID")
 
     # setup
-    sub.add_parser("setup", help="Generate Bridge Bot CLAUDE.md and print setup instructions")
+    sub.add_parser("setup", help="Print Bridge Bot CLAUDE.md to stdout")
+
+    # setup-cron
+    sub.add_parser("setup-cron", help="Install watcher cron job (runs every minute)")
+
+    # remove-cron
+    sub.add_parser("remove-cron", help="Remove watcher cron job")
 
     return parser
 
@@ -367,6 +373,71 @@ def cmd_setup(db: BridgeDB, args):
     """Print Bridge Bot CLAUDE.md to stdout. Redirect to a file with > CLAUDE.md"""
     from .bridge_bot_claude_md import generate_bridge_bot_claude_md
     print(generate_bridge_bot_claude_md())
+    return 0
+
+
+CRON_MARKER = "# claude-bridge-watcher"
+
+
+def _get_cron_line() -> str:
+    """Get the cron line for the watcher."""
+    src_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    log_path = os.path.expanduser("~/.claude-bridge/watcher.log")
+    return f"* * * * * PYTHONPATH={src_path} python3 -m claude_bridge.watcher >> {log_path} 2>&1 {CRON_MARKER}"
+
+
+def cmd_setup_cron(db: BridgeDB, args):
+    """Install the watcher cron job."""
+    import subprocess
+
+    cron_line = _get_cron_line()
+
+    # Read existing crontab
+    try:
+        result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+        existing = result.stdout if result.returncode == 0 else ""
+    except FileNotFoundError:
+        print("Error: crontab not found.", file=sys.stderr)
+        return 1
+
+    # Check if already installed
+    if CRON_MARKER in existing:
+        print("Watcher cron already installed. Use 'remove-cron' first to reinstall.")
+        return 0
+
+    # Append our cron line
+    new_crontab = existing.rstrip("\n") + "\n" + cron_line + "\n"
+    result = subprocess.run(["crontab", "-"], input=new_crontab, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"Error installing cron: {result.stderr}", file=sys.stderr)
+        return 1
+
+    print(f"Watcher cron installed (runs every minute).")
+    print(f"  Log: ~/.claude-bridge/watcher.log")
+    return 0
+
+
+def cmd_remove_cron(db: BridgeDB, args):
+    """Remove the watcher cron job."""
+    import subprocess
+
+    try:
+        result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+        existing = result.stdout if result.returncode == 0 else ""
+    except FileNotFoundError:
+        print("Error: crontab not found.", file=sys.stderr)
+        return 1
+
+    if CRON_MARKER not in existing:
+        print("No watcher cron found.")
+        return 0
+
+    # Remove our line
+    lines = [l for l in existing.split("\n") if CRON_MARKER not in l]
+    new_crontab = "\n".join(lines).strip() + "\n"
+    subprocess.run(["crontab", "-"], input=new_crontab, capture_output=True, text=True)
+
+    print("Watcher cron removed.")
     return 0
 
 
@@ -701,6 +772,8 @@ COMMANDS = {
     "approve": cmd_approve,
     "deny": cmd_deny,
     "setup": cmd_setup,
+    "setup-cron": cmd_setup_cron,
+    "remove-cron": cmd_remove_cron,
 }
 
 
