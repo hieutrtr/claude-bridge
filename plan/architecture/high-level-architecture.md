@@ -13,38 +13,50 @@
 │                                                                     │
 │   Telegram App                                                      │
 │   ┌───────────────────────────────────────────────────────────┐     │
-│   │  /create-agent backend /projects/api "REST API dev"      │     │
-│   │  /task backend add pagination to /users                  │     │
-│   │  /memory backend                                         │     │
+│   │  /create backend ~/projects/api "REST API dev"           │     │
+│   │  dispatch backend add pagination to /users               │     │
+│   │  what's running?                                         │     │
 │   │                                                          │     │
-│   │  ✓ Task #1 (backend) done in 3m. Added pagination...    │     │
+│   │  ✓ Task #18 (backend) done in 3m — $0.040               │     │
 │   └───────────────────────────────────────────────────────────┘     │
 └────────────────────────────┬────────────────────────────────────────┘
                              │
-                             │ Telegram Bot API (outbound polling)
+                             │ Telegram Bot API
                              │
 ┌────────────────────────────┼────────────────────────────────────────┐
 │                    YOUR MAC                                         │
 │                             │                                       │
 │                             ▼                                       │
 │   ┌─────────────────────────────────────────────┐                  │
-│   │         BRIDGE BOT (Session #0)              │                  │
+│   │            BRIDGE MCP SERVER                 │                  │
+│   │         (Python, long-running)               │                  │
 │   │                                              │                  │
-│   │  Claude Code + Telegram MCP Channel          │                  │
-│   │  ┌────────────────────────────────────────┐  │                  │
-│   │  │  CLAUDE.md (command routing rules)     │  │                  │
-│   │  │  bridge-cli.py (via Bash tool)         │  │                  │
-│   │  │  bridge.db (SQLite)                    │  │                  │
-│   │  └────────────────────────────────────────┘  │                  │
+│   │  ┌──────────┐  ┌──────────┐  ┌──────────┐   │                  │
+│   │  │ Telegram  │  │ Message  │  │ Bridge   │   │                  │
+│   │  │ Poller    │  │ Queue    │  │ Ops      │   │                  │
+│   │  │ (thread)  │  │ (SQLite) │  │ (tools)  │   │                  │
+│   │  └──────────┘  └──────────┘  └──────────┘   │                  │
+│   └──────────────────────┬───────────────────────┘                  │
+│                          │ stdio (MCP protocol)                     │
+│                          │                                          │
+│   ┌──────────────────────▼──────────────────────┐                  │
+│   │         BRIDGE BOT (Claude Code Session)     │                  │
+│   │                                              │                  │
+│   │  CLAUDE.md: intent mapping, onboarding,      │                  │
+│   │            notifications, error recovery      │                  │
+│   │                                              │                  │
+│   │  Uses bridge_* MCP tools:                    │                  │
+│   │    bridge_get_messages()                      │                  │
+│   │    bridge_dispatch(agent, prompt)             │                  │
+│   │    bridge_reply(chat_id, text)                │                  │
+│   │    bridge_status()                            │                  │
 │   └──────────┬──────────────┬──────────────┬─────┘                  │
 │              │              │              │                         │
 │              ▼              ▼              ▼                         │
 │   ┌──────────────┐ ┌──────────────┐ ┌──────────────┐               │
 │   │  Agent #1    │ │  Agent #2    │ │  Agent #3    │               │
-│   │              │ │              │ │              │               │
 │   │  backend     │ │  frontend    │ │  devops      │               │
 │   │  --my-api    │ │  --my-web    │ │  --infra     │               │
-│   │              │ │              │ │              │               │
 │   │  worktree ◆  │ │  worktree ◆  │ │  worktree ◆  │               │
 │   │  session  ◆  │ │  session  ◆  │ │  session  ◆  │               │
 │   │  memory   ◆  │ │  memory   ◆  │ │  memory   ◆  │               │
@@ -53,13 +65,14 @@
 │          └────────────────┼────────────────┘                        │
 │                           │                                         │
 │                           ▼                                         │
-│                  ┌─────────────────┐                                │
-│                  │  Stop Hook      │                                │
-│                  │  on-complete.py │                                │
-│                  │                 │                                │
-│                  │  → SQLite       │                                │
-│                  │  → Telegram     │                                │
-│                  └─────────────────┘                                │
+│                  ┌──────────────────┐                               │
+│                  │  Stop Hook       │                               │
+│                  │  on_complete.py  │                               │
+│                  │                  │                               │
+│                  │  → SQLite        │                               │
+│                  │  → outbound_msg  │─── Bridge MCP sends to       │
+│                  │    queue         │    Telegram                   │
+│                  └──────────────────┘                               │
 │                                                                     │
 │   ◆ = Native Claude Code feature (zero Bridge code)                │
 └─────────────────────────────────────────────────────────────────────┘
@@ -71,18 +84,38 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                      BRIDGE LAYER                             │
-│                   (what we build)                             │
+│                      BRIDGE MCP LAYER                         │
+│                    (messaging backbone)                        │
 │                                                              │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐  │
-│  │ bridge-cli.py│  │on-complete.py│  │   watcher.py      │  │
-│  │              │  │              │  │   (fallback)       │  │
+│  │ Telegram      │  │ Message      │  │ MCP Tools         │  │
+│  │ Poller        │  │ Queue        │  │                   │  │
+│  │               │  │              │  │ bridge_get_msgs   │  │
+│  │ getUpdates    │  │ inbound_msgs │  │ bridge_acknowledge│  │
+│  │ sendMessage   │  │ outbound_msgs│  │ bridge_reply      │  │
+│  │               │  │              │  │ bridge_dispatch   │  │
+│  │ Retry: 3x     │  │ Retry: 5x   │  │ bridge_status     │  │
+│  │ per outbound  │  │ per inbound  │  │ bridge_agents     │  │
+│  │               │  │ (3s timeout) │  │ bridge_history    │  │
+│  └───────────────┘  └──────────────┘  └───────────────────┘  │
+│                                                              │
+│  messages.db (separate from bridge.db)                       │
+└──────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────┐
+│                      BRIDGE CORE LAYER                        │
+│                     (what we've built)                        │
+│                                                              │
+│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐  │
+│  │ cli.py       │  │on_complete.py│  │   watcher.py      │  │
+│  │              │  │              │  │   (cron: 1 min)    │  │
 │  │  create      │  │  Stop hook   │  │                   │  │
-│  │  dispatch    │  │  handler     │  │  PID check for    │  │
-│  │  list/status │  │              │  │  crashed tasks    │  │
-│  │  kill        │  │  Updates DB  │  │                   │  │
-│  │  history     │  │  Prints      │  │  Cron: */5 * * * │  │
-│  │  memory      │  │  report      │  │                   │  │
+│  │  dispatch    │  │  handler     │  │  Dead PID cleanup  │  │
+│  │  list/status │  │              │  │  Timeout (30 min)  │  │
+│  │  kill        │  │  Updates DB  │  │  Retry notifs      │  │
+│  │  history     │  │  Queues      │  │                   │  │
+│  │  teams       │  │  notification│  │                   │  │
+│  │  cost        │  │              │  │                   │  │
 │  └──────┬───────┘  └──────────────┘  └───────────────────┘  │
 │         │                                                    │
 │         ▼                                                    │
@@ -90,10 +123,15 @@
 │  │                    bridge.db (SQLite)                  │   │
 │  │                                                       │   │
 │  │  agents: name, project_dir, session_id, purpose,     │   │
-│  │          state, agent_file                            │   │
+│  │          state, model, total_tasks                    │   │
 │  │                                                       │   │
 │  │  tasks:  id, session_id, prompt, status, pid,        │   │
-│  │          result_file, cost, duration, reported        │   │
+│  │          result_file, cost, duration, channel,        │   │
+│  │          channel_chat_id, task_type, parent_task_id   │   │
+│  │                                                       │   │
+│  │  teams:  name, lead_agent + team_members              │   │
+│  │                                                       │   │
+│  │  notifications: task_id, channel, chat_id, status     │   │
 │  └──────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────┘
 
@@ -103,40 +141,34 @@
 │                                                              │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐  │
 │  │  --agent     │  │  --session-id│  │  isolation:       │  │
-│  │              │  │              │  │  worktree         │  │
-│  │  .md file    │  │  Persistent  │  │                   │  │
-│  │  defines:    │  │  conversation│  │  Each task gets   │  │
-│  │  - role      │  │  across all  │  │  isolated git     │  │
-│  │  - tools     │  │  tasks       │  │  copy of repo     │  │
-│  │  - hooks     │  │              │  │                   │  │
-│  │  - model     │  │  Agent       │  │  No concurrent    │  │
-│  │  - isolation │  │  remembers   │  │  file corruption  │  │
-│  │  - memory    │  │  everything  │  │                   │  │
+│  │  .md file    │  │  UUID per    │  │  worktree         │  │
+│  │  defines:    │  │  task (not   │  │                   │  │
+│  │  - role      │  │  per agent)  │  │  Each task gets   │  │
+│  │  - tools     │  │              │  │  isolated git     │  │
+│  │  - model     │  │  Agent       │  │  copy of repo     │  │
+│  │  - isolation │  │  context     │  │                   │  │
+│  │  - memory    │  │  carries     │  │                   │  │
+│  │              │  │  forward     │  │                   │  │
 │  └──────────────┘  └──────────────┘  └───────────────────┘  │
 │                                                              │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐  │
 │  │  Auto Memory │  │  CLAUDE.md   │  │  Prompt Caching   │  │
 │  │              │  │  Hierarchy   │  │                   │  │
 │  │  Agent auto- │  │              │  │  90% cost         │  │
-│  │  learns:     │  │  Project     │  │  reduction on     │  │
-│  │  - patterns  │  │  instructions│  │  repeated context │  │
-│  │  - prefs     │  │  survive     │  │                   │  │
-│  │  - context   │  │  compaction  │  │  Automatic with   │  │
-│  │              │  │              │  │  --session-id     │  │
-│  │  Readable    │  │  Init: scan  │  │                   │  │
-│  │  via /memory │  │  + purpose   │  │                   │  │
+│  │  learns      │  │  Project     │  │  reduction        │  │
+│  │  patterns    │  │  instructions│  │                   │  │
+│  │              │  │  survive     │  │  Automatic with   │  │
+│  │  Readable    │  │  compaction  │  │  --session-id     │  │
+│  │  via /memory │  │              │  │                   │  │
 │  └──────────────┘  └──────────────┘  └───────────────────┘  │
 │                                                              │
-│  ┌──────────────┐  ┌──────────────────────────────────────┐  │
-│  │  Stop Hook   │  │  Telegram MCP Channel                │  │
-│  │              │  │  (official Anthropic plugin)          │  │
-│  │  Fires when  │  │                                      │  │
-│  │  agent task  │  │  Outbound polling — no webhooks      │  │
-│  │  completes   │  │  Bidirectional messaging              │  │
-│  │              │  │  Inline keyboard buttons              │  │
-│  │  Calls       │  │  File attachments                    │  │
-│  │  on-complete │  │                                      │  │
-│  └──────────────┘  └──────────────────────────────────────┘  │
+│  ┌──────────────┐                                            │
+│  │  Stop Hook   │  NOTE: Hooks must be in project's          │
+│  │              │  .claude/settings.local.json, NOT in        │
+│  │  Fires when  │  agent .md frontmatter (frontmatter        │
+│  │  agent task  │  hooks don't fire in --agent -p mode)      │
+│  │  completes   │                                            │
+│  └──────────────┘                                            │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -154,145 +186,129 @@ A session is the fundamental unit. It is always the pairing of an **agent role**
                     │                ├──→ session_id       │
                     │   Project Path ┘    "backend--my-api"│
                     │                                      │
+                    │   Each task gets unique UUID:         │
+                    │   uuid5(session_id + task_id)        │
                     └──────────┬───────────────────────────┘
                                │
               ┌────────────────┼────────────────┐
               │                │                │
               ▼                ▼                ▼
     ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-    │  Agent .md   │  │  Workspace   │  │  Claude Code │
-    │              │  │              │  │  Session     │
-    │  Role &      │  │  Task        │  │              │
-    │  tools &     │  │  results &   │  │  --session-id│
-    │  hooks &     │  │  logs        │  │  Persistent  │
-    │  permissions │  │              │  │  context     │
-    │              │  │  ~/.claude-  │  │              │
-    │  ~/.claude/  │  │  bridge/     │  │  Auto Memory │
-    │  agents/     │  │  workspaces/ │  │  ~/.claude/  │
-    │              │  │  {session}/  │  │  projects/   │
+    │  Agent .md   │  │  Workspace   │  │  Stop Hook   │
+    │              │  │              │  │              │
+    │  Role &      │  │  Task        │  │  Project's   │
+    │  tools &     │  │  results &   │  │  .claude/    │
+    │  model       │  │  logs        │  │  settings    │
+    │              │  │              │  │  .local.json │
+    │  ~/.claude/  │  │  ~/.claude-  │  │              │
+    │  agents/     │  │  bridge/     │  │  Installed   │
+    │              │  │  workspaces/ │  │  per project │
     └──────────────┘  └──────────────┘  └──────────────┘
 
-    BRIDGE GENERATES    BRIDGE MANAGES     CLAUDE CODE OWNS
-```
-
-### Session Combinations
-
-```
-┌──────────┬─────────────────┬──────────────────────┐
-│  Agent   │  Project        │  Session ID          │
-├──────────┼─────────────────┼──────────────────────┤
-│ backend  │ /projects/api   │ backend--api         │
-│ backend  │ /projects/other │ backend--other       │
-│ frontend │ /projects/api   │ frontend--api        │
-│ devops   │ /projects/infra │ devops--infra        │
-└──────────┴─────────────────┴──────────────────────┘
-
-Each row = independent session with own context, memory, workspace
+    BRIDGE GENERATES    BRIDGE MANAGES     BRIDGE INSTALLS
 ```
 
 ---
 
 ## 4. Data Flow
 
-### 4.1 Create Agent
+### 4.1 Inbound Message (with Bridge MCP)
 
 ```
-Telegram                Bridge Bot              bridge-cli.py          Claude Code
-   │                        │                        │                      │
-   │  /create-agent         │                        │                      │
-   │  backend /path "purpose"                        │                      │
-   │───────────────────────▶│                        │                      │
-   │                        │  Bash: create-agent    │                      │
-   │                        │───────────────────────▶│                      │
-   │                        │                        │                      │
-   │                        │                        │  1. Validate path    │
-   │                        │                        │  2. Derive session   │
-   │                        │                        │     ID               │
-   │                        │                        │                      │
-   │                        │                        │  3. Generate         │
-   │                        │                        │     agent .md file   │
-   │                        │                        │──────────────────────│
-   │                        │                        │     ~/.claude/agents/│
-   │                        │                        │                      │
-   │                        │                        │  4. CLAUDE.md init   │
-   │                        │                        │───────────────────▶  │
-   │                        │                        │   claude -p "scan    │
-   │                        │                        │   project + inject   │
-   │                        │                        │   purpose"           │
-   │                        │                        │  ◀───────────────────│
-   │                        │                        │   CLAUDE.md written  │
-   │                        │                        │                      │
-   │                        │                        │  5. Create workspace │
-   │                        │                        │  6. Insert SQLite    │
-   │                        │                        │                      │
-   │                        │  ◀─────────────────────│  Output: "created"   │
-   │  ◀────────────────────│  Relay output           │                      │
-   │  "Agent created..."   │                        │                      │
+Telegram          Bridge MCP              Bridge Bot           bridge-cli
+   │                   │                      │                    │
+   │  "dispatch        │                      │                    │
+   │   backend         │                      │                    │
+   │   add pagination" │                      │                    │
+   │──────────────────▶│                      │                    │
+   │                   │                      │                    │
+   │                   │  Store in            │                    │
+   │                   │  inbound_messages    │                    │
+   │                   │  (status=pending)    │                    │
+   │                   │                      │                    │
+   │                   │  bridge_get_messages()                    │
+   │                   │◀─────────────────────│                    │
+   │                   │──────────────────────▶ msg returned       │
+   │                   │                      │                    │
+   │                   │                      │ parse intent       │
+   │                   │                      │ "dispatch backend  │
+   │                   │                      │  add pagination"   │
+   │                   │                      │                    │
+   │                   │  bridge_dispatch(                         │
+   │                   │    agent="backend",  │                    │
+   │                   │    prompt="add..")   │                    │
+   │                   │◀─────────────────────│                    │
+   │                   │                      │                    │
+   │                   │                      ├───────────────────▶│
+   │                   │                      │  dispatch backend  │
+   │                   │                      │  "add pagination"  │
+   │                   │                      │◀───────────────────│
+   │                   │                      │  Task #18 PID 123  │
+   │                   │                      │                    │
+   │                   │  bridge_reply(chat_id,                    │
+   │                   │    "⏳ Task #18...")  │                    │
+   │                   │◀─────────────────────│                    │
+   │◀──────────────────│  sendMessage         │                    │
+   │  "⏳ Task #18     │                      │                    │
+   │   dispatched"     │                      │                    │
+   │                   │                      │                    │
+   │                   │  bridge_acknowledge(msg_id)               │
+   │                   │◀─────────────────────│                    │
+   │                   │  mark acknowledged   │                    │
 ```
 
-### 4.2 Dispatch Task
+### 4.2 Task Completion
 
 ```
-Telegram                Bridge Bot              bridge-cli.py          Claude Code
-   │                        │                        │                      │
-   │  /task backend         │                        │                      │
-   │  add pagination        │                        │                      │
-   │───────────────────────▶│                        │                      │
-   │                        │  Bash: dispatch        │                      │
-   │                        │───────────────────────▶│                      │
-   │                        │                        │                      │
-   │                        │                        │  1. Look up agent    │
-   │                        │                        │  2. Check not busy   │
-   │                        │                        │  3. Insert task row  │
-   │                        │                        │                      │
-   │                        │                        │  4. Spawn subprocess │
-   │                        │                        │───────────────────▶  │
-   │                        │                        │   claude             │
-   │                        │                        │     --agent ...      │
-   │                        │                        │     --session-id ... │
-   │                        │                        │     --worktree ...   │
-   │                        │                        │     -p "prompt"      │
-   │                        │                        │                      │
-   │                        │                        │  5. Store PID        │
-   │                        │                        │  6. Update SQLite    │
-   │                        │                        │                      │
-   │                        │  ◀─────────────────────│  "Task #1 dispatched"│
-   │  ◀────────────────────│  Relay                  │                      │
-   │  "Task #1 dispatched"  │                        │                      │
-   │                        │                        │                      │
-   │                        │                        │         ┌────────────│
-   │                        │                        │         │ Agent runs │
-   │                        │                        │         │ in worktree│
-   │                        │                        │         │ with full  │
-   │                        │                        │         │ context... │
-   │                        │                        │         └────────────│
+Claude Code         on_complete.py      messages.db         Bridge MCP       Telegram
+   │                     │                   │                   │               │
+   │  Agent finishes     │                   │                   │               │
+   │  Stop hook fires    │                   │                   │               │
+   │────────────────────▶│                   │                   │               │
+   │                     │                   │                   │               │
+   │                     │ 1. Parse result   │                   │               │
+   │                     │ 2. Update         │                   │               │
+   │                     │    bridge.db      │                   │               │
+   │                     │    (task=done)    │                   │               │
+   │                     │                   │                   │               │
+   │                     │ 3. Queue outbound │                   │               │
+   │                     │──────────────────▶│                   │               │
+   │                     │  INSERT outbound  │                   │               │
+   │                     │  (notification)   │                   │               │
+   │                     │                   │                   │               │
+   │                     │                   │  poller reads     │               │
+   │                     │                   │◀──────────────────│               │
+   │                     │                   │                   │               │
+   │                     │                   │                   │──────────────▶│
+   │                     │                   │                   │  sendMessage  │
+   │                     │                   │                   │               │
+   │                     │                   │                   │  "✓ Task #18  │
+   │                     │                   │                   │   done $0.04" │
 ```
 
-### 4.3 Task Completion
+### 4.3 Delivery Retry (Inbound)
 
 ```
-Claude Code             on-complete.py           SQLite              Bridge Bot → Telegram
-   │                        │                      │                      │
-   │  Agent finishes        │                      │                      │
-   │  Stop hook fires       │                      │                      │
-   │───────────────────────▶│                      │                      │
-   │                        │                      │                      │
-   │                        │  1. Parse result JSON │                      │
-   │                        │  2. Update task       │                      │
-   │                        │─────────────────────▶│                      │
-   │                        │     status=done       │                      │
-   │                        │     summary=...       │                      │
-   │                        │     cost=$0.04        │                      │
-   │                        │                      │                      │
-   │                        │  3. Update agent      │                      │
-   │                        │─────────────────────▶│                      │
-   │                        │     state=idle        │                      │
-   │                        │                      │                      │
-   │                        │  4. Print report      │                      │
-   │                        │─────────────────────────────────────────────▶│
-   │                        │  "✓ Task #1 done..."  │                      │
-   │                        │                      │                 ─────▶│
-   │                        │                      │           Telegram msg│
+Bridge MCP                              Claude Code
+   │                                        │
+   │  Msg queued (pending)                  │
+   │                                        │
+   │  ── Attempt 1 ──                       │
+   │  bridge_get_messages → delivered       │
+   │─────────────────────────────────────▶  │ (busy processing)
+   │                                        │
+   │  ... 3s timeout, no acknowledge ...    │
+   │                                        │
+   │  ── Attempt 2 ──                       │
+   │  Reset to pending, redeliver           │
+   │─────────────────────────────────────▶  │
+   │                                        │
+   │  bridge_acknowledge(id)                │
+   │◀───────────────────────────────────────│
+   │  ✓ Done                                │
+   │                                        │
+   │  (max 5 retries, then mark failed      │
+   │   and notify user "message lost")      │
 ```
 
 ---
@@ -303,51 +319,54 @@ Claude Code             on-complete.py           SQLite              Bridge Bot 
 YOUR MAC
 │
 ├── ~/.claude-bridge/                          ◄── BRIDGE HOME
-│   ├── CLAUDE.md                              Bridge Bot instructions
-│   ├── bridge-cli.py                          CLI dispatcher (250 lines)
-│   ├── on-complete.py                         Stop hook handler (30 lines)
-│   ├── watcher.py                             Fallback PID checker (50 lines)
-│   ├── bridge.db                              SQLite (agents + tasks)
-│   ├── config.yaml                            Global config
+│   ├── bridge.db                              SQLite (agents, tasks, teams, notifs)
+│   ├── messages.db                            SQLite (inbound, outbound messages)
+│   ├── config.json                            Bot token, settings
+│   ├── watcher.log                            Cron watcher output
 │   │
 │   └── workspaces/                            ◄── PER-SESSION STORAGE
 │       ├── backend--my-api/
-│       │   ├── metadata.json                  Session creation info
 │       │   └── tasks/
-│       │       ├── task-1-result.json          Claude JSON output
-│       │       ├── task-1-stderr.log           Stderr capture
-│       │       └── ...
+│       │       ├── task-1-result.json
+│       │       └── task-1-stderr.log
 │       └── frontend--my-web/
 │           └── tasks/
-│               └── ...
 │
 ├── ~/.claude/                                 ◄── CLAUDE CODE HOME
-│   ├── agents/                                Native agent definitions
+│   ├── agents/                                Agent definitions
 │   │   ├── bridge--backend--my-api.md         Generated by Bridge
-│   │   ├── bridge--frontend--my-web.md        Generated by Bridge
-│   │   └── ...
+│   │   └── bridge--frontend--my-web.md
+│   │
+│   ├── channels/telegram/                     Telegram access control
+│   │   └── access.json                        allowlist (user IDs)
 │   │
 │   └── projects/                              ◄── AUTO MEMORY (native)
-│       ├── <encoded-my-api-path>/
-│       │   └── memory/
-│       │       ├── MEMORY.md                  Agent's learned knowledge
-│       │       ├── api_patterns.md            Topic files
-│       │       └── testing.md
-│       └── <encoded-my-web-path>/
+│       └── <encoded-path>/
 │           └── memory/
 │               └── MEMORY.md
 │
-└── ~/projects/                                ◄── YOUR PROJECTS
-    ├── my-api/
-    │   ├── CLAUDE.md                          Generated on create-agent
-    │   ├── .claude/worktrees/                 Task worktrees (native)
-    │   │   ├── task-1/                        Isolated git copy
-    │   │   └── task-2/
-    │   └── src/...                            Your code
-    │
-    └── my-web/
-        ├── CLAUDE.md                          Generated on create-agent
-        └── src/...
+├── ~/projects/bridge-bot/                     ◄── BRIDGE BOT PROJECT
+│   ├── .mcp.json                              Bridge MCP server config
+│   └── CLAUDE.md                              Generated routing rules
+│
+├── ~/projects/claude-bridge/                  ◄── BRIDGE SOURCE
+│   └── src/claude_bridge/
+│       ├── cli.py                             CLI (all commands)
+│       ├── db.py                              SQLite ops
+│       ├── dispatcher.py                      Task spawner
+│       ├── on_complete.py                     Stop hook handler
+│       ├── notify.py                          Notification delivery
+│       ├── channel.py                         Multi-channel formatting
+│       ├── watcher.py                         Cron fallback
+│       ├── mcp_server.py                      Bridge MCP server (new)
+│       ├── agent_md.py                        Agent .md generator
+│       ├── session.py                         Session model
+│       └── bridge_bot_claude_md.py            CLAUDE.md generator
+│
+└── ~/projects/my-api/                         ◄── USER PROJECT
+    ├── CLAUDE.md                              Generated on agent create
+    └── .claude/
+        └── settings.local.json               Stop hook installed here
 ```
 
 ### Ownership Boundaries
@@ -358,175 +377,163 @@ YOUR MAC
 │  (we create & manage)     │  (native, we only read)     │
 ├───────────────────────────┼─────────────────────────────┤
 │  ~/.claude-bridge/*       │  ~/.claude/projects/*/      │
-│  bridge.db                │    memory/ (Auto Memory)    │
+│  bridge.db, messages.db   │    memory/ (Auto Memory)    │
 │  workspaces/              │                             │
-│  bridge-cli.py            │  Project worktrees          │
-│  on-complete.py           │    .claude/worktrees/       │
-│                           │                             │
-│  BRIDGE GENERATES         │  CLAUDE CODE GENERATES      │
-│  (we write, CC reads)     │  (CC writes, we read)       │
-├───────────────────────────┼─────────────────────────────┤
-│  ~/.claude/agents/        │  Auto Memory files          │
-│    bridge--*.md           │  Session JSONL files        │
-│                           │  Worktree contents          │
-│  Project CLAUDE.md        │                             │
-│    (on create-agent)      │                             │
+│  config.json              │  Project worktrees          │
+│                           │    .claude/worktrees/       │
+│  BRIDGE GENERATES         │                             │
+│  (we write, CC reads)     │  CLAUDE CODE GENERATES      │
+├───────────────────────────┤  (CC writes, we read)       │
+│  ~/.claude/agents/        ├─────────────────────────────┤
+│    bridge--*.md           │  Auto Memory files          │
+│                           │  Session JSONL files        │
+│  Project CLAUDE.md        │  Worktree contents          │
+│  .claude/settings.local   │                             │
+│    .json (Stop hook)      │                             │
 └───────────────────────────┴─────────────────────────────┘
 ```
 
 ---
 
-## 6. Agent .md File (Native Format)
+## 6. Stop Hook (Critical Detail)
 
-Bridge generates one per session in `~/.claude/agents/`:
+**Hooks in agent .md frontmatter DO NOT fire in `--agent -p` mode.**
 
+Stop hooks must be in the project's `.claude/settings.local.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PYTHONPATH=/path/to/src /opt/homebrew/bin/python3 -m claude_bridge.on_complete --session-id backend--my-api"
+          }
+        ]
+      }
+    ]
+  }
+}
 ```
-┌─────────────────────────────────────────────────────────┐
-│  ~/.claude/agents/bridge--backend--my-api.md             │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  ---                                   ◄── YAML        │
-│  name: bridge--backend--my-api             frontmatter  │
-│  description: "API dev, REST, DB migrations"            │
-│  tools: Read, Edit, Write, Bash, Grep, Glob             │
-│  model: sonnet                                          │
-│  isolation: worktree              ◄── safe concurrency  │
-│  memory: project                  ◄── Auto Memory on    │
-│  hooks:                                                 │
-│    Stop:                          ◄── completion notify  │
-│      - hooks:                                           │
-│          - type: command                                │
-│            command: "python3 ~/.claude-bridge/           │
-│              on-complete.py --session-id backend--my-api"│
-│  ---                                                    │
-│                                                         │
-│  # Agent: backend                      ◄── Markdown     │
-│  Project: /Users/hieutran/projects/my-api   body =      │
-│  Purpose: API development, REST endpoints   system      │
-│                                             prompt      │
-│  ## Working Style                                       │
-│  - Complete the task fully before stopping              │
-│  - Run tests if the project has them                    │
-│  - Summarize what you changed when done                 │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
-```
+
+Key requirements:
+- **Absolute python path** — cron/hooks may use system Python 3.9, need 3.11+
+- **Nested format** — `{hooks: [{hooks: [{type, command}]}]}` (not flat)
+- **Installed per project** — `install_stop_hook(project_dir, session_id)` on agent creation
+- **`from __future__ import annotations`** in all modules for Python 3.9 compat
 
 ---
 
-## 7. CLAUDE.md Init (Purpose-Driven)
-
-When creating an agent, Bridge runs a one-shot Claude Code task to generate CLAUDE.md:
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  CLAUDE.md INIT PROCESS                                  │
-│                                                         │
-│  Input:                                                 │
-│    project_dir = /projects/my-api                       │
-│    purpose = "API development, REST endpoints"          │
-│                                                         │
-│  Step 1: claude -p scans project                        │
-│    ┌────────────────────────────────────────┐           │
-│    │  Reads: package.json, tsconfig,       │           │
-│    │  Dockerfile, .eslintrc, README,       │           │
-│    │  directory structure, test files...   │           │
-│    └────────────────────────────────────────┘           │
-│                                                         │
-│  Step 2: Generates CLAUDE.md with both                  │
-│    ┌────────────────────────────────────────┐           │
-│    │  PROJECT CONTEXT (from scan)          │           │
-│    │  - Overview: Express.js + TS + Prisma │           │
-│    │  - Build: npm run build               │           │
-│    │  - Test: npm test (Jest + supertest)  │           │
-│    │  - Lint: npm run lint (ESLint)        │           │
-│    │  - Structure: src/routes, src/models  │           │
-│    │  - Conventions: camelCase, Zod valid  │           │
-│    │                                        │           │
-│    │  AGENT CONTEXT (from purpose)         │           │
-│    │  - Purpose: API dev, REST, DB         │           │
-│    │  - Focus areas for this agent         │           │
-│    └────────────────────────────────────────┘           │
-│                                                         │
-│  Output: /projects/my-api/CLAUDE.md                     │
-│                                                         │
-│  If CLAUDE.md already exists:                           │
-│    → Append agent context section only                  │
-│    → Don't overwrite existing content                   │
-└─────────────────────────────────────────────────────────┘
-```
-
----
-
-## 8. Task Lifecycle
+## 7. Task Lifecycle
 
 ```
                     ┌───────────┐
                     │  PENDING  │  Task created in SQLite
                     └─────┬─────┘
-                          │ subprocess.Popen spawns claude
+                          │ Popen: claude --agent --session-id -p
                           ▼
                     ┌───────────┐
-                    │  RUNNING  │  PID tracked, agent working
-                    └─────┬─────┘
-                          │
-              ┌───────────┼───────────┬───────────┐
-              │           │           │           │
-              ▼           ▼           ▼           ▼
-        ┌──────────┐ ┌──────────┐ ┌─────────┐ ┌──────────┐
-        │   DONE   │ │  FAILED  │ │ TIMEOUT │ │  KILLED  │
-        │          │ │          │ │         │ │          │
-        │ Stop hook│ │ Stop hook│ │ Watcher │ │ /kill    │
-        │ fires    │ │ fires    │ │ detects │ │ command  │
-        │ result   │ │ is_error │ │ > 30min │ │ SIGTERM  │
-        │ parsed   │ │ = true   │ │ kills   │ │          │
-        └────┬─────┘ └────┬─────┘ └────┬────┘ └────┬─────┘
-             │            │            │            │
-             └────────────┴────────────┴────────────┘
-                          │
-                          ▼
-                    ┌───────────┐
-                    │ REPORTED  │  Sent to Telegram
-                    └───────────┘
+                  ┌─│  RUNNING  │  PID tracked, agent working
+                  │ └─────┬─────┘
+                  │       │
+                  │ ┌─────┼───────────┬───────────┐
+                  │ │     │           │           │
+                  │ ▼     ▼           ▼           ▼
+                  │┌────────┐ ┌──────────┐ ┌─────────┐ ┌──────────┐
+                  ││  DONE  │ │  FAILED  │ │ TIMEOUT │ │  KILLED  │
+                  ││        │ │          │ │         │ │          │
+                  ││Stop    │ │Stop hook │ │Watcher  │ │/kill cmd │
+                  ││hook    │ │+ is_error│ │> 30 min │ │SIGTERM   │
+                  │└───┬────┘ └────┬─────┘ └────┬────┘ └────┬─────┘
+                  │    │           │            │            │
+ Agent busy?      │    └───────────┴────────────┴────────────┘
+ Queue instead ───┘                │
+                          ┌────────▼─────────┐
+   ┌───────────┐          │  NOTIFICATION    │
+   │  QUEUED   │          │  → outbound_msgs │
+   │           │          │  → Telegram      │
+   │ position  │          └──────────────────┘
+   │ tracked   │
+   │ auto-     │
+   │ dequeue   │
+   └───────────┘
 ```
 
 ---
 
-## 9. Completion Detection (Dual Mechanism)
+## 8. Notification Flow (Dual Path)
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                                                         │
-│  PRIMARY: Stop Hook (immediate)                         │
-│  ─────────────────────────────                          │
-│  Agent .md frontmatter includes:                        │
-│    hooks:                                               │
-│      Stop:                                              │
-│        - type: command                                  │
-│          command: on-complete.py --session-id ...        │
+│  PATH 1: Stop Hook (immediate)                          │
+│  ──────────────────────────────                         │
+│  Agent finishes → settings.local.json hook fires        │
+│  → on_complete.py                                       │
+│    → updates bridge.db (task=done, cost, summary)       │
+│    → queues outbound notification (messages.db)         │
+│    → marks task as reported                             │
 │                                                         │
-│  ✓ Fires immediately when task ends                     │
-│  ✓ Works for success and failure                        │
-│  ✓ No polling needed                                    │
-│  ✗ Won't fire if process is SIGKILL'd or crashes hard   │
+│  Bridge MCP poller picks up outbound → sends Telegram   │
 │                                                         │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
-│  FALLBACK: Watcher (cron, every 5 min)                  │
-│  ─────────────────────────────────────                  │
-│  Catches edge cases:                                    │
-│    - Process killed externally (SIGKILL)                │
-│    - Hook script fails                                  │
-│    - Zombie processes                                   │
-│    - Timeout detection (> 30 min)                       │
+│  PATH 2: Watcher (cron, every 1 minute)                 │
+│  ──────────────────────────────────────                  │
+│  Catches when Stop hook fails:                          │
+│    - Process crashed (SIGKILL)                          │
+│    - Hook script errored                                │
+│    - Timeout (> 30 min → kill)                          │
 │                                                         │
-│  Logic:                                                 │
-│    SELECT * FROM tasks WHERE status = 'running'         │
-│    For each: os.kill(pid, 0) → alive?                   │
-│    If dead + not updated by hook → mark failed          │
-│    If running > 30 min → kill + mark timeout            │
+│  Also: retries failed notification deliveries           │
+│                                                         │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  PATH 3: Proactive check (Bridge Bot)                   │
+│  ────────────────────────────────────                    │
+│  After every user interaction, CLAUDE.md instructs:     │
+│    bridge_get_notifications() → report any completions  │
+│                                                         │
+│  This catches completions even if Telegram send failed  │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 9. Agent Teams
+
+```
+/create-team fullstack --lead backend --members frontend
+
+┌──────────────────────────────────────────────────────┐
+│  TEAM: fullstack                                      │
+│                                                       │
+│  ┌──────────────────┐                                │
+│  │  Lead: backend   │  Receives augmented prompt:    │
+│  │                  │  - Original task                │
+│  │  Decomposes task │  - Teammate list + purposes     │
+│  │  Dispatches to   │  - How to dispatch sub-tasks    │
+│  │  teammates       │                                │
+│  └────────┬─────────┘                                │
+│           │                                           │
+│     ┌─────┴─────┐                                    │
+│     ▼           ▼                                    │
+│  ┌────────┐  ┌────────┐                              │
+│  │frontend│  │backend │  Sub-tasks linked via        │
+│  │sub-task│  │sub-task│  parent_task_id               │
+│  └───┬────┘  └───┬────┘                              │
+│      │           │                                    │
+│      └─────┬─────┘                                   │
+│            ▼                                          │
+│  ┌──────────────────┐                                │
+│  │  All done?       │  on_complete checks siblings   │
+│  │  Aggregate cost  │  Marks parent task done         │
+│  │  Merge summaries │  Total cost = sum of all        │
+│  └──────────────────┘                                │
+└──────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -536,103 +543,45 @@ When creating an agent, Bridge runs a one-shot Claude Code task to generate CLAU
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  LAYER 1: Telegram Auth                                  │
-│  Only allowed_users can message the bot                  │
-│  Configured in Telegram MCP plugin settings              │
+│  access.json allowlist — only paired user IDs            │
+│  Bridge MCP validates chat_id before processing          │
 ├─────────────────────────────────────────────────────────┤
 │  LAYER 2: Agent Permissions                              │
-│  Each agent .md defines allowed tools:                   │
-│    tools: Read, Edit, Write, Bash, Grep, Glob           │
-│    disallowedTools: Bash(rm -rf *), Bash(git push -f *)  │
+│  --dangerously-skip-permissions for autonomous tasks     │
+│  PreToolUse hooks for dangerous commands (git push, rm)  │
 ├─────────────────────────────────────────────────────────┤
 │  LAYER 3: Worktree Isolation                             │
 │  Each task runs in isolated git worktree                 │
 │  Changes don't affect main branch until reviewed         │
 ├─────────────────────────────────────────────────────────┤
-│  LAYER 4: Network Security                               │
-│  Telegram MCP uses outbound polling only                 │
-│  No inbound ports, no webhooks exposed                   │
+│  LAYER 4: Network                                        │
+│  Telegram: outbound polling only (no webhooks)           │
+│  Bot token in config.json (not committed to git)         │
 │  Everything runs locally on your machine                 │
 └─────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 11. Build vs Leverage Summary
+## 11. Migration Path (Current → Bridge MCP)
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                                                                  │
-│  WHAT WE BUILD                    WHAT CLAUDE CODE PROVIDES      │
-│  (~425 lines of Python)          (zero Bridge code)              │
-│                                                                  │
-│  ┌────────────────────┐          ┌────────────────────────────┐  │
-│  │  bridge-cli.py     │          │  --agent .md files         │  │
-│  │  250 lines         │          │  Identity, tools, hooks,   │  │
-│  │                    │          │  model, permissions        │  │
-│  │  Agent CRUD        │          ├────────────────────────────┤  │
-│  │  CLAUDE.md init    │          │  --session-id              │  │
-│  │  .md generation    │          │  Persistent context        │  │
-│  │  Task dispatch     │          │  across all tasks          │  │
-│  │  Status queries    │          ├────────────────────────────┤  │
-│  │  Memory reader     │          │  isolation: worktree       │  │
-│  ├────────────────────┤          │  Safe concurrent tasks     │  │
-│  │  on-complete.py    │          ├────────────────────────────┤  │
-│  │  30 lines          │          │  Auto Memory + AutoDream   │  │
-│  │                    │          │  Agent learns patterns     │  │
-│  │  Stop hook handler │          │  Readable via /memory      │  │
-│  │  SQLite updater    │          ├────────────────────────────┤  │
-│  │  Report printer    │          │  Stop hook                 │  │
-│  ├────────────────────┤          │  Completion detection      │  │
-│  │  watcher.py        │          ├────────────────────────────┤  │
-│  │  50 lines          │          │  Prompt caching            │  │
-│  │                    │          │  90% cost savings          │  │
-│  │  Fallback only     │          ├────────────────────────────┤  │
-│  │  Cron: */5 * * *   │          │  Telegram MCP Channel      │  │
-│  ├────────────────────┤          │  Official Anthropic plugin │  │
-│  │  CLAUDE.md         │          ├────────────────────────────┤  │
-│  │  60 lines          │          │  CLAUDE.md hierarchy       │  │
-│  │                    │          │  Survives compaction       │  │
-│  │  Bridge Bot        │          │  Loaded every session      │  │
-│  │  command routing   │          └────────────────────────────┘  │
-│  ├────────────────────┤                                          │
-│  │  bridge.db schema  │                                          │
-│  │  25 lines          │                                          │
-│  │                    │                                          │
-│  │  SQLite: agents    │                                          │
-│  │  + tasks tracking  │                                          │
-│  └────────────────────┘                                          │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-```
+CURRENT (shell-out mode)              TARGET (Bridge MCP mode)
+─────────────────────────              ────────────────────────
 
----
+Telegram MCP plugin                   Bridge MCP server
+  (--channels flag needed)              (started via .mcp.json)
 
-## 12. Phase 2+ Extensions
+CLAUDE.md with Bash commands          CLAUDE.md with bridge_* tools
+  PYTHONPATH=... python3 -m ...         bridge_dispatch(agent, prompt)
 
-```
-┌──────────────────────────────────────────────────────────┐
-│  PHASE 2 (leverage more native features)                  │
-│                                                          │
-│  ┌──────────────┐  ┌──────────────┐  ┌───────────────┐  │
-│  │ Task Queue   │  │ Permission   │  │ Model Routing │  │
-│  │              │  │ Relay        │  │               │  │
-│  │ Queue tasks  │  │ Hook-based   │  │ Sonnet for    │  │
-│  │ when agent   │  │ Telegram     │  │ routine,      │  │
-│  │ busy         │  │ approval     │  │ Opus for      │  │
-│  │              │  │              │  │ complex       │  │
-│  └──────────────┘  └──────────────┘  └───────────────┘  │
-│                                                          │
-├──────────────────────────────────────────────────────────┤
-│  PHASE 3 (native Claude Code features)                   │
-│                                                          │
-│  ┌──────────────┐  ┌──────────────┐  ┌───────────────┐  │
-│  │ Agent Teams  │  │ Multi-Channel│  │ Cost          │  │
-│  │              │  │              │  │ Dashboard     │  │
-│  │ Coordinate   │  │ Discord,     │  │               │  │
-│  │ lead +       │  │ Slack via    │  │ Track spend   │  │
-│  │ teammates    │  │ native       │  │ per agent     │  │
-│  │ for complex  │  │ Channels     │  │ and project   │  │
-│  │ tasks        │  │              │  │               │  │
-│  └──────────────┘  └──────────────┘  └───────────────┘  │
-└──────────────────────────────────────────────────────────┘
+on_complete.py → direct Bot API       on_complete.py → outbound queue
+                                        Bridge MCP sends to Telegram
+
+watcher.py → direct Bot API           watcher.py → outbound queue
+
+No message retry                      5x retry with 3s timeout
+
+Bridge Bot: claude --channels ...     Bridge Bot: claude
+  --dangerously-skip-permissions        --dangerously-skip-permissions
 ```
