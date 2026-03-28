@@ -87,59 +87,83 @@ PYTHONPATH=src python3 -m claude_bridge.cli setup > ~/projects/bridge-bot/CLAUDE
 
 This creates a CLAUDE.md that tells the Bridge Bot how to parse Telegram commands and run bridge-cli.
 
-### 6. Install the Telegram MCP plugin
+### 6. Install the Telegram MCP plugin source (once per machine)
 
-Start Claude Code inside the bridge-bot folder:
+The Telegram plugin is a small Bun server. You need the source code on your machine — this is shared across all projects, but each project configures its own bot token.
+
+```bash
+# Clone the official plugins repo
+git clone https://github.com/anthropics/claude-code-plugins.git ~/.claude/telegram-plugin
+
+# Install dependencies
+cd ~/.claude/telegram-plugin/external_plugins/telegram
+bun install
+```
+
+> **Already have it?** If you previously ran `/plugin install telegram@claude-plugins-official`
+> inside Claude Code, the source is already at
+> `~/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/telegram/`.
+> You can use that path instead — just make sure `bun install` has been run there.
+
+### 7. Configure Telegram MCP per-project
+
+Create a `.mcp.json` in your bridge-bot folder. This is **project-local** — each project can have its own bot token, so you can run multiple bots for different projects.
+
+```bash
+cat > ~/projects/bridge-bot/.mcp.json << 'MCPEOF'
+{
+  "mcpServers": {
+    "telegram": {
+      "type": "stdio",
+      "command": "bun",
+      "args": ["run", "--silent", "start"],
+      "cwd": "~/.claude/telegram-plugin/external_plugins/telegram",
+      "env": {
+        "TELEGRAM_BOT_TOKEN": "<your-bot-token>"
+      }
+    }
+  }
+}
+MCPEOF
+```
+
+Replace `<your-bot-token>` with the token from step 3.
+
+If you used the path from `/plugin install` instead, change `cwd` to:
+```
+~/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/telegram
+```
+
+> **Multiple bots:** Each bridge-bot project gets its own `.mcp.json` with its own
+> `TELEGRAM_BOT_TOKEN`. You can run `bridge-bot-1/`, `bridge-bot-2/`, etc., each
+> with a different Telegram bot.
+
+### 8. Start the Bridge Bot and pair
 
 ```bash
 cd ~/projects/bridge-bot
 claude
 ```
 
-Inside the Claude Code session, install the official Telegram plugin:
+Claude Code reads `.mcp.json` and starts the Telegram plugin. On your phone, DM your bot (send any message). The bot replies with a 6-character pairing code.
 
-```
-/plugin install telegram@claude-plugins-official
-```
-
-Claude Code downloads the plugin to `~/.claude/plugins/` and installs its dependencies automatically.
-
-Then configure your bot token:
-
-```
-/telegram:configure <your-bot-token>
-```
-
-Replace `<your-bot-token>` with the token from step 3.
-
-This saves the token and connects to Telegram. You should see the plugin status change to connected.
-
-> **What just happened:** Claude Code installed the Telegram plugin source to
-> `~/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/telegram/`,
-> ran `bun install` to fetch its dependencies, and saved your bot token.
-> The plugin is now available in this project. You only need to do this once.
-
-### 7. Pair your Telegram account
-
-On your phone, open Telegram and DM your bot (send any message like "hello"). The bot replies with a 6-character pairing code.
-
-Back in the Claude Code session, approve the pairing:
+In the Claude Code session:
 
 ```
 /telegram:access pair <code>
 ```
 
-Then lock access so only you can use the bot:
+Lock access so only you can use the bot:
 
 ```
 /telegram:access policy allowlist
 ```
 
-### 8. Verify it works
+### 9. Verify it works
 
 Send `/help` to your bot on Telegram. The Bridge Bot should reply with available commands.
 
-### 9. Create your first agent
+### 10. Create your first agent
 
 From Telegram:
 
@@ -149,7 +173,7 @@ From Telegram:
 
 The project path must be an existing directory with a git repo on the machine running Claude Code.
 
-### 10. Dispatch a task
+### 11. Dispatch a task
 
 ```
 /dispatch backend "add pagination to /users endpoint"
@@ -160,7 +184,7 @@ The Bridge Bot will:
 - The agent works autonomously with full permissions
 - When done, the stop hook updates SQLite
 
-### 11. Check status
+### 12. Check status
 
 ```
 /status
