@@ -1,98 +1,189 @@
-# Claude Bridge 🌉
+# Claude Bridge
 
-> Control your Claude Code agents from anywhere — via Telegram, Discord, or Slack.
+Multi-session Claude Code dispatch from Telegram. Create agents, assign them to projects, dispatch tasks from your phone.
 
-Claude Bridge là một **agent orchestration runtime** cho phép bạn điều khiển Claude Code agents từ điện thoại thông qua Channels MCP. Không chỉ là chat interface — đây là một thực thể tự động hóa thực sự trên máy tính, dùng Claude Code làm execution engine với toàn bộ hệ sinh thái skills và MCP.
-
-## Tại sao Claude Bridge?
-
-| | OpenClaw / alternatives | Claude Bridge |
-|---|---|---|
-| Model | Models rẻ (Qwen, GLM...) | Claude Code — agent thực |
-| Execution | Trả lời text | Chạy code, edit file, dùng tools |
-| Skills/MCP | Không có | Toàn bộ hệ sinh thái Claude Code |
-| Multi-agent | Khó config | `/spawn` là xong |
-| Agent memory | Stateless | Profile tiến hóa theo thời gian |
-| Setup | Phức tạp | Onboarding 3 câu hỏi |
-
-## Kiến trúc
+## How It Works
 
 ```
-[Telegram / Discord / Slack]   ← Control Center (phone)
-            ↕  Channels MCP
-    [Claude Bridge Daemon]     ← Orchestration layer
-       ↙        ↓        ↘
-  [Agent 1]  [Agent 2]  [Agent 3]   ← mỗi agent = Claude Code session
-  coder      researcher  reviewer      với profile + CLAUDE.md riêng
+You (Telegram)
+  |
+  v
+Claude Code session (Bridge Bot)     <-- Telegram MCP plugin for messaging
+  |                                       CLAUDE.md for command routing
+  v
+bridge-cli commands                   <-- Python CLI (stdlib only)
+  |
+  v
+claude --agent --worktree -p "task"   <-- Each task = isolated Claude Code agent
+  |
+  v
+Stop hook → on-complete.py           <-- Updates SQLite, notifies completion
 ```
 
-## Tính năng cốt lõi
+The Bridge Bot is a normal Claude Code session with:
+1. The **Telegram MCP plugin** installed (for receiving/sending messages)
+2. A **CLAUDE.md** that tells it how to route commands to `bridge-cli`
 
-### 🤖 Agent Modes
-- **Mode 1 — Headless Task Runner**: Giao task → Bridge spawn subagents → nhận kết quả
-- **Mode 2 — Persistent Agent**: Session sống lâu dài, trao đổi nhiều vòng, giữ context
+That's it. No custom server, no daemon. Just Claude Code + MCP + routing rules.
 
-### 🧬 Living Profiles
-Profile không phải config tĩnh — nó **tiến hóa** qua 3 giai đoạn:
-1. **Onboarding**: 3 câu hỏi, đủ dùng ngay
-2. **Làm việc**: Bridge im lặng quan sát, tích lũy signals
-3. **Tăng cường**: Tự động đề xuất improvements sau mỗi session
+## Prerequisites
 
-### 📄 Auto CLAUDE.md Generation
-Bridge tự động:
-- Scan project (stack, conventions, structure)
-- Generate CLAUDE.md phù hợp với project thực tế
-- Sync CLAUDE.md mỗi khi profile thay đổi
-- Quản lý multi-layer: global → project → sub-directory
+- Python 3.11+
+- `claude` CLI installed and in PATH
+- Telegram bot token (from [@BotFather](https://t.me/BotFather))
 
-### ✅ Remote Permission Relay
-- Agent cần approve tool call → ping Telegram
-- Inline keyboard: ✅ Approve / ❌ Deny / 👁️ Xem trước
-- Timeout tự động (configurable)
+## Setup
 
-## Quick Start
+### 1. Clone and prepare
 
 ```bash
-# Install
-pip install claude-bridge
-
-# Start với Telegram
-claude-bridge start --platform telegram
-
-# Tạo agent mới (onboarding flow trên Telegram)
-/new-agent
-
-# Hoặc spawn trực tiếp
-/spawn coder --project ~/my-app
+git clone <repo-url> claude-bridge
+cd claude-bridge
 ```
+
+### 2. Create a project folder for Bridge Bot
+
+```bash
+mkdir -p ~/bridge-bot
+```
+
+### 3. Generate the Bridge Bot CLAUDE.md
+
+```bash
+PYTHONPATH=src python3 -m claude_bridge.cli setup
+```
+
+This prints the CLAUDE.md content. Copy it to your bridge-bot project:
+
+```bash
+PYTHONPATH=src python3 -m claude_bridge.cli setup > ~/bridge-bot/CLAUDE.md
+```
+
+### 4. Install the Telegram MCP plugin
+
+In Claude Code, run `/plugin` and install the Telegram plugin, or configure it manually. You'll need your bot token.
+
+### 5. Pair your Telegram account
+
+Start the Bridge Bot session:
+
+```bash
+cd ~/bridge-bot
+claude
+```
+
+Then DM your bot on Telegram. It will show a pairing code. In the Claude Code session:
+
+```
+/telegram:access pair <code>
+```
+
+### 6. Create your first agent
+
+From Telegram (or the Bridge Bot session):
+
+```
+/create-agent backend /path/to/your/project "API development"
+```
+
+### 7. Dispatch a task
+
+```
+/dispatch backend "add pagination to /users endpoint"
+```
+
+The Bridge Bot will:
+- Run `bridge-cli dispatch backend "add pagination to /users endpoint"`
+- Spawn a Claude Code agent in an isolated worktree
+- The agent works autonomously with `--dangerously-skip-permissions`
+- When done, the stop hook updates SQLite
+
+### 8. Check status
+
+```
+/status
+/history backend
+```
+
+## All Commands
+
+| Command | Description |
+|---------|-------------|
+| `/create-agent <name> <path> "<purpose>"` | Register a new agent |
+| `/delete-agent <name>` | Remove an agent |
+| `/agents` | List all agents |
+| `/dispatch <agent> "<task>"` | Send a task to an agent |
+| `/status [agent]` | Check running tasks |
+| `/kill <agent>` | Stop a running task |
+| `/history <agent>` | View task history |
+| `/queue [agent]` | View queued tasks |
+| `/cancel <task_id>` | Cancel a queued task |
+| `/set-model <agent> <model>` | Change agent model (sonnet/opus/haiku) |
+| `/cost [agent] [--period today\|week\|month]` | Cost summary |
+| `/create-team <name> --lead <agent> --members <a,b>` | Create agent team |
+| `/team-dispatch <team> "<task>"` | Dispatch to team lead |
+| `/team-status <team>` | Team task progress |
+
+## Agent Teams
+
+Teams let a lead agent decompose complex tasks and dispatch sub-tasks to teammates:
+
+```
+/create-agent backend /projects/api --purpose "API development"
+/create-agent frontend /projects/web --purpose "React UI"
+/create-team fullstack --lead backend --members frontend
+/team-dispatch fullstack "build user profile page with API and UI"
+```
+
+The lead agent receives an augmented prompt with teammate info and dispatch commands. Sub-tasks are tracked with `parent_task_id` and costs are aggregated.
+
+## Architecture
+
+- **Session = Agent + Project**: `backend` + `/projects/my-api` = session `backend--my-api`
+- **Agent .md files**: `~/.claude/agents/bridge--{session_id}.md` (Claude Code native format)
+- **Worktree isolation**: Each task runs in `git worktree` (no conflicts)
+- **Stop hook**: Agent frontmatter → `on_complete.py` → SQLite updated
+- **Queue**: Dispatch to busy agent queues the task, auto-dequeues on completion
+- **SQLite**: All state in `~/.claude-bridge/bridge.db` (WAL mode)
 
 ## Project Structure
 
 ```
-claude-bridge/
-├── claude_bridge/
-│   ├── daemon/          # Orchestration, agent lifecycle
-│   ├── channels/        # MCP Channel plugins (Telegram, Discord, Slack)
-│   └── cli/             # claude-bridge CLI
-├── profiles/
-│   └── templates/       # Preset profile templates
-└── docs/                # Architecture & design decisions
+src/claude_bridge/
+  cli.py              CLI entry (all commands)
+  db.py               SQLite (agents, tasks, teams, permissions)
+  session.py           Session model (agent + project → session_id)
+  agent_md.py          Agent .md file generator
+  claude_md_init.py    CLAUDE.md initialization for agent projects
+  dispatcher.py        Task spawner (subprocess.Popen)
+  on_complete.py       Stop hook handler
+  channel.py           Multi-channel formatting (telegram/discord/slack/cli)
+  permission_relay.py  PreToolUse hook for dangerous commands
+  bridge_bot_claude_md.py  Bridge Bot CLAUDE.md generator
+  memory.py            Auto Memory reader
+  watcher.py           Fallback PID watcher
+tests/                 pytest (260+ tests)
 ```
 
-## Roadmap
+## Running Tests
 
-- [ ] Phase 1: Bridge daemon + Telegram channel
-- [ ] Phase 2: Agent spawn + profile onboarding
-- [ ] Phase 3: Profile enhancement engine
-- [ ] Phase 4: CLAUDE.md auto-generation
-- [ ] Phase 5: Multi-agent coordination
-- [ ] Phase 6: Discord + Slack channels
+```bash
+PYTHONPATH=src python3 -m pytest tests/ -v
+```
 
-## Status
+No external dependencies. No pip install needed. Just Python 3.11+ stdlib.
 
-🚧 **Early design phase** — Đang trong quá trình thiết kế kiến trúc.
+## How bridge-cli Works (for contributors)
 
----
+All commands go through `python3 -m claude_bridge.cli`. The Bridge Bot CLAUDE.md tells Claude Code to run these via Bash. Example flow:
 
-*Built on top of [Claude Code Channels](https://code.claude.com/docs/en/channels-reference) — research preview feature requiring Claude Code v2.1.80+*
-# claude-bridge
+```
+User on Telegram: "/dispatch backend add pagination"
+  → Telegram MCP delivers message to Bridge Bot session
+  → Bridge Bot reads CLAUDE.md routing rules
+  → Runs: PYTHONPATH=src python3 -m claude_bridge.cli dispatch backend "add pagination"
+  → bridge-cli creates task in SQLite, spawns: claude --agent bridge--backend--my-api --session-id <uuid> --dangerously-skip-permissions -p "add pagination"
+  → Agent works in isolated worktree
+  → Stop hook fires on_complete.py → marks task done in SQLite
+  → Bridge Bot checks for unreported tasks, sends result to Telegram
+```
