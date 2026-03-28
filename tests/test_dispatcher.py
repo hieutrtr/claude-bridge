@@ -45,7 +45,7 @@ class TestSpawnTask:
         assert "--session-id" in cmd
         # session-id is now a deterministic UUID derived from "backend--api"
         from claude_bridge.dispatcher import session_id_to_uuid
-        assert session_id_to_uuid("backend--api") in cmd
+        assert session_id_to_uuid("backend--api", 1) in cmd
         assert "--output-format" in cmd
         # project dir passed as cwd, not --project-dir
         assert "--project-dir" not in cmd

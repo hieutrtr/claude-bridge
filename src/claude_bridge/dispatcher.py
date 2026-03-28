@@ -14,9 +14,10 @@ from .session import get_tasks_dir
 _BRIDGE_NAMESPACE = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
 
 
-def session_id_to_uuid(session_id: str) -> str:
-    """Convert a session ID string to a deterministic UUID."""
-    return str(uuid.uuid5(_BRIDGE_NAMESPACE, session_id))
+def session_id_to_uuid(session_id: str, task_id: int | None = None) -> str:
+    """Convert a session ID + task ID to a unique UUID per task."""
+    key = f"{session_id}:{task_id}" if task_id else session_id
+    return str(uuid.uuid5(_BRIDGE_NAMESPACE, key))
 
 
 def spawn_task(
@@ -42,7 +43,7 @@ def spawn_task(
     cmd = [
         "claude",
         "--agent", agent_file_name,
-        "--session-id", session_id_to_uuid(session_id),
+        "--session-id", session_id_to_uuid(session_id, task_id),
         "--output-format", "json",
         "--dangerously-skip-permissions",
     ]
