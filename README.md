@@ -138,14 +138,23 @@ If you used the path from `/plugin install` instead, change `cwd` to:
 > `TELEGRAM_BOT_TOKEN`. You can run `bridge-bot-1/`, `bridge-bot-2/`, etc., each
 > with a different Telegram bot.
 
-### 8. Start the Bridge Bot and pair
+### 8. Start the Bridge Bot
+
+You **must** start Claude Code with the `--channels` flag to activate the Telegram plugin:
 
 ```bash
 cd ~/projects/bridge-bot
-claude
+claude --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions
 ```
 
-Claude Code reads `.mcp.json` and starts the Telegram plugin. On your phone, DM your bot (send any message). The bot replies with a 6-character pairing code.
+- `--channels plugin:telegram@claude-plugins-official` — activates the Telegram channel (the bot starts polling for messages)
+- `--dangerously-skip-permissions` — lets the Bridge Bot run bridge-cli commands without prompting for approval each time
+
+Without `--channels`, the bot token is configured but Telegram is not connected.
+
+### 9. Pair your Telegram account
+
+DM your bot on Telegram (send any message). The bot replies with a 6-character pairing code.
 
 In the Claude Code session:
 
@@ -159,11 +168,11 @@ Lock access so only you can use the bot:
 /telegram:access policy allowlist
 ```
 
-### 9. Verify it works
+### 10. Verify it works
 
 Send `/help` to your bot on Telegram. The Bridge Bot should reply with available commands.
 
-### 10. Create your first agent
+### 11. Create your first agent
 
 From Telegram:
 
@@ -173,7 +182,7 @@ From Telegram:
 
 The project path must be an existing directory with a git repo on the machine running Claude Code.
 
-### 11. Dispatch a task
+### 12. Dispatch a task
 
 ```
 /dispatch backend "add pagination to /users endpoint"
@@ -184,7 +193,7 @@ The Bridge Bot will:
 - The agent works autonomously with full permissions
 - When done, the stop hook updates SQLite
 
-### 12. Check status
+### 13. Check status
 
 ```
 /status
@@ -197,10 +206,10 @@ After the initial setup, start the Bridge Bot any time with:
 
 ```bash
 cd ~/projects/bridge-bot
-claude
+claude --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions
 ```
 
-The Telegram MCP plugin reconnects automatically. The CLAUDE.md routing rules load on session start.
+The Telegram plugin connects and starts polling. The CLAUDE.md routing rules load on session start.
 
 ## All Commands
 
