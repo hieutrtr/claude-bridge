@@ -129,6 +129,10 @@ def build_parser() -> argparse.ArgumentParser:
     # setup
     sub.add_parser("setup", help="Print Bridge Bot CLAUDE.md to stdout")
 
+    # setup-bot
+    p = sub.add_parser("setup-bot", help="Generate CLAUDE.md + .mcp.json in target directory")
+    p.add_argument("path", help="Bridge bot project directory (e.g., ~/projects/bridge-bot)")
+
     # setup-cron
     sub.add_parser("setup-cron", help="Install watcher cron job (runs every minute)")
 
@@ -417,6 +421,66 @@ def cmd_setup(db: BridgeDB, args):
     """Print Bridge Bot CLAUDE.md to stdout. Redirect to a file with > CLAUDE.md"""
     from .bridge_bot_claude_md import generate_bridge_bot_claude_md
     print(generate_bridge_bot_claude_md())
+    return 0
+
+
+def generate_mcp_json() -> str:
+    """Generate .mcp.json content for Bridge MCP server."""
+    import json as _json
+    import shutil
+    src_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    python_path = shutil.which("python3") or sys.executable
+
+    # Read bot token from config
+    config_path = os.path.expanduser("~/.claude-bridge/config.json")
+    bot_token = ""
+    if os.path.isfile(config_path):
+        try:
+            with open(config_path) as f:
+                config = _json.load(f)
+            bot_token = config.get("telegram_bot_token", "")
+        except (_json.JSONDecodeError, IOError):
+            pass
+
+    mcp_config = {
+        "mcpServers": {
+            "bridge": {
+                "type": "stdio",
+                "command": python_path,
+                "args": ["-m", "claude_bridge.mcp_server"],
+                "env": {
+                    "PYTHONPATH": src_path,
+                    "TELEGRAM_BOT_TOKEN": bot_token,
+                },
+            }
+        }
+    }
+    return _json.dumps(mcp_config, indent=2)
+
+
+def cmd_setup_bot(db: BridgeDB, args):
+    """Generate CLAUDE.md + .mcp.json in target directory."""
+    from .bridge_bot_claude_md import generate_bridge_bot_claude_md
+
+    target = os.path.expanduser(args.path)
+    os.makedirs(target, exist_ok=True)
+
+    # Write CLAUDE.md
+    claude_md_path = os.path.join(target, "CLAUDE.md")
+    with open(claude_md_path, "w") as f:
+        f.write(generate_bridge_bot_claude_md())
+    print(f"CLAUDE.md → {claude_md_path}")
+
+    # Write .mcp.json
+    mcp_json_path = os.path.join(target, ".mcp.json")
+    with open(mcp_json_path, "w") as f:
+        f.write(generate_mcp_json())
+    print(f".mcp.json → {mcp_json_path}")
+
+    print()
+    print("Bridge Bot ready. Start with:")
+    print(f"  cd {target}")
+    print("  claude --dangerously-skip-permissions")
     return 0
 
 
@@ -824,6 +888,7 @@ COMMANDS = {
     "approve": cmd_approve,
     "deny": cmd_deny,
     "setup": cmd_setup,
+    "setup-bot": cmd_setup_bot,
     "setup-telegram": cmd_setup_telegram,
     "setup-cron": cmd_setup_cron,
     "remove-cron": cmd_remove_cron,

@@ -8,215 +8,137 @@ Multi-session Claude Code dispatch from Telegram. Create agents, assign them to 
 You (Telegram)
   |
   v
-Claude Code session (Bridge Bot)     <-- Telegram MCP plugin for messaging
-  |                                       CLAUDE.md for command routing
+Bridge MCP Server                     <-- Polls Telegram, queues messages
+  |                                       Sends replies, retries on failure
+  | stdio (MCP protocol)
   v
-bridge-cli commands                   <-- Python CLI (stdlib only)
-  |
+Claude Code session (Bridge Bot)      <-- Reads messages via bridge_* tools
+  |                                       CLAUDE.md for intent mapping
+  | bridge_dispatch(agent, prompt)
   v
 claude --agent --worktree -p "task"   <-- Each task = isolated Claude Code agent
   |
   v
-Stop hook → on-complete.py           <-- Updates SQLite, notifies completion
+Stop hook → on_complete.py           <-- Updates SQLite, queues notification
+  |                                       Bridge MCP delivers to Telegram
 ```
 
-The Bridge Bot is a normal Claude Code session with:
-1. The **Telegram MCP plugin** installed (for receiving/sending messages)
-2. A **CLAUDE.md** that tells it how to route commands to `bridge-cli`
+The Bridge Bot is a Claude Code session with:
+1. A **Bridge MCP server** that handles Telegram polling, message delivery, and bridge operations
+2. A **CLAUDE.md** that tells it how to process messages and dispatch tasks
 
-That's it. No custom server, no daemon. Just Claude Code + MCP + routing rules.
+No `--channels` flag needed. No Telegram MCP plugin. Bridge MCP handles everything.
 
 ## Prerequisites
 
 - macOS or Linux
 - Python 3.11+
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and in PATH
-- [Bun](https://bun.sh) runtime (for the Telegram MCP plugin)
 - A Telegram account
+- MCP SDK: `pip install mcp` (or use the venv at `~/.claude-bridge/venv`)
 
 ## Setup
 
-### 1. Install Bun (if you don't have it)
-
-The Telegram MCP plugin runs on Bun. Install it:
-
-```bash
-curl -fsSL https://bun.sh/install | bash
-exec $SHELL   # reload your shell so `bun` is in PATH
-```
-
-Verify:
-
-```bash
-bun --version
-```
-
-### 2. Clone Claude Bridge
+### 1. Clone Claude Bridge
 
 ```bash
 git clone <repo-url> ~/projects/claude-bridge
 cd ~/projects/claude-bridge
 ```
 
+### 2. Install MCP SDK
+
+```bash
+python3 -m venv ~/.claude-bridge/venv
+~/.claude-bridge/venv/bin/pip install mcp
+```
+
 ### 3. Create a Telegram bot
 
-1. Open Telegram on your phone
-2. Search for [@BotFather](https://t.me/BotFather) and start a chat
-3. Send `/newbot`
-4. Follow the prompts to pick a name and username
-5. BotFather gives you a token like `7123456789:AAH1bGcK9...` — save it
+1. Open Telegram, search for [@BotFather](https://t.me/BotFather)
+2. Send `/newbot`, follow the prompts
+3. Copy the bot token
 
-### 4. Create the Bridge Bot project folder
-
-This is a separate folder where you'll run the Bridge Bot session:
+### 4. Save the bot token
 
 ```bash
-mkdir -p ~/projects/bridge-bot
-cd ~/projects/bridge-bot
-git init
+PYTHONPATH=src python3 -m claude_bridge.cli setup-telegram "<your-bot-token>"
 ```
 
-### 5. Generate the Bridge Bot CLAUDE.md
+### 5. Set up the Bridge Bot project
 
-From the claude-bridge repo, generate the routing rules:
+One command generates both CLAUDE.md and .mcp.json:
 
 ```bash
-cd ~/projects/claude-bridge
-PYTHONPATH=src python3 -m claude_bridge.cli setup > ~/projects/bridge-bot/CLAUDE.md
+PYTHONPATH=src python3 -m claude_bridge.cli setup-bot ~/projects/bridge-bot
 ```
 
-This creates a CLAUDE.md that tells the Bridge Bot how to parse Telegram commands and run bridge-cli.
+This creates:
+- `~/projects/bridge-bot/CLAUDE.md` — routing rules and intent mapping
+- `~/projects/bridge-bot/.mcp.json` — Bridge MCP server config with your bot token
 
-### 6. Install the Telegram MCP plugin source (once per machine)
-
-The Telegram plugin is a small Bun server. You need the source code on your machine — this is shared across all projects, but each project configures its own bot token.
+### 6. Install the watcher cron
 
 ```bash
-# Clone the official plugins repo
-git clone https://github.com/anthropics/claude-code-plugins.git ~/.claude/telegram-plugin
-
-# Install dependencies
-cd ~/.claude/telegram-plugin/external_plugins/telegram
-bun install
+PYTHONPATH=src python3 -m claude_bridge.cli setup-cron
 ```
 
-> **Already have it?** If you previously ran `/plugin install telegram@claude-plugins-official`
-> inside Claude Code, the source is already at
-> `~/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/telegram/`.
-> You can use that path instead — just make sure `bun install` has been run there.
+Runs every minute: cleans up dead tasks, retries failed notifications.
 
-### 7. Configure Telegram MCP per-project
+### 7. Pair your Telegram account
 
-Create a `.mcp.json` in your bridge-bot folder. This is **project-local** — each project can have its own bot token, so you can run multiple bots for different projects.
-
-```bash
-cat > ~/projects/bridge-bot/.mcp.json << 'MCPEOF'
-{
-  "mcpServers": {
-    "telegram": {
-      "type": "stdio",
-      "command": "bun",
-      "args": ["run", "--silent", "start"],
-      "cwd": "~/.claude/telegram-plugin/external_plugins/telegram",
-      "env": {
-        "TELEGRAM_BOT_TOKEN": "<your-bot-token>"
-      }
-    }
-  }
-}
-MCPEOF
-```
-
-Replace `<your-bot-token>` with the token from step 3.
-
-If you used the path from `/plugin install` instead, change `cwd` to:
-```
-~/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/telegram
-```
-
-> **Multiple bots:** Each bridge-bot project gets its own `.mcp.json` with its own
-> `TELEGRAM_BOT_TOKEN`. You can run `bridge-bot-1/`, `bridge-bot-2/`, etc., each
-> with a different Telegram bot.
-
-### 8. Start the Bridge Bot
-
-You **must** start Claude Code with the `--channels` flag to activate the Telegram plugin:
+Start the Bridge Bot:
 
 ```bash
 cd ~/projects/bridge-bot
-claude --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions
+claude --dangerously-skip-permissions
 ```
 
-- `--channels plugin:telegram@claude-plugins-official` — activates the Telegram channel (the bot starts polling for messages)
-- `--dangerously-skip-permissions` — lets the Bridge Bot run bridge-cli commands without prompting for approval each time
+The Bridge MCP server starts automatically (via .mcp.json) and begins polling Telegram.
 
-Without `--channels`, the bot token is configured but Telegram is not connected.
-
-### 9. Pair your Telegram account
-
-DM your bot on Telegram (send any message). The bot replies with a 6-character pairing code.
-
-In the Claude Code session:
+DM your bot on Telegram. The bot replies with a 6-character pairing code. In Claude Code:
 
 ```
 /telegram:access pair <code>
 ```
 
-Lock access so only you can use the bot:
+Lock access:
 
 ```
 /telegram:access policy allowlist
 ```
 
-### 10. Verify it works
-
-Send `/help` to your bot on Telegram. The Bridge Bot should reply with available commands.
-
-### 11. Create your first agent
+### 8. Create your first agent
 
 From Telegram:
 
 ```
-/create-agent backend /path/to/your/project "API development"
+/create backend /path/to/your/project "API development"
 ```
 
-The project path must be an existing directory with a git repo on the machine running Claude Code.
-
-### 12. Dispatch a task
+### 9. Dispatch a task
 
 ```
-/dispatch backend "add pagination to /users endpoint"
+dispatch backend add pagination to /users endpoint
 ```
 
-The Bridge Bot will:
-- Spawn a Claude Code agent in an isolated git worktree
-- The agent works autonomously with full permissions
-- When done, the stop hook updates SQLite
-
-### 13. Check status
-
-```
-/status
-/history backend
-```
+The Bridge Bot receives via Bridge MCP, dispatches the task, and notifies you on Telegram when done.
 
 ## Starting the Bridge Bot (after first setup)
 
-After the initial setup, start the Bridge Bot any time with:
-
 ```bash
 cd ~/projects/bridge-bot
-claude --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions
+claude --dangerously-skip-permissions
 ```
 
-The Telegram plugin connects and starts polling. The CLAUDE.md routing rules load on session start.
+Bridge MCP reconnects to Telegram automatically. No `--channels` flag needed.
 
 ## All Commands
 
 | Command | Description |
 |---------|-------------|
-| `/create-agent <name> <path> "<purpose>"` | Register a new agent |
-| `/delete-agent <name>` | Remove an agent |
+| `/create <name> <path> "<purpose>"` | Register a new agent |
+| `/delete <name>` | Remove an agent |
 | `/agents` | List all agents |
 | `/dispatch <agent> "<task>"` | Send a task to an agent |
 | `/status [agent]` | Check running tasks |
@@ -225,76 +147,74 @@ The Telegram plugin connects and starts polling. The CLAUDE.md routing rules loa
 | `/queue [agent]` | View queued tasks |
 | `/cancel <task_id>` | Cancel a queued task |
 | `/set-model <agent> <model>` | Change agent model (sonnet/opus/haiku) |
-| `/cost [agent] [--period today\|week\|month]` | Cost summary |
+| `/cost [agent]` | Cost summary |
 | `/create-team <name> --lead <agent> --members <a,b>` | Create agent team |
 | `/team-dispatch <team> "<task>"` | Dispatch to team lead |
 | `/team-status <team>` | Team task progress |
 
 ## Agent Teams
 
-Teams let a lead agent decompose complex tasks and dispatch sub-tasks to teammates:
-
 ```
-/create-agent backend /projects/api --purpose "API development"
-/create-agent frontend /projects/web --purpose "React UI"
+/create backend /projects/api "API development"
+/create frontend /projects/web "React UI"
 /create-team fullstack --lead backend --members frontend
 /team-dispatch fullstack "build user profile page with API and UI"
 ```
 
-The lead agent receives an augmented prompt with teammate info and dispatch commands. Sub-tasks are tracked with `parent_task_id` and costs are aggregated.
+The lead decomposes the task and dispatches sub-tasks to teammates. Costs are aggregated.
 
 ## Architecture
 
-- **Session = Agent + Project**: `backend` + `/projects/my-api` = session `backend--my-api`
-- **Agent .md files**: `~/.claude/agents/bridge--{session_id}.md` (Claude Code native format)
-- **Worktree isolation**: Each task runs in `git worktree` (no conflicts)
-- **Stop hook**: Agent frontmatter → `on_complete.py` → SQLite updated
-- **Queue**: Dispatch to busy agent queues the task, auto-dequeues on completion
-- **SQLite**: All state in `~/.claude-bridge/bridge.db` (WAL mode)
+```
+Bridge MCP Server (Python, stdio)
+  ├── Telegram Poller (thread) — getUpdates + sendMessage
+  ├── Message Queue (SQLite) — inbound + outbound with retry
+  ├── Bridge Tools — dispatch, status, agents, history, kill
+  └── Notification Queue — on_complete writes, poller delivers
+
+Bridge Bot (Claude Code session)
+  ├── CLAUDE.md — intent mapping, onboarding, error recovery
+  └── Uses bridge_* MCP tools (no shell-outs)
+
+Agents (Claude Code sessions)
+  ├── Agent .md — role, tools, model, isolation: worktree
+  ├── Stop hook — .claude/settings.local.json (not frontmatter)
+  └── on_complete.py — updates SQLite, queues notification
+```
+
+Key details:
+- **Stop hook must be in project `.claude/settings.local.json`** (frontmatter hooks don't fire in `--agent -p` mode)
+- **Absolute python path** in hooks and cron (system Python may be 3.9)
+- **`from __future__ import annotations`** in all modules for 3.9 compat
+- **Unique UUID per task** (`uuid5(session_id + task_id)`) to avoid session lock conflicts
 
 ## Project Structure
 
 ```
 src/claude_bridge/
-  cli.py              CLI entry (all commands)
-  db.py               SQLite (agents, tasks, teams, permissions)
-  session.py           Session model (agent + project → session_id)
-  agent_md.py          Agent .md file generator
-  claude_md_init.py    CLAUDE.md initialization for agent projects
-  dispatcher.py        Task spawner (subprocess.Popen)
-  on_complete.py       Stop hook handler
-  channel.py           Multi-channel formatting (telegram/discord/slack/cli)
-  permission_relay.py  PreToolUse hook for dangerous commands
-  bridge_bot_claude_md.py  Bridge Bot CLAUDE.md generator
-  memory.py            Auto Memory reader
-  watcher.py           Fallback PID watcher
-tests/                 pytest (260+ tests)
+  cli.py                CLI entry (all commands)
+  mcp_server.py         Bridge MCP server (FastMCP, stdio)
+  mcp_tools.py          MCP tool implementations
+  telegram_poller.py    Telegram polling + outbound delivery
+  message_db.py         Message queue (inbound, outbound, poller state)
+  db.py                 Bridge DB (agents, tasks, teams, notifications)
+  dispatcher.py         Task spawner (subprocess.Popen)
+  on_complete.py        Stop hook handler
+  notify.py             Notification formatting
+  channel.py            Multi-channel formatting
+  agent_md.py           Agent .md generator
+  session.py            Session model
+  watcher.py            Cron fallback (dead PIDs, retry notifications)
+  bridge_bot_claude_md.py  CLAUDE.md generator
+tests/                  pytest (330+ tests)
 ```
 
 ## Running Tests
 
 ```bash
-cd ~/projects/claude-bridge
-PYTHONPATH=src python3 -m pytest tests/ -v
-```
+# Core tests (no MCP dependency)
+PYTHONPATH=src python3 -m pytest tests/ --ignore=tests/test_mcp_server.py -v
 
-No external dependencies. No pip install needed. Just Python 3.11+ stdlib.
-
-## How bridge-cli Works (for contributors)
-
-All commands go through `python3 -m claude_bridge.cli`. The Bridge Bot CLAUDE.md tells Claude Code to run these via Bash. Example flow:
-
-```
-User on Telegram: "/dispatch backend add pagination"
-  → Telegram MCP delivers message to Bridge Bot session
-  → Bridge Bot reads CLAUDE.md routing rules
-  → Runs: PYTHONPATH=src python3 -m claude_bridge.cli dispatch backend "add pagination"
-  → bridge-cli creates task in SQLite, spawns:
-      claude --agent bridge--backend--my-api \
-             --session-id <uuid> \
-             --dangerously-skip-permissions \
-             -p "add pagination"
-  → Agent works in isolated worktree
-  → Stop hook fires on_complete.py → marks task done in SQLite
-  → Bridge Bot checks for unreported tasks, sends result to Telegram
+# MCP tests (needs mcp SDK)
+PYTHONPATH=src ~/.claude-bridge/venv/bin/python3 -m pytest tests/test_mcp_server.py -v
 ```
