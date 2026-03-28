@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fallback PID watcher — catches tasks where the Stop hook didn't fire.
 
-Run via cron: */5 * * * * python3 -m claude_bridge.watcher
+Run via cron: * * * * * PYTHONPATH=/path/to/claude-bridge/src python3 -m claude_bridge.watcher
 """
 
 import os
@@ -90,7 +90,9 @@ def watch(timeout_minutes: int = DEFAULT_TIMEOUT_MINUTES, db: BridgeDB | None = 
                     db.update_agent_state(session_id, "idle")
                     print(f"[watcher] Task #{task_id} ({session_id}) timed out after {timeout_minutes}m")
 
-        # Report unreported completions
+        # Report unreported completions + send notifications
+        from .notify import format_completion_message, deliver_notification
+
         unreported = db.get_unreported_tasks()
         for task in unreported:
             if task["status"] == "done":
@@ -104,7 +106,23 @@ def watch(timeout_minutes: int = DEFAULT_TIMEOUT_MINUTES, db: BridgeDB | None = 
             elif task["status"] == "timeout":
                 print(f"⏱ Task #{task['id']} ({task['session_id']}) — timed out")
 
+            # Send notification if task has a channel + chat_id
+            if task["channel"] != "cli" and task["channel_chat_id"]:
+                agent = db.get_agent_by_session(task["session_id"])
+                agent_name = agent["name"] if agent else task["session_id"]
+                message = format_completion_message(task, agent_name)
+                nid = db.create_notification(
+                    task["id"], task["channel"],
+                    task["channel_chat_id"], message,
+                )
+                deliver_notification(db, nid)
+
             db.mark_task_reported(task["id"])
+
+        # Retry any pending notifications (from previous failed deliveries)
+        pending = db.get_pending_notifications()
+        for notif in pending:
+            deliver_notification(db, notif["id"])
 
     finally:
         if own_db:
