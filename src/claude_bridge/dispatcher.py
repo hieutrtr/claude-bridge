@@ -4,9 +4,19 @@ import os
 import signal
 import subprocess
 import time
+import uuid
 from datetime import datetime
 
 from .session import get_tasks_dir
+
+
+# Namespace UUID for generating deterministic session UUIDs
+_BRIDGE_NAMESPACE = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+
+
+def session_id_to_uuid(session_id: str) -> str:
+    """Convert a session ID string to a deterministic UUID."""
+    return str(uuid.uuid5(_BRIDGE_NAMESPACE, session_id))
 
 
 def spawn_task(
@@ -32,8 +42,9 @@ def spawn_task(
     cmd = [
         "claude",
         "--agent", agent_file_name,
-        "--session-id", session_id,
+        "--session-id", session_id_to_uuid(session_id),
         "--output-format", "json",
+        "--dangerously-skip-permissions",
     ]
     if model:
         cmd.extend(["--model", model])
