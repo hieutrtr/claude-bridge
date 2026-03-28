@@ -8,30 +8,31 @@ Dispatch Claude Code agents from your phone via Telegram. Create agents, assign 
 You (Telegram)
   │
   ▼
-Bridge MCP Server                      Polls Telegram, queues messages
-  │                                    Sends replies, retries on failure
-  │ stdio (MCP protocol)
+Bridge Channel Server (TypeScript)     Polls Telegram via grammy
+  │                                    Pushes messages into Claude session
+  │ mcp.notification (push)            Retries if not acknowledged in 3s
   ▼
-Claude Code session (Bridge Bot)       Reads messages via bridge_* tools
+Claude Code session (Bridge Bot)       Messages arrive as <channel> tags
   │                                    CLAUDE.md for intent mapping
-  │ bridge_dispatch(agent, prompt)
+  │ bridge_dispatch(agent, prompt)     reply(chat_id, text) sends back
   ▼
 claude --agent --worktree -p "task"    Each task = isolated Claude Code agent
   │
   ▼
 Stop hook → on_complete.py             Updates SQLite, queues notification
-                                       Bridge MCP delivers to Telegram
+                                       Channel server delivers to Telegram
 ```
 
-**Bridge Bot** = Claude Code session + Bridge MCP server + CLAUDE.md routing rules.
-No custom daemon. No Telegram plugin. Just Claude Code with an MCP server.
+**Bridge Bot** = Claude Code session + Bridge Channel server + CLAUDE.md routing rules.
+No custom daemon. No Telegram plugin. The channel server pushes messages directly into the session.
 
 ## Prerequisites
 
 | What | Why |
 |------|-----|
 | macOS or Linux | Runs on your machine |
-| Python 3.11+ | Bridge core (stdlib only, no pip deps except MCP SDK) |
+| Python 3.11+ | Bridge core (stdlib only, no pip deps) |
+| [Bun](https://bun.sh) | Channel server runtime (TypeScript) |
 | [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) | Must be in PATH — `claude --version` to verify |
 | Telegram account | Control plane — you send commands from your phone |
 
@@ -44,18 +45,26 @@ git clone https://github.com/hieutrtr/claude-bridge.git ~/projects/claude-bridge
 cd ~/projects/claude-bridge
 ```
 
-### Step 2: Install the MCP SDK
+### Step 2: Install Bun (if you don't have it)
 
-The Bridge MCP server needs the `mcp` Python package. Install it in an isolated venv:
+The channel server runs on Bun (TypeScript runtime):
 
 ```bash
-python3 -m venv ~/.claude-bridge/venv
-~/.claude-bridge/venv/bin/pip install mcp
+curl -fsSL https://bun.sh/install | bash
+exec $SHELL
+bun --version
 ```
 
-This venv is only used by the Bridge MCP server. The rest of Claude Bridge is pure stdlib.
+### Step 3: Install channel server dependencies
 
-### Step 3: Create a Telegram bot
+```bash
+cd ~/projects/claude-bridge/channel
+bun install
+```
+
+This installs `@modelcontextprotocol/sdk`, `grammy`, and `zod`.
+
+### Step 4: Create a Telegram bot
 
 1. Open Telegram on your phone
 2. Search for [@BotFather](https://t.me/BotFather) and start a chat
@@ -64,7 +73,7 @@ This venv is only used by the Bridge MCP server. The rest of Claude Bridge is pu
 5. BotFather gives you a token like `7123456789:AAH1bGcK9...`
 6. Copy this token — you'll need it in the next step
 
-### Step 4: Save the bot token
+### Step 5: Save the bot token
 
 ```bash
 cd ~/projects/claude-bridge
@@ -79,7 +88,7 @@ Default notification target: chat_id 8137063402
 
 The token is saved to `~/.claude-bridge/config.json` (local, not committed to git).
 
-### Step 5: Generate the Bridge Bot project
+### Step 6: Generate the Bridge Bot project
 
 This creates a separate project folder for the Bridge Bot with everything configured:
 
@@ -106,7 +115,7 @@ What was created:
 
 The `.mcp.json` contains your bot token and the path to Claude Bridge source. If you move the claude-bridge repo, re-run `setup-bot`.
 
-### Step 6: Install the watcher cron
+### Step 7: Install the watcher cron
 
 ```bash
 PYTHONPATH=src python3 -m claude_bridge.cli setup-cron
@@ -119,7 +128,7 @@ This adds a cron job that runs every minute:
 
 To remove later: `PYTHONPATH=src python3 -m claude_bridge.cli remove-cron`
 
-### Step 7: Start the Bridge Bot
+### Step 8: Start the Bridge Bot
 
 ```bash
 cd ~/projects/bridge-bot
@@ -127,12 +136,13 @@ claude --channels server:bridge --dangerously-skip-permissions
 ```
 
 What happens:
-1. Claude Code reads `.mcp.json` → starts Bridge MCP server as a subprocess
-2. Bridge MCP starts the Telegram poller thread → your bot comes online
-3. Claude Code reads `CLAUDE.md` → knows how to route Telegram commands
-4. The Bridge Bot calls `bridge_get_messages()` to check for your messages
+1. Claude Code reads `.mcp.json` → starts Bridge Channel server as a subprocess
+2. Channel server starts grammy bot → your Telegram bot comes online
+3. Channel server starts retry engine + outbound poller
+4. Claude Code reads `CLAUDE.md` → knows how to handle `<channel>` tags
+5. Messages from Telegram are pushed directly into the session — no polling needed
 
-### Step 8: Pair your Telegram account
+### Step 9: Pair your Telegram account
 
 This is a one-time step. DM your bot on Telegram — send any message (e.g., "hello").
 
@@ -150,7 +160,7 @@ Then lock access so only you can use the bot:
 
 Your Telegram user ID is now saved in `~/.claude/channels/telegram/access.json`.
 
-### Step 9: Verify
+### Step 10: Verify
 
 Send `/help` to your bot on Telegram. The Bridge Bot should reply with available commands.
 
@@ -238,8 +248,7 @@ cd ~/projects/bridge-bot
 claude --channels server:bridge --dangerously-skip-permissions
 ```
 
-- Bridge MCP reconnects to Telegram automatically
-- No `--channels` flag needed
+- Channel server reconnects to Telegram automatically
 - Your agents, tasks, and history are preserved in SQLite
 - Pairing is persistent (no need to re-pair)
 
@@ -261,10 +270,11 @@ Or for failures:
 ```
 
 How notifications work:
-1. **Stop hook** fires `on_complete.py` → writes to `outbound_messages` queue
-2. **Bridge MCP poller** picks up the message → sends to Telegram
-3. If send fails, retries up to 3 times
-4. **Watcher cron** (every minute) catches cases where the Stop hook didn't fire
+1. **Stop hook** fires `on_complete.py` → writes to `outbound_messages` queue in SQLite
+2. **Channel server** outbound poller picks up the message → sends to Telegram via grammy
+3. Channel server also pushes a `<channel source="task_completion">` notification into the Claude session
+4. If send fails, retries up to 3 times
+5. **Watcher cron** (every minute) catches cases where the Stop hook didn't fire
 
 ## All Commands
 
@@ -315,34 +325,38 @@ Natural language also works — "tell backend to fix the bug", "what's running?"
 
 | What | Detail |
 |------|--------|
+| Channel server | TypeScript/Bun (`channel/server.ts`), push-based via `notifications/claude/channel` |
+| Message delivery | Push + retry: if not acknowledged in 3s, re-push up to 5 times |
+| Outbound delivery | Channel server polls `messages.db`, sends via grammy, retries 3x |
 | Stop hook location | Project's `.claude/settings.local.json`, NOT agent .md frontmatter |
 | Stop hook format | Nested: `{hooks: [{hooks: [{type: command, command: ...}]}]}` |
 | Python path | Absolute path in all hooks and cron (system Python may be 3.9) |
 | Python 3.9 compat | `from __future__ import annotations` in all modules |
 | Session UUID | Unique per task: `uuid5(session_id + task_id)` |
-| Message retry | Inbound: 5 retries, 3s timeout. Outbound: 3 retries |
 | Worktree | Each task runs in isolated `git worktree` |
 | Queue | Dispatch to busy agent auto-queues, auto-dequeues on completion |
 
 ## Project Structure
 
 ```
+channel/
+  server.ts             Bridge Channel server (TypeScript/Bun)
+                        grammy bot, MCP channel push, bridge tools,
+                        inbound retry engine, outbound poller
+
 src/claude_bridge/
-  cli.py                CLI entry point (all commands + setup)
-  mcp_server.py         Bridge MCP server (FastMCP, stdio transport)
-  mcp_tools.py          MCP tool implementations (dispatch, status, etc.)
-  telegram_poller.py    Telegram polling thread + outbound delivery
-  message_db.py         Message queue SQLite (inbound, outbound, poller state)
+  cli.py                CLI entry (all commands + setup-bot)
   db.py                 Bridge SQLite (agents, tasks, teams, notifications)
+  message_db.py         Outbound message queue (for on_complete notifications)
   dispatcher.py         Task spawner (subprocess.Popen + PID tracking)
   on_complete.py        Stop hook handler (updates DB, queues notification)
-  notify.py             Notification formatting + Telegram delivery
-  channel.py            Multi-channel message formatting
+  notify.py             Notification formatting
   agent_md.py           Agent .md generator + Stop hook installer
   session.py            Session model (agent + project → session_id)
-  watcher.py            Cron fallback (dead PID cleanup, notification retry)
-  bridge_bot_claude_md.py  CLAUDE.md generator (MCP mode + shell fallback)
+  watcher.py            Cron fallback (dead PID cleanup)
+  bridge_bot_claude_md.py  CLAUDE.md generator (channel/mcp/shell modes)
   claude_md_init.py     Purpose-driven CLAUDE.md for agent projects
+  channel.py            Multi-channel message formatting
   permission_relay.py   PreToolUse hook for dangerous commands
   memory.py             Auto Memory reader
 ```
@@ -350,7 +364,7 @@ src/claude_bridge/
 ## Development
 
 ```bash
-# Run core tests (no external deps)
+# Run core tests
 cd ~/projects/claude-bridge
 PYTHONPATH=src python3 -m pytest tests/ --ignore=tests/test_mcp_server.py -v
 
@@ -367,7 +381,7 @@ PYTHONPATH=src python3 -m claude_bridge.cli <command>
 
 | Problem | Fix |
 |---------|-----|
-| Bot doesn't respond | Check Claude Code session is running in bridge-bot folder |
+| Bot doesn't respond | Check Claude Code session is running with `--channels server:bridge` |
 | "Session ID already in use" | Previous task's session wasn't cleaned up. Run watcher: `PYTHONPATH=src python3 -m claude_bridge.watcher` |
 | Stop hook not firing | Check `.claude/settings.local.json` exists in the agent's project. Re-run: `PYTHONPATH=src python3 -m claude_bridge.cli create-agent ...` |
 | Cron errors in watcher.log | Check absolute python path. Re-run: `setup-cron` after `remove-cron` |
