@@ -83,7 +83,7 @@ When a new inbound message arrives:
 Message arrives → queue (pending)
   → expose via MCP → Claude Code reads
     → acknowledged? → done
-    → timeout 30s → retry (up to 5)
+    → timeout 3s → retry (up to 5)
       → all retries failed → mark failed, notify user
 ```
 
