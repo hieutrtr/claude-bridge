@@ -364,37 +364,9 @@ def cmd_memory(db: BridgeDB, args):
 
 
 def cmd_setup(db: BridgeDB, args):
-    bridge_home = os.path.expanduser("~/.claude-bridge")
-    claude_md_path = os.path.join(bridge_home, "CLAUDE.md")
-
-    write_bridge_bot_claude_md(claude_md_path)
-    print(f"Bridge Bot CLAUDE.md written to {claude_md_path}")
-    print()
-    print("=== Setup Instructions ===")
-    print()
-    print("1. Install the Telegram channel plugin (inside Claude Code):")
-    print("   /plugin install telegram@claude-plugins-official")
-    print()
-    print("2. Create a Telegram bot via @BotFather → copy the bot token")
-    print()
-    print("3. Configure the token (inside Claude Code):")
-    print("   /telegram:configure <your-bot-token>")
-    print()
-    print("4. Start the Bridge Bot with Telegram channel:")
-    print(f"   cd {bridge_home} && claude --channels plugin:telegram@claude-plugins-official")
-    print()
-    print("5. Pair your Telegram account:")
-    print("   - Send any message to your bot in Telegram")
-    print("   - Copy the pairing code the bot sends back")
-    print("   - In Claude Code: /telegram:access pair <code>")
-    print("   - Lock access: /telegram:access policy allowlist")
-    print()
-    print("6. Send /help to your Telegram bot to verify it works")
-    print()
-    print("7. (Optional) Set up the fallback watcher cron:")
-    print("   crontab -e")
-    print(f"   */5 * * * * PYTHONPATH={os.path.dirname(os.path.dirname(__file__))} "
-          f"python3 -m claude_bridge.watcher >> {bridge_home}/watcher.log 2>&1")
+    """Print Bridge Bot CLAUDE.md to stdout. Redirect to a file with > CLAUDE.md"""
+    from .bridge_bot_claude_md import generate_bridge_bot_claude_md
+    print(generate_bridge_bot_claude_md())
     return 0
 
 
