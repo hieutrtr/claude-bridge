@@ -1,9 +1,14 @@
 """Tests for channel abstraction layer."""
 
+import os
+import sys
 import pytest
 import sqlite3
+from pathlib import Path
+from unittest.mock import patch
 from claude_bridge.channel import format_message, parse_channel_context, CHANNELS
 from claude_bridge.db import BridgeDB
+from claude_bridge.cli import cmd_dispatch, cmd_create_agent, cmd_history, build_parser
 
 
 @pytest.fixture
@@ -93,3 +98,73 @@ class TestChannelInDB:
         task = db.get_task(tid)
         assert task["channel"] == "telegram"
         assert task["channel_chat_id"] == "12345"
+
+
+class _Args:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+@pytest.fixture
+def cli_env(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    agents_dir = home / ".claude" / "agents"
+    agents_dir.mkdir(parents=True)
+    project = tmp_path / "project"
+    project.mkdir()
+    db_obj = BridgeDB(str(home / ".claude-bridge" / "bridge.db"))
+    return {"db": db_obj, "home": home, "project": project}
+
+
+class TestDispatchWithChannel:
+    """Tests for channel tracking in dispatch."""
+
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    def test_dispatch_stores_channel(self, mock_spawn, cli_env):
+        db = cli_env["db"]
+        with patch("claude_bridge.cli.init_claude_md", return_value={"success": True, "message": "ok"}):
+            cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model=None))
+
+        args = _Args(name="backend", prompt="fix bug", model=None, channel="telegram", chat_id="12345", message_id="67")
+        result = cmd_dispatch(db, args)
+        assert result == 0
+
+        agent = db.get_agent("backend")
+        history = db.get_task_history(agent["session_id"])
+        assert history[0]["channel"] == "telegram"
+        assert history[0]["channel_chat_id"] == "12345"
+        assert history[0]["channel_message_id"] == "67"
+
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    def test_dispatch_defaults_to_cli(self, mock_spawn, cli_env):
+        db = cli_env["db"]
+        with patch("claude_bridge.cli.init_claude_md", return_value={"success": True, "message": "ok"}):
+            cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model=None))
+
+        args = _Args(name="backend", prompt="fix bug", model=None, channel=None, chat_id=None, message_id=None)
+        cmd_dispatch(db, args)
+
+        agent = db.get_agent("backend")
+        history = db.get_task_history(agent["session_id"])
+        assert history[0]["channel"] == "cli"
+
+    def test_parser_has_channel_flags(self):
+        parser = build_parser()
+        args = parser.parse_args(["dispatch", "backend", "fix bug", "--channel", "telegram", "--chat-id", "12345"])
+        assert args.channel == "telegram"
+        assert args.chat_id == "12345"
+
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    def test_history_shows_channel(self, mock_spawn, cli_env, capsys):
+        db = cli_env["db"]
+        with patch("claude_bridge.cli.init_claude_md", return_value={"success": True, "message": "ok"}):
+            cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model=None))
+
+        cmd_dispatch(db, _Args(name="backend", prompt="fix bug", model=None, channel="telegram", chat_id="12345", message_id=None))
+        capsys.readouterr()
+
+        cmd_history(db, _Args(name="backend", limit=10))
+        captured = capsys.readouterr()
+        assert "telegram" in captured.out

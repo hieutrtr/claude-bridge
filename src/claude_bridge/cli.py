@@ -42,6 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("name", help="Agent name")
     p.add_argument("prompt", help="Task prompt")
     p.add_argument("--model", default=None, help="Model override for this task")
+    p.add_argument("--channel", default="cli", help="Source channel (cli/telegram/discord/slack)")
+    p.add_argument("--chat-id", default=None, help="Channel chat/thread ID")
+    p.add_argument("--message-id", default=None, help="Channel message ID")
 
     # list-agents
     sub.add_parser("list-agents", help="List all agents")
@@ -113,6 +116,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("team-dispatch", help="Dispatch a task to a team")
     p.add_argument("name", help="Team name")
     p.add_argument("prompt", help="Task prompt")
+    p.add_argument("--channel", default="cli", help="Source channel")
+    p.add_argument("--chat-id", default=None, help="Channel chat/thread ID")
+    p.add_argument("--message-id", default=None, help="Channel message ID")
 
     # setup
     sub.add_parser("setup", help="Generate Bridge Bot CLAUDE.md and print setup instructions")
@@ -212,17 +218,21 @@ def cmd_dispatch(db: BridgeDB, args):
 
     session_id = agent["session_id"]
 
+    channel = getattr(args, "channel", "cli") or "cli"
+    chat_id = getattr(args, "chat_id", None)
+    message_id = getattr(args, "message_id", None)
+
     # Check if busy — queue instead of reject
     running = db.get_running_task(session_id)
     if running:
-        task_id = db.create_task(session_id, args.prompt)
+        task_id = db.create_task(session_id, args.prompt, channel=channel, channel_chat_id=chat_id, channel_message_id=message_id)
         position = db.get_next_queue_position(session_id)
         db.update_task(task_id, status="queued", position=position)
         print(f"Agent '{args.name}' is busy. Task #{task_id} queued at position {position}.")
         return 0
 
     # Create task
-    task_id = db.create_task(session_id, args.prompt)
+    task_id = db.create_task(session_id, args.prompt, channel=channel, channel_chat_id=chat_id, channel_message_id=message_id)
     result_file = get_result_file(session_id, task_id)
     agent_file_name = derive_agent_file_name(session_id)
 
@@ -337,7 +347,8 @@ def cmd_history(db: BridgeDB, args):
             mins = t["duration_ms"] // 60000
             secs = (t["duration_ms"] % 60000) // 1000
             duration = f"{mins}m {secs}s"
-        print(f"  #{t['id']}  \"{prompt_short}\"  {t['status']:<8} {duration}  {cost}")
+        ch = t["channel"] if t["channel"] != "cli" else ""
+        print(f"  #{t['id']}  \"{prompt_short}\"  {t['status']:<8} {duration}  {cost}  {ch}")
     return 0
 
 
@@ -612,18 +623,21 @@ def cmd_team_dispatch(db: BridgeDB, args):
     augmented = _build_team_prompt(args.prompt, args.name, members)
 
     session_id = lead["session_id"]
+    channel = getattr(args, "channel", "cli") or "cli"
+    chat_id = getattr(args, "chat_id", None)
+    message_id = getattr(args, "message_id", None)
 
     # Check if busy — queue
     running = db.get_running_task(session_id)
     if running:
-        task_id = db.create_task(session_id, augmented, task_type="team")
+        task_id = db.create_task(session_id, augmented, task_type="team", channel=channel, channel_chat_id=chat_id, channel_message_id=message_id)
         position = db.get_next_queue_position(session_id)
         db.update_task(task_id, status="queued", position=position)
         print(f"Lead '{team['lead_agent']}' is busy. Team task #{task_id} queued at position {position}.")
         return 0
 
     # Create parent task
-    task_id = db.create_task(session_id, augmented, task_type="team")
+    task_id = db.create_task(session_id, augmented, task_type="team", channel=channel, channel_chat_id=chat_id, channel_message_id=message_id)
     result_file = get_result_file(session_id, task_id)
     agent_file_name = derive_agent_file_name(session_id)
     model = lead["model"]
