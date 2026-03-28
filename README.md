@@ -59,26 +59,50 @@ This prints the CLAUDE.md content. Copy it to your bridge-bot project:
 PYTHONPATH=src python3 -m claude_bridge.cli setup > ~/bridge-bot/CLAUDE.md
 ```
 
-### 4. Install the Telegram MCP plugin
+### 4. Create a Telegram bot
 
-In Claude Code, run `/plugin` and install the Telegram plugin, or configure it manually. You'll need your bot token.
+1. Open Telegram, search for [@BotFather](https://t.me/BotFather)
+2. Send `/newbot`, follow the prompts to name your bot
+3. Copy the bot token (looks like `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`)
 
-### 5. Pair your Telegram account
+### 5. Install and configure the Telegram MCP plugin
 
-Start the Bridge Bot session:
+Start Claude Code in the bridge-bot folder:
 
 ```bash
 cd ~/bridge-bot
 claude
 ```
 
-Then DM your bot on Telegram. It will show a pairing code. In the Claude Code session:
+Inside Claude Code, install the Telegram plugin:
+
+```
+/plugin install telegram@claude-plugins-official
+```
+
+Then configure your bot token:
+
+```
+/telegram:configure <your-bot-token>
+```
+
+This saves the token and starts the Telegram connection.
+
+### 6. Pair your Telegram account
+
+DM your bot on Telegram (send any message). The bot will reply with a 6-character pairing code. In the Claude Code session:
 
 ```
 /telegram:access pair <code>
 ```
 
-### 6. Create your first agent
+Lock it down so only you can use the bot:
+
+```
+/telegram:access policy allowlist
+```
+
+### 7. Create your first agent
 
 From Telegram (or the Bridge Bot session):
 
@@ -86,7 +110,7 @@ From Telegram (or the Bridge Bot session):
 /create-agent backend /path/to/your/project "API development"
 ```
 
-### 7. Dispatch a task
+### 8. Dispatch a task
 
 ```
 /dispatch backend "add pagination to /users endpoint"
@@ -98,7 +122,7 @@ The Bridge Bot will:
 - The agent works autonomously with `--dangerously-skip-permissions`
 - When done, the stop hook updates SQLite
 
-### 8. Check status
+### 9. Check status
 
 ```
 /status
