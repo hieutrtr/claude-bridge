@@ -17,14 +17,14 @@ hooks:
     - matcher: "Bash(git push *)"
       hooks:
         - type: command
-          command: "PYTHONPATH={src_path} python3 -m claude_bridge.permission_relay --session-id {session_id} --tool Bash --command 'git push'"
+          command: "PYTHONPATH={src_path} {python_path} -m claude_bridge.permission_relay --session-id {session_id} --tool Bash --command 'git push'"
     - matcher: "Bash(rm -rf *)"
       hooks:
         - type: command
-          command: "PYTHONPATH={src_path} python3 -m claude_bridge.permission_relay --session-id {session_id} --tool Bash --command 'rm -rf'"
+          command: "PYTHONPATH={src_path} {python_path} -m claude_bridge.permission_relay --session-id {session_id} --tool Bash --command 'rm -rf'"
   Stop:
     - type: command
-      command: "PYTHONPATH={src_path} python3 -m claude_bridge.on_complete --session-id {session_id}"
+      command: "PYTHONPATH={src_path} {python_path} -m claude_bridge.on_complete --session-id {session_id}"
 ---
 
 # Agent: {agent_name}
@@ -49,8 +49,10 @@ def generate_agent_md(
     model: str = "sonnet",
 ) -> str:
     """Generate agent .md file content in native Claude Code format."""
+    import shutil
     agent_file_name = f"bridge--{session_id}"
     src_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    python_path = shutil.which("python3") or "python3"
 
     return AGENT_TEMPLATE.format(
         agent_file_name=agent_file_name,
@@ -60,6 +62,7 @@ def generate_agent_md(
         purpose=purpose,
         model=model,
         src_path=src_path,
+        python_path=python_path,
     ).lstrip()
 
 

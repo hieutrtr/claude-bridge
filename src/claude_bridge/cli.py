@@ -383,9 +383,11 @@ CRON_MARKER = "# claude-bridge-watcher"
 
 def _get_cron_line() -> str:
     """Get the cron line for the watcher."""
+    import shutil
     src_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     log_path = os.path.expanduser("~/.claude-bridge/watcher.log")
-    return f"* * * * * PYTHONPATH={src_path} python3 -m claude_bridge.watcher >> {log_path} 2>&1 {CRON_MARKER}"
+    python_path = shutil.which("python3") or sys.executable
+    return f"* * * * * PYTHONPATH={src_path} {python_path} -m claude_bridge.watcher >> {log_path} 2>&1 {CRON_MARKER}"
 
 
 def cmd_setup_cron(db: BridgeDB, args):
