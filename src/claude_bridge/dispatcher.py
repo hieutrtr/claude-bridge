@@ -1,5 +1,7 @@
 """Task dispatcher — spawns claude -p processes and tracks PIDs."""
 
+from __future__ import annotations
+
 import os
 import signal
 import subprocess

@@ -3,6 +3,8 @@
 Manages agents and tasks tables. Uses WAL mode for safe concurrent reads.
 """
 
+from __future__ import annotations
+
 import os
 import sqlite3
 from datetime import datetime

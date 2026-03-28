@@ -17,6 +17,8 @@ Usage in agent .md frontmatter:
             command: "python3 -m claude_bridge.permission_relay --session-id <id>"
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os

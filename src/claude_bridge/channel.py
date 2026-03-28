@@ -1,5 +1,7 @@
 """Channel abstraction layer for multi-channel support."""
 
+from __future__ import annotations
+
 import re
 
 CHANNELS = {"cli", "telegram", "discord", "slack"}

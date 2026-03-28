@@ -1,5 +1,7 @@
 """CLI entry point — bridge-cli.py command dispatcher."""
 
+from __future__ import annotations
+
 import argparse
 import os
 import sys

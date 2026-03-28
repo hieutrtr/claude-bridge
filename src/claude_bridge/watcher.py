@@ -4,6 +4,8 @@
 Run via cron: * * * * * PYTHONPATH=/path/to/claude-bridge/src python3 -m claude_bridge.watcher
 """
 
+from __future__ import annotations
+
 import os
 import sys
 from datetime import datetime

@@ -1,5 +1,7 @@
 """Agent .md file generator — creates native Claude Code agent definitions."""
 
+from __future__ import annotations
+
 import os
 from pathlib import Path
 

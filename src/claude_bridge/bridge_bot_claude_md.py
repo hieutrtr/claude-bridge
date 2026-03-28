@@ -1,5 +1,7 @@
 """Bridge Bot CLAUDE.md generator — creates the command routing instructions."""
 
+from __future__ import annotations
+
 import os
 
 BRIDGE_BOT_CLAUDE_MD_TEMPLATE = """# Bridge Bot

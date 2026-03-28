@@ -9,6 +9,8 @@ This script is referenced in agent .md frontmatter:
             command: "python3 ~/.claude-bridge/on-complete.py --session-id <id>"
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
