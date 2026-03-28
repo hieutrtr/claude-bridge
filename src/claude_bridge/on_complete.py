@@ -192,6 +192,20 @@ def main(db: BridgeDB | None = None):
             if error:
                 print(f"  Error: {error[:200]}")
 
+        # Create and deliver notification (if task has a channel + chat_id)
+        updated_task = db.get_task(task_id)
+        if updated_task["channel"] != "cli" and updated_task["channel_chat_id"]:
+            agent = db.get_agent_by_session(args.session_id)
+            agent_name = agent["name"] if agent else args.session_id
+
+            from .notify import format_completion_message, deliver_notification
+            message = format_completion_message(updated_task, agent_name)
+            nid = db.create_notification(
+                task_id, updated_task["channel"],
+                updated_task["channel_chat_id"], message,
+            )
+            deliver_notification(db, nid)
+
     finally:
         if own_db:
             db.close()

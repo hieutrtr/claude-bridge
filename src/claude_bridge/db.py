@@ -78,6 +78,18 @@ CREATE TABLE IF NOT EXISTS team_members (
     PRIMARY KEY (team_name, agent_name)
 );
 
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER REFERENCES tasks(id),
+    channel TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    message TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    sent_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status);
 CREATE INDEX IF NOT EXISTS idx_permissions_status ON permissions(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
@@ -444,3 +456,44 @@ class BridgeDB:
             "SELECT * FROM tasks WHERE parent_task_id = ? ORDER BY id",
             (parent_task_id,),
         ).fetchall()
+
+    # --- Notification operations ---
+
+    def create_notification(
+        self, task_id: int, channel: str, chat_id: str, message: str,
+    ) -> int:
+        """Create a pending notification."""
+        cursor = self.conn.execute(
+            "INSERT INTO notifications (task_id, channel, chat_id, message) VALUES (?, ?, ?, ?)",
+            (task_id, channel, chat_id, message),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_notification(self, notification_id: int) -> sqlite3.Row | None:
+        """Get a notification by ID."""
+        return self.conn.execute(
+            "SELECT * FROM notifications WHERE id = ?", (notification_id,),
+        ).fetchone()
+
+    def get_pending_notifications(self) -> list[sqlite3.Row]:
+        """Get all pending notifications."""
+        return self.conn.execute(
+            "SELECT * FROM notifications WHERE status = 'pending' ORDER BY created_at",
+        ).fetchall()
+
+    def mark_notification_sent(self, notification_id: int):
+        """Mark a notification as sent."""
+        self.conn.execute(
+            "UPDATE notifications SET status = 'sent', sent_at = ? WHERE id = ?",
+            (datetime.now().isoformat(), notification_id),
+        )
+        self.conn.commit()
+
+    def mark_notification_failed(self, notification_id: int):
+        """Mark a notification as failed."""
+        self.conn.execute(
+            "UPDATE notifications SET status = 'failed' WHERE id = ?",
+            (notification_id,),
+        )
+        self.conn.commit()
