@@ -16,10 +16,12 @@ import {
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { Bot } from "grammy";
+import { Database } from "bun:sqlite";
 import { readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { execSync } from "child_process";
+import { mkdirSync } from "fs";
 
 // --- Configuration ---
 
@@ -59,6 +61,90 @@ function isAllowed(userId: string): boolean {
   const allowed = loadAllowlist();
   if (allowed.length === 0) return true; // empty = allow all
   return allowed.includes(userId);
+}
+
+// --- Inbound Message Tracking (retry on no-ack) ---
+
+const RETRY_TIMEOUT_MS = 3000;
+const MAX_RETRIES = 5;
+
+// Ensure messages.db directory exists
+mkdirSync(join(homedir(), ".claude-bridge"), { recursive: true });
+const msgDb = new Database(MESSAGES_DB_PATH);
+msgDb.run("PRAGMA journal_mode=WAL");
+msgDb.run(`CREATE TABLE IF NOT EXISTS inbound_tracking (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  username TEXT,
+  message_text TEXT NOT NULL,
+  message_id TEXT,
+  status TEXT DEFAULT 'pushed',
+  retry_count INTEGER DEFAULT 0,
+  pushed_at TEXT,
+  acknowledged_at TEXT
+)`);
+
+function trackInbound(chatId: string, userId: string, username: string, text: string, messageId: string): number {
+  const stmt = msgDb.prepare(
+    "INSERT INTO inbound_tracking (chat_id, user_id, username, message_text, message_id, pushed_at) VALUES (?, ?, ?, ?, ?, datetime('now'))"
+  );
+  return Number(stmt.run(chatId, userId, username, text, messageId).lastInsertRowid);
+}
+
+function acknowledgeInbound(trackingId: number): boolean {
+  const row = msgDb.query("SELECT * FROM inbound_tracking WHERE id = ?").get(trackingId) as any;
+  if (!row) return false;
+  msgDb.run("UPDATE inbound_tracking SET status = 'acknowledged', acknowledged_at = datetime('now') WHERE id = ?", [trackingId]);
+  return true;
+}
+
+function pushMessage(trackingId: number, chatId: string, userId: string, username: string, text: string, messageId: string, ts: string) {
+  mcp.notification({
+    method: "notifications/claude/channel",
+    params: {
+      content: text,
+      meta: {
+        chat_id: chatId,
+        message_id: messageId,
+        user: username,
+        user_id: userId,
+        ts,
+        tracking_id: String(trackingId),
+      },
+    },
+  });
+}
+
+// Retry interval: re-push unacknowledged messages
+let retryInterval: ReturnType<typeof setInterval> | null = null;
+
+function startRetryEngine() {
+  retryInterval = setInterval(() => {
+    try {
+      const unacked = msgDb.query(
+        `SELECT * FROM inbound_tracking
+         WHERE status = 'pushed'
+         AND (julianday('now') - julianday(pushed_at)) * 86400 > ?
+         ORDER BY id`
+      ).all(RETRY_TIMEOUT_MS / 1000) as any[];
+
+      for (const msg of unacked) {
+        if (msg.retry_count >= MAX_RETRIES) {
+          msgDb.run("UPDATE inbound_tracking SET status = 'failed' WHERE id = ?", [msg.id]);
+          // Notify user their message was lost
+          bot.api.sendMessage(msg.chat_id, "Sorry, your message could not be delivered to the Bridge Bot. Please try again.").catch(() => {});
+          process.stderr.write(`bridge channel: inbound #${msg.id} failed after ${MAX_RETRIES} retries\n`);
+        } else {
+          msgDb.run("UPDATE inbound_tracking SET retry_count = retry_count + 1, pushed_at = datetime('now') WHERE id = ?", [msg.id]);
+          pushMessage(msg.id, msg.chat_id, msg.user_id, msg.username, msg.message_text, msg.message_id, new Date().toISOString());
+          process.stderr.write(`bridge channel: retrying inbound #${msg.id} (attempt ${msg.retry_count + 1})\n`);
+        }
+      }
+    } catch (err) {
+      process.stderr.write(`bridge channel: retry engine error: ${err}\n`);
+    }
+  }, RETRY_TIMEOUT_MS);
 }
 
 // --- Bridge CLI subprocess ---
@@ -149,7 +235,8 @@ const mcp = new Server(
       },
     },
     instructions: [
-      "Messages from Telegram arrive as <channel source=\"bridge\" chat_id=\"...\" user=\"...\" message_id=\"...\" ts=\"...\">.",
+      "Messages from Telegram arrive as <channel source=\"bridge\" chat_id=\"...\" user=\"...\" tracking_id=\"...\" ts=\"...\">.",
+      "IMPORTANT: After processing each message, call bridge_acknowledge(tracking_id) to confirm. If you don't acknowledge within 3 seconds, the message will be re-pushed.",
       "Reply with the reply tool — pass chat_id back. Keep replies concise (users are on mobile).",
       "Use bridge_dispatch to send tasks to agents. Use bridge_status to check running tasks.",
       "Use bridge_agents to list available agents. Use bridge_get_notifications to check for completed tasks.",
@@ -176,6 +263,17 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ["chat_id", "text"],
+      },
+    },
+    {
+      name: "bridge_acknowledge",
+      description: "Acknowledge that a Telegram message was processed. Call this after handling each <channel> message.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          tracking_id: { type: "number", description: "Tracking ID from the channel tag's tracking_id attribute" },
+        },
+        required: ["tracking_id"],
       },
     },
     {
@@ -280,6 +378,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         return { content: [{ type: "text", text: "sent" }] };
       }
 
+      case "bridge_acknowledge": {
+        const { tracking_id } = args as { tracking_id: number };
+        const ok = acknowledgeInbound(tracking_id);
+        return {
+          content: [{ type: "text", text: ok ? "acknowledged" : "not found" }],
+        };
+      }
+
       case "bridge_dispatch": {
         const { agent, prompt, model } = args as {
           agent: string;
@@ -374,20 +480,10 @@ bot.on("message:text", async (ctx) => {
     return;
   }
 
-  // Push directly into Claude Code session
-  mcp.notification({
-    method: "notifications/claude/channel",
-    params: {
-      content: text,
-      meta: {
-        chat_id: chatId,
-        message_id: messageId,
-        user: username,
-        user_id: userId,
-        ts: new Date(ctx.message.date * 1000).toISOString(),
-      },
-    },
-  });
+  // Track in SQLite and push to Claude Code session
+  const ts = new Date(ctx.message.date * 1000).toISOString();
+  const trackingId = trackInbound(chatId, userId, username, text, messageId);
+  pushMessage(trackingId, chatId, userId, username, text, messageId, ts);
 });
 
 // --- Startup ---
@@ -408,6 +504,9 @@ async function main() {
   // Start outbound message poller
   startOutboundPoller(mcp, bot);
 
+  // Start inbound retry engine
+  startRetryEngine();
+
   // Connect MCP to Claude Code via stdio
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
@@ -421,6 +520,8 @@ async function main() {
 
 function cleanup() {
   if (outboundInterval) clearInterval(outboundInterval);
+  if (retryInterval) clearInterval(retryInterval);
+  msgDb.close();
   bot.stop();
   process.exit(0);
 }

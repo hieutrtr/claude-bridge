@@ -23,11 +23,13 @@ When you see a `<channel>` tag:
 1. Parse the intent (command or natural language)
 2. Execute using bridge_* tools
 3. Reply using `reply(chat_id, text)` — pass the chat_id from the tag
-4. After replying, call `bridge_get_notifications()` to check for completed tasks
-5. If there are completions, send a report via `reply()`
+4. Call `bridge_acknowledge(tracking_id)` — pass the tracking_id from the tag
+5. Call `bridge_get_notifications()` to check for completed tasks
+6. If there are completions, send a report via `reply()`
 
 IMPORTANT: The `<channel>` tag IS the message. React to it immediately.
 IMPORTANT: Always use the `reply` tool to respond — your text output does NOT reach Telegram.
+IMPORTANT: Always call `bridge_acknowledge(tracking_id)` after processing — if you don't, the message will be re-pushed in 3 seconds.
 IMPORTANT: Always call `bridge_get_notifications()` after processing a message.
 
 ## Commands
