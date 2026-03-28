@@ -12,7 +12,9 @@ from claude_bridge.mcp_server import create_server, TOOL_NAMES
 from claude_bridge.mcp_tools import (
     tool_agents, tool_status, tool_dispatch, tool_history,
     tool_kill, tool_create_agent,
+    tool_get_messages, tool_acknowledge,
 )
+from claude_bridge.message_db import MessageDB
 from claude_bridge.db import BridgeDB
 
 
@@ -171,3 +173,55 @@ class TestToolCreateAgent:
         db.create_agent("backend", str(env["project"]), "backend--project", "/a.md", "dev")
         result = json.loads(tool_create_agent(db, "backend", str(env["project"]), "dev"))
         assert "error" in result
+
+
+@pytest.fixture
+def msg_env(tmp_path):
+    msg_db = MessageDB(str(tmp_path / "messages.db"))
+    yield msg_db
+    msg_db.close()
+
+
+class TestToolGetMessages:
+    def test_returns_pending(self, msg_env):
+        msg_env.create_inbound("telegram", "12345", "u1", "hello", username="hieu")
+        msg_env.create_inbound("telegram", "12345", "u1", "world")
+
+        result = json.loads(tool_get_messages(msg_env))
+        assert len(result["messages"]) == 2
+        assert result["messages"][0]["text"] == "hello"
+        assert result["messages"][0]["chat_id"] == "12345"
+
+    def test_marks_delivered(self, msg_env):
+        mid = msg_env.create_inbound("telegram", "12345", "u1", "hello")
+        tool_get_messages(msg_env)
+
+        msg = msg_env.get_inbound(mid)
+        assert msg["status"] == "delivered"
+
+    def test_no_pending(self, msg_env):
+        result = json.loads(tool_get_messages(msg_env))
+        assert result["messages"] == []
+
+    def test_skips_already_delivered(self, msg_env):
+        mid = msg_env.create_inbound("telegram", "12345", "u1", "hello")
+        tool_get_messages(msg_env)  # marks delivered
+
+        result = json.loads(tool_get_messages(msg_env))
+        assert result["messages"] == []  # already delivered, not pending
+
+
+class TestToolAcknowledge:
+    def test_acknowledges(self, msg_env):
+        mid = msg_env.create_inbound("telegram", "12345", "u1", "hello")
+        msg_env.mark_inbound_delivered(mid)
+
+        result = json.loads(tool_acknowledge(msg_env, mid))
+        assert result["status"] == "acknowledged"
+
+        msg = msg_env.get_inbound(mid)
+        assert msg["status"] == "acknowledged"
+
+    def test_nonexistent(self, msg_env):
+        result = json.loads(tool_acknowledge(msg_env, 9999))
+        assert "error" in result or result.get("status") == "not_found"

@@ -12,6 +12,7 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 from .db import BridgeDB
+from .message_db import MessageDB
 from . import mcp_tools
 
 # Tool names registry (for testing)
@@ -29,12 +30,15 @@ TOOL_NAMES = [
 ]
 
 
-def create_server(db: BridgeDB | None = None) -> FastMCP:
+def create_server(db: BridgeDB | None = None, msg_db: MessageDB | None = None) -> FastMCP:
     """Create and configure the Bridge MCP server."""
     server = FastMCP("bridge")
 
     def _db() -> BridgeDB:
         return db if db else BridgeDB()
+
+    def _msg_db() -> MessageDB:
+        return msg_db if msg_db else MessageDB()
 
     # --- Bridge Operation Tools ---
 
@@ -68,22 +72,22 @@ def create_server(db: BridgeDB | None = None) -> FastMCP:
         """Create a new agent for a project directory."""
         return mcp_tools.tool_create_agent(_db(), name, path, purpose, model)
 
-    # --- Message Tools (placeholders until M14) ---
+    # --- Message Tools ---
 
     @server.tool()
     def bridge_get_messages() -> str:
         """Get pending inbound messages from users."""
-        return '{"messages": []}'
+        return mcp_tools.tool_get_messages(_msg_db())
 
     @server.tool()
     def bridge_acknowledge(message_id: int) -> str:
         """Acknowledge that a message was processed."""
-        return '{"status": "not_implemented"}'
+        return mcp_tools.tool_acknowledge(_msg_db(), message_id)
 
     @server.tool()
     def bridge_reply(chat_id: str, text: str, reply_to_message_id: str | None = None) -> str:
-        """Send a reply to a user via Telegram."""
-        return '{"status": "not_implemented"}'
+        """Send a reply to a user via Telegram. Queues in outbound for delivery."""
+        return mcp_tools.tool_reply(_msg_db(), chat_id, text, reply_to_message_id)
 
     # --- Notification Tools (placeholder until M15) ---
 

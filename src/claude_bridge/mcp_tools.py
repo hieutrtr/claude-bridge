@@ -10,6 +10,7 @@ import os
 from datetime import datetime
 
 from .db import BridgeDB
+from .message_db import MessageDB
 from .session import derive_session_id
 from .agent_md import generate_agent_md, write_agent_md, install_stop_hook
 from .claude_md_init import init_claude_md
@@ -178,3 +179,38 @@ def tool_create_agent(
         "purpose": purpose,
         "claude_md": init_result.get("message", ""),
     })
+
+
+# --- Message Tools ---
+
+def tool_get_messages(msg_db: MessageDB) -> str:
+    """Get pending inbound messages and mark them as delivered."""
+    pending = msg_db.get_pending_inbound()
+    messages = []
+    for msg in pending:
+        messages.append({
+            "id": msg["id"],
+            "chat_id": msg["chat_id"],
+            "user_id": msg["user_id"],
+            "username": msg["username"],
+            "text": msg["message_text"],
+            "platform": msg["platform"],
+            "created_at": msg["created_at"],
+        })
+        msg_db.mark_inbound_delivered(msg["id"])
+    return json.dumps({"messages": messages})
+
+
+def tool_acknowledge(msg_db: MessageDB, message_id: int) -> str:
+    """Acknowledge that a message was processed."""
+    msg = msg_db.get_inbound(message_id)
+    if not msg:
+        return json.dumps({"status": "not_found", "error": f"Message {message_id} not found"})
+    msg_db.mark_inbound_acknowledged(message_id)
+    return json.dumps({"status": "acknowledged", "message_id": message_id})
+
+
+def tool_reply(msg_db: MessageDB, chat_id: str, text: str, reply_to_message_id: str | None = None) -> str:
+    """Queue a reply for delivery via Telegram."""
+    mid = msg_db.create_outbound("telegram", chat_id, text, reply_to_message_id=reply_to_message_id, source="bot")
+    return json.dumps({"status": "queued", "outbound_id": mid})
