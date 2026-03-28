@@ -93,8 +93,16 @@ class TestCreateAgent:
         content = agent_file.read_text()
         assert "isolation: worktree" in content
         assert "memory: project" in content
-        assert "claude_bridge.on_complete" in content
         assert "API dev" in content
+
+        # Stop hook is in project settings, not frontmatter
+        import json
+        settings_path = cli_env["project"] / ".claude" / "settings.local.json"
+        assert settings_path.is_file()
+        with open(settings_path) as f:
+            settings = json.load(f)
+        hook_cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+        assert "claude_bridge.on_complete" in hook_cmd
 
     @patch("claude_bridge.cli.init_claude_md")
     def test_creates_workspace(self, mock_init, cli_env):

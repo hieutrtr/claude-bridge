@@ -1,5 +1,6 @@
 """Tests for agent .md file generation."""
 
+import os
 from claude_bridge.agent_md import generate_agent_md
 
 
@@ -15,10 +16,17 @@ class TestGenerateAgentMd:
         content = generate_agent_md("backend--api", "backend", "/projects/api", "REST endpoints")
         assert "REST endpoints" in content
 
-    def test_contains_stop_hook(self):
-        content = generate_agent_md("backend--api", "backend", "/projects/api", "API dev")
-        assert "claude_bridge.on_complete" in content
-        assert "--session-id backend--api" in content
+    def test_stop_hook_in_project_settings(self, tmp_path):
+        from claude_bridge.agent_md import install_stop_hook
+        import json
+        project_dir = str(tmp_path / "project")
+        os.makedirs(project_dir)
+        path = install_stop_hook(project_dir, "backend--api")
+        with open(path) as f:
+            settings = json.load(f)
+        hook_cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+        assert "claude_bridge.on_complete" in hook_cmd
+        assert "--session-id backend--api" in hook_cmd
 
     def test_contains_tools(self):
         content = generate_agent_md("backend--api", "backend", "/projects/api", "API dev")

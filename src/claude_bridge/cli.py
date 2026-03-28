@@ -166,6 +166,10 @@ def cmd_create_agent(db: BridgeDB, args):
     content = generate_agent_md(session_id, args.name, project_dir, args.purpose, model=model)
     agent_file_path = write_agent_md(session_id, content)
 
+    # Install Stop hook in project settings (frontmatter hooks don't fire in -p mode)
+    from .agent_md import install_stop_hook
+    install_stop_hook(project_dir, session_id)
+
     # Create workspace
     create_workspace(session_id, args.name, project_dir, args.purpose)
 

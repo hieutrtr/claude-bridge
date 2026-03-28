@@ -22,9 +22,6 @@ hooks:
       hooks:
         - type: command
           command: "PYTHONPATH={src_path} {python_path} -m claude_bridge.permission_relay --session-id {session_id} --tool Bash --command 'rm -rf'"
-  Stop:
-    - type: command
-      command: "PYTHONPATH={src_path} {python_path} -m claude_bridge.on_complete --session-id {session_id}"
 ---
 
 # Agent: {agent_name}
@@ -77,6 +74,53 @@ def write_agent_md(session_id: str, content: str) -> str:
         f.write(content)
 
     return file_path
+
+
+def install_stop_hook(project_dir: str, session_id: str) -> str:
+    """Install Stop hook in project's .claude/settings.local.json.
+
+    Hooks in agent .md frontmatter don't fire in --agent -p mode.
+    They must be in project settings instead.
+    """
+    import json
+    import shutil
+
+    src_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    python_path = shutil.which("python3") or "python3"
+
+    settings_dir = os.path.join(project_dir, ".claude")
+    os.makedirs(settings_dir, exist_ok=True)
+    settings_path = os.path.join(settings_dir, "settings.local.json")
+
+    # Read existing settings
+    settings = {}
+    if os.path.isfile(settings_path):
+        with open(settings_path) as f:
+            try:
+                settings = json.load(f)
+            except json.JSONDecodeError:
+                settings = {}
+
+    # Build hook command
+    hook_command = f"PYTHONPATH={src_path} {python_path} -m claude_bridge.on_complete --session-id {session_id}"
+
+    # Set Stop hook
+    settings["hooks"] = settings.get("hooks", {})
+    settings["hooks"]["Stop"] = [
+        {
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": hook_command,
+                }
+            ]
+        }
+    ]
+
+    with open(settings_path, "w") as f:
+        json.dump(settings, f, indent=2)
+
+    return settings_path
 
 
 def delete_agent_md(session_id: str) -> bool:
