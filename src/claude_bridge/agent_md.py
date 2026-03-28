@@ -21,9 +21,8 @@ hooks:
         - type: command
           command: "PYTHONPATH={src_path} python3 -m claude_bridge.permission_relay --session-id {session_id} --tool Bash --command 'rm -rf'"
   Stop:
-    - hooks:
-        - type: command
-          command: "PYTHONPATH={src_path} python3 -m claude_bridge.on_complete --session-id {session_id}"
+    - type: command
+      command: "PYTHONPATH={src_path} python3 -m claude_bridge.on_complete --session-id {session_id}"
 ---
 
 # Agent: {agent_name}
