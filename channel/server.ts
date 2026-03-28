@@ -65,7 +65,7 @@ function isAllowed(userId: string): boolean {
 
 // --- Inbound Message Tracking (retry on no-ack) ---
 
-const RETRY_TIMEOUT_MS = 3000;
+const RETRY_TIMEOUT_MS = 30000;
 const MAX_RETRIES = 5;
 
 // Ensure messages.db directory exists
