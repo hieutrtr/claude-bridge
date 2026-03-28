@@ -12,6 +12,7 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 from .db import BridgeDB
+from . import mcp_tools
 
 # Tool names registry (for testing)
 TOOL_NAMES = [
@@ -28,66 +29,68 @@ TOOL_NAMES = [
 ]
 
 
-def create_server() -> FastMCP:
+def create_server(db: BridgeDB | None = None) -> FastMCP:
     """Create and configure the Bridge MCP server."""
     server = FastMCP("bridge")
+
+    def _db() -> BridgeDB:
+        return db if db else BridgeDB()
 
     # --- Bridge Operation Tools ---
 
     @server.tool()
     def bridge_dispatch(agent: str, prompt: str, model: str | None = None) -> str:
         """Dispatch a task to an agent. Returns task ID and PID."""
-        # Placeholder — will be implemented in M13.T3
-        return f"bridge_dispatch not yet implemented"
+        return mcp_tools.tool_dispatch(_db(), agent, prompt, model)
 
     @server.tool()
     def bridge_status(agent: str | None = None) -> str:
         """Get status of running tasks. Optionally filter by agent name."""
-        return f"bridge_status not yet implemented"
+        return mcp_tools.tool_status(_db(), agent)
 
     @server.tool()
     def bridge_agents() -> str:
         """List all registered agents with their state and project."""
-        return f"bridge_agents not yet implemented"
+        return mcp_tools.tool_agents(_db())
 
     @server.tool()
     def bridge_history(agent: str, limit: int = 10) -> str:
         """Get task history for an agent."""
-        return f"bridge_history not yet implemented"
+        return mcp_tools.tool_history(_db(), agent, limit)
 
     @server.tool()
     def bridge_kill(agent: str) -> str:
         """Kill a running task on an agent."""
-        return f"bridge_kill not yet implemented"
+        return mcp_tools.tool_kill(_db(), agent)
 
     @server.tool()
     def bridge_create_agent(name: str, path: str, purpose: str, model: str = "sonnet") -> str:
         """Create a new agent for a project directory."""
-        return f"bridge_create_agent not yet implemented"
+        return mcp_tools.tool_create_agent(_db(), name, path, purpose, model)
 
-    # --- Message Tools ---
+    # --- Message Tools (placeholders until M14) ---
 
     @server.tool()
     def bridge_get_messages() -> str:
         """Get pending inbound messages from users."""
-        return f"bridge_get_messages not yet implemented"
+        return '{"messages": []}'
 
     @server.tool()
     def bridge_acknowledge(message_id: int) -> str:
         """Acknowledge that a message was processed."""
-        return f"bridge_acknowledge not yet implemented"
+        return '{"status": "not_implemented"}'
 
     @server.tool()
     def bridge_reply(chat_id: str, text: str, reply_to_message_id: str | None = None) -> str:
         """Send a reply to a user via Telegram."""
-        return f"bridge_reply not yet implemented"
+        return '{"status": "not_implemented"}'
 
-    # --- Notification Tools ---
+    # --- Notification Tools (placeholder until M15) ---
 
     @server.tool()
     def bridge_get_notifications() -> str:
         """Get pending task completion notifications."""
-        return f"bridge_get_notifications not yet implemented"
+        return '{"notifications": []}'
 
     return server
 

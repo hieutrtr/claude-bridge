@@ -12,8 +12,15 @@ from datetime import datetime, timezone
 
 
 def _utcnow() -> str:
-    """UTC now as ISO string without timezone suffix (for SQLite julianday)."""
+    """UTC now as ISO string without timezone suffix (for SQLite comparison)."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")
+
+
+def _utcnow_offset(seconds: int) -> str:
+    """UTC now offset by seconds, as ISO string."""
+    from datetime import timedelta
+    t = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    return t.strftime("%Y-%m-%dT%H:%M:%S.%f")
 
 DEFAULT_MESSAGES_DB_PATH = os.path.expanduser("~/.claude-bridge/messages.db")
 
@@ -101,13 +108,14 @@ class MessageDB:
 
     def get_unacknowledged_inbound(self, timeout_seconds: int = 3) -> list[sqlite3.Row]:
         """Get delivered but unacknowledged messages past timeout."""
+        cutoff = _utcnow_offset(-timeout_seconds)
         return self.conn.execute(
             """SELECT * FROM inbound_messages
                WHERE status = 'delivered'
                AND delivered_at IS NOT NULL
-               AND (julianday('now') - julianday(delivered_at)) * 86400 >= ?
+               AND delivered_at <= ?
                ORDER BY created_at""",
-            (timeout_seconds,),
+            (cutoff,),
         ).fetchall()
 
     def mark_inbound_delivered(self, msg_id: int):
