@@ -149,8 +149,7 @@ class TestNotificationInDB:
 
 
 class TestOnCompleteCreatesNotification:
-    @patch("claude_bridge.notify.deliver_notification", return_value=True)
-    def test_creates_notification_for_telegram_task(self, mock_deliver, db, tmp_path, monkeypatch):
+    def test_creates_outbound_for_telegram_task(self, db, tmp_path, monkeypatch):
         db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
         tid = db.create_task("backend--api", "fix bug", channel="telegram", channel_chat_id="12345")
         result_file = str(tmp_path / f"task-{tid}-result.json")
@@ -160,13 +159,19 @@ class TestOnCompleteCreatesNotification:
         with open(result_file, "w") as f:
             json.dump({"is_error": False, "result": "Fixed the bug", "cost_usd": 0.03, "duration_ms": 60000, "num_turns": 4}, f)
 
-        monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", "backend--api"])
-        on_complete_main(db=db)
+        from claude_bridge.message_db import MessageDB
+        msg_db_path = str(tmp_path / "messages.db")
 
-        # Should have created a notification
-        all_notifs = db.conn.execute("SELECT * FROM notifications WHERE task_id = ?", (tid,)).fetchall()
-        assert len(all_notifs) >= 1
-        assert all_notifs[0]["chat_id"] == "12345"
+        monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", "backend--api"])
+        on_complete_main(db=db, msg_db_path=msg_db_path)
+
+        # Should have created an outbound message in messages.db
+        msg_db = MessageDB(msg_db_path)
+        outbound = msg_db.conn.execute("SELECT * FROM outbound_messages").fetchall()
+        msg_db.close()
+        assert len(outbound) >= 1
+        assert outbound[0]["chat_id"] == "12345"
+        assert outbound[0]["source"] == "notification"
 
     def test_no_notification_for_cli_task(self, db, tmp_path, monkeypatch):
         db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
@@ -178,9 +183,14 @@ class TestOnCompleteCreatesNotification:
         with open(result_file, "w") as f:
             json.dump({"is_error": False, "result": "done", "cost_usd": 0.01, "duration_ms": 5000, "num_turns": 1}, f)
 
-        monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", "backend--api"])
-        on_complete_main(db=db)
+        from claude_bridge.message_db import MessageDB
+        msg_db_path = str(tmp_path / "messages.db")
 
-        # No notification for CLI tasks
-        all_notifs = db.conn.execute("SELECT * FROM notifications").fetchall()
-        assert len(all_notifs) == 0
+        monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", "backend--api"])
+        on_complete_main(db=db, msg_db_path=msg_db_path)
+
+        # No outbound for CLI tasks
+        msg_db = MessageDB(msg_db_path)
+        outbound = msg_db.conn.execute("SELECT * FROM outbound_messages").fetchall()
+        msg_db.close()
+        assert len(outbound) == 0

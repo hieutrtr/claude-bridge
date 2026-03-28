@@ -80,7 +80,7 @@ def _check_team_aggregation(db: BridgeDB, parent_task_id: int):
     print(f"🏁 Team task #{parent_task_id} complete — {done_count}/{total_count} sub-tasks succeeded, total cost: ${total_cost:.3f}")
 
 
-def main(db: BridgeDB | None = None):
+def main(db: BridgeDB | None = None, msg_db_path: str | None = None):
     parser = argparse.ArgumentParser(description="Claude Bridge stop hook handler")
     parser.add_argument("--session-id", required=True, help="Session ID of the completed task")
     args = parser.parse_args()
@@ -194,19 +194,26 @@ def main(db: BridgeDB | None = None):
             if error:
                 print(f"  Error: {error[:200]}")
 
-        # Create and deliver notification (if task has a channel + chat_id)
+        # Queue notification for delivery (Bridge MCP poller sends it)
         updated_task = db.get_task(task_id)
         if updated_task["channel"] != "cli" and updated_task["channel_chat_id"]:
             agent = db.get_agent_by_session(args.session_id)
             agent_name = agent["name"] if agent else args.session_id
 
-            from .notify import format_completion_message, deliver_notification
+            from .notify import format_completion_message
+            from .message_db import MessageDB
             message = format_completion_message(updated_task, agent_name)
-            nid = db.create_notification(
-                task_id, updated_task["channel"],
-                updated_task["channel_chat_id"], message,
-            )
-            deliver_notification(db, nid)
+
+            _msg_db = MessageDB(msg_db_path) if msg_db_path else MessageDB()
+            try:
+                _msg_db.create_outbound(
+                    updated_task["channel"],
+                    updated_task["channel_chat_id"],
+                    message,
+                    source="notification",
+                )
+            finally:
+                _msg_db.close()
 
         # Mark as reported so watcher doesn't send again
         db.mark_task_reported(task_id)

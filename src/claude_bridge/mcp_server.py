@@ -89,12 +89,12 @@ def create_server(db: BridgeDB | None = None, msg_db: MessageDB | None = None) -
         """Send a reply to a user via Telegram. Queues in outbound for delivery."""
         return mcp_tools.tool_reply(_msg_db(), chat_id, text, reply_to_message_id)
 
-    # --- Notification Tools (placeholder until M15) ---
+    # --- Notification Tools ---
 
     @server.tool()
     def bridge_get_notifications() -> str:
-        """Get pending task completion notifications."""
-        return '{"notifications": []}'
+        """Get pending task completion notifications. Marks them as reported."""
+        return mcp_tools.tool_get_notifications(_db())
 
     return server
 

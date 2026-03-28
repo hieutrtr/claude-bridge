@@ -12,7 +12,7 @@ from claude_bridge.mcp_server import create_server, TOOL_NAMES
 from claude_bridge.mcp_tools import (
     tool_agents, tool_status, tool_dispatch, tool_history,
     tool_kill, tool_create_agent,
-    tool_get_messages, tool_acknowledge,
+    tool_get_messages, tool_acknowledge, tool_get_notifications,
 )
 from claude_bridge.message_db import MessageDB
 from claude_bridge.db import BridgeDB
@@ -225,3 +225,32 @@ class TestToolAcknowledge:
     def test_nonexistent(self, msg_env):
         result = json.loads(tool_acknowledge(msg_env, 9999))
         assert "error" in result or result.get("status") == "not_found"
+
+
+class TestToolGetNotifications:
+    def test_returns_unreported(self, env):
+        db = env["db"]
+        db.create_agent("backend", str(env["project"]), "backend--project", "/a.md", "dev")
+        tid = db.create_task("backend--project", "fix bug")
+        db.update_task(tid, status="done", cost_usd=0.04, result_summary="Fixed it")
+
+        result = json.loads(tool_get_notifications(db))
+        assert len(result["notifications"]) == 1
+        assert result["notifications"][0]["agent"] == "backend"
+        assert result["notifications"][0]["status"] == "done"
+        assert result["notifications"][0]["cost_usd"] == 0.04
+
+    def test_marks_reported(self, env):
+        db = env["db"]
+        db.create_agent("backend", str(env["project"]), "backend--project", "/a.md", "dev")
+        tid = db.create_task("backend--project", "fix bug")
+        db.update_task(tid, status="done")
+
+        tool_get_notifications(db)
+        # Second call should return empty
+        result = json.loads(tool_get_notifications(db))
+        assert result["notifications"] == []
+
+    def test_no_unreported(self, env):
+        result = json.loads(tool_get_notifications(env["db"]))
+        assert result["notifications"] == []

@@ -92,39 +92,38 @@ def watch(timeout_minutes: int = DEFAULT_TIMEOUT_MINUTES, db: BridgeDB | None = 
                     db.update_agent_state(session_id, "idle")
                     print(f"[watcher] Task #{task_id} ({session_id}) timed out after {timeout_minutes}m")
 
-        # Report unreported completions + send notifications
-        from .notify import format_completion_message, deliver_notification
+        # Report unreported completions + queue notifications
+        from .notify import format_completion_message
+        from .message_db import MessageDB
 
-        unreported = db.get_unreported_tasks()
-        for task in unreported:
-            if task["status"] == "done":
-                print(f"✓ Task #{task['id']} ({task['session_id']}) — done")
-                if task["result_summary"]:
-                    print(f"  {task['result_summary'][:200]}")
-            elif task["status"] == "failed":
-                print(f"✗ Task #{task['id']} ({task['session_id']}) — failed")
-                if task["error_message"]:
-                    print(f"  {task['error_message'][:200]}")
-            elif task["status"] == "timeout":
-                print(f"⏱ Task #{task['id']} ({task['session_id']}) — timed out")
+        msg_db = MessageDB()
+        try:
+            unreported = db.get_unreported_tasks()
+            for task in unreported:
+                if task["status"] == "done":
+                    print(f"✓ Task #{task['id']} ({task['session_id']}) — done")
+                    if task["result_summary"]:
+                        print(f"  {task['result_summary'][:200]}")
+                elif task["status"] == "failed":
+                    print(f"✗ Task #{task['id']} ({task['session_id']}) — failed")
+                    if task["error_message"]:
+                        print(f"  {task['error_message'][:200]}")
+                elif task["status"] == "timeout":
+                    print(f"⏱ Task #{task['id']} ({task['session_id']}) — timed out")
 
-            # Send notification if task has a channel + chat_id
-            if task["channel"] != "cli" and task["channel_chat_id"]:
-                agent = db.get_agent_by_session(task["session_id"])
-                agent_name = agent["name"] if agent else task["session_id"]
-                message = format_completion_message(task, agent_name)
-                nid = db.create_notification(
-                    task["id"], task["channel"],
-                    task["channel_chat_id"], message,
-                )
-                deliver_notification(db, nid)
+                # Queue notification via outbound messages
+                if task["channel"] != "cli" and task["channel_chat_id"]:
+                    agent = db.get_agent_by_session(task["session_id"])
+                    agent_name = agent["name"] if agent else task["session_id"]
+                    message = format_completion_message(task, agent_name)
+                    msg_db.create_outbound(
+                        task["channel"], task["channel_chat_id"],
+                        message, source="notification",
+                    )
 
-            db.mark_task_reported(task["id"])
-
-        # Retry any pending notifications (from previous failed deliveries)
-        pending = db.get_pending_notifications()
-        for notif in pending:
-            deliver_notification(db, notif["id"])
+                db.mark_task_reported(task["id"])
+        finally:
+            msg_db.close()
 
     finally:
         if own_db:

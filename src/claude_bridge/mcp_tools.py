@@ -210,6 +210,26 @@ def tool_acknowledge(msg_db: MessageDB, message_id: int) -> str:
     return json.dumps({"status": "acknowledged", "message_id": message_id})
 
 
+def tool_get_notifications(db: BridgeDB) -> str:
+    """Get unreported task completion notifications and mark them reported."""
+    unreported = db.get_unreported_tasks()
+    notifications = []
+    for task in unreported:
+        agent = db.get_agent_by_session(task["session_id"])
+        agent_name = agent["name"] if agent else task["session_id"]
+        notifications.append({
+            "task_id": task["id"],
+            "agent": agent_name,
+            "status": task["status"],
+            "summary": (task["result_summary"] or "")[:200],
+            "error": (task["error_message"] or "")[:200],
+            "cost_usd": task["cost_usd"],
+            "duration_ms": task["duration_ms"],
+        })
+        db.mark_task_reported(task["id"])
+    return json.dumps({"notifications": notifications})
+
+
 def tool_reply(msg_db: MessageDB, chat_id: str, text: str, reply_to_message_id: str | None = None) -> str:
     """Queue a reply for delivery via Telegram."""
     mid = msg_db.create_outbound("telegram", chat_id, text, reply_to_message_id=reply_to_message_id, source="bot")
