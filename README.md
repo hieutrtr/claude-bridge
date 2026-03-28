@@ -65,28 +65,54 @@ PYTHONPATH=src python3 -m claude_bridge.cli setup > ~/bridge-bot/CLAUDE.md
 2. Send `/newbot`, follow the prompts to name your bot
 3. Copy the bot token (looks like `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`)
 
-### 5. Install and configure the Telegram MCP plugin
+### 5. Add the Telegram MCP plugin to the project
 
-Start Claude Code in the bridge-bot folder:
+Create a `.mcp.json` file in your bridge-bot project so the Telegram plugin loads automatically:
+
+```bash
+cat > ~/bridge-bot/.mcp.json << 'EOF'
+{
+  "mcpServers": {
+    "telegram": {
+      "type": "stdio",
+      "command": "bun",
+      "args": ["run", "--cwd", "<path-to-telegram-plugin>", "--shell=bun", "--silent", "start"],
+      "env": {
+        "TELEGRAM_BOT_TOKEN": "<your-bot-token>"
+      }
+    }
+  }
+}
+EOF
+```
+
+Replace `<your-bot-token>` with the token from BotFather and `<path-to-telegram-plugin>` with the plugin path (typically `~/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/telegram`).
+
+**Alternative: install via Claude Code CLI**
+
+```bash
+cd ~/bridge-bot
+claude mcp add telegram \
+  --transport stdio \
+  --scope project \
+  -- bun run --cwd ~/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/telegram --shell=bun --silent start
+```
+
+Or install interactively — start Claude Code and use the plugin manager:
 
 ```bash
 cd ~/bridge-bot
 claude
 ```
 
-Inside Claude Code, install the Telegram plugin:
+Then inside the session:
 
 ```
 /plugin install telegram@claude-plugins-official
-```
-
-Then configure your bot token:
-
-```
 /telegram:configure <your-bot-token>
 ```
 
-This saves the token and starts the Telegram connection.
+> **Note:** `.mcp.json` is checked into git, so don't put secrets directly in it for shared repos. Use environment variables: `"TELEGRAM_BOT_TOKEN": "${TELEGRAM_BOT_TOKEN}"` and set the env var on your machine.
 
 ### 6. Pair your Telegram account
 
