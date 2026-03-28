@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     model TEXT,
     task_type TEXT DEFAULT 'standard',
     parent_task_id INTEGER REFERENCES tasks(id),
+    channel TEXT DEFAULT 'cli',
+    channel_chat_id TEXT,
+    channel_message_id TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
@@ -171,10 +174,13 @@ class BridgeDB:
         prompt: str,
         task_type: str = "standard",
         parent_task_id: int | None = None,
+        channel: str = "cli",
+        channel_chat_id: str | None = None,
+        channel_message_id: str | None = None,
     ) -> int:
         cursor = self.conn.execute(
-            "INSERT INTO tasks (session_id, prompt, task_type, parent_task_id) VALUES (?, ?, ?, ?)",
-            (session_id, prompt, task_type, parent_task_id),
+            "INSERT INTO tasks (session_id, prompt, task_type, parent_task_id, channel, channel_chat_id, channel_message_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, prompt, task_type, parent_task_id, channel, channel_chat_id, channel_message_id),
         )
         self.conn.commit()
         return cursor.lastrowid
