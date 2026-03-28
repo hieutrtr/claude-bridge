@@ -101,8 +101,28 @@ def create_server(db: BridgeDB | None = None, msg_db: MessageDB | None = None) -
 
 def main():
     """Run the Bridge MCP server on stdio."""
-    server = create_server()
-    server.run(transport="stdio")
+    import os
+    from .telegram_poller import TelegramPoller
+    from .notify import get_bot_token
+
+    msg_db = MessageDB()
+    server = create_server(msg_db=msg_db)
+
+    # Start Telegram poller if token is available
+    token = get_bot_token()
+    poller = None
+    if token:
+        poller = TelegramPoller(token, msg_db)
+        poller.start()
+        import sys
+        print("[bridge-mcp] Telegram poller started", file=sys.stderr)
+
+    try:
+        server.run(transport="stdio")
+    finally:
+        if poller:
+            poller.stop()
+        msg_db.close()
 
 
 if __name__ == "__main__":

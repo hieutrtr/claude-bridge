@@ -143,6 +143,21 @@ class TelegramPoller:
             new_offset = update["update_id"] + 1
             self.msg_db.set_state("telegram_offset", str(new_offset))
 
+        # Retry unacknowledged inbound messages (delivered but not acknowledged after 3s)
+        unacked = self.msg_db.get_unacknowledged_inbound(timeout_seconds=3)
+        for msg in unacked:
+            if msg["retry_count"] + 1 >= msg["max_retries"]:
+                self.msg_db.mark_inbound_failed(msg["id"])
+                # Notify user their message was lost
+                self.msg_db.create_outbound(
+                    "telegram", msg["chat_id"],
+                    "Sorry, your message could not be delivered to the Bridge Bot. Please try again.",
+                    source="system",
+                )
+                print(f"[poller] inbound #{msg['id']} failed after {msg['max_retries']} retries", file=sys.stderr)
+            else:
+                self.msg_db.increment_inbound_retry(msg["id"])
+
         # Send pending outbound
         pending = self.msg_db.get_pending_outbound()
         for msg in pending:

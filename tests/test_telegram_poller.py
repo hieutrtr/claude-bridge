@@ -215,3 +215,54 @@ class TestPollerIntegration:
         poller = TelegramPoller("fake-token", msg_db)
         poller.poll_once()
         assert msg_db.get_pending_inbound() == []
+
+
+class TestDeliveryRetry:
+    @patch("claude_bridge.telegram_poller.telegram_send_message", return_value=True)
+    @patch("claude_bridge.telegram_poller.telegram_get_updates")
+    def test_retries_unacknowledged(self, mock_get, mock_send, msg_db):
+        mock_get.return_value = ([], {"ok": True, "result": []})
+
+        # Create a delivered-but-unacknowledged message with old timestamp
+        mid = msg_db.create_inbound("telegram", "12345", "u1", "hello")
+        # Manually set delivered_at to 10 seconds ago
+        from claude_bridge.message_db import _utcnow_offset
+        old_time = _utcnow_offset(-10)
+        msg_db.conn.execute(
+            "UPDATE inbound_messages SET status='delivered', delivered_at=? WHERE id=?",
+            (old_time, mid),
+        )
+        msg_db.conn.commit()
+
+        poller = TelegramPoller("fake-token", msg_db)
+        poller.poll_once()
+
+        msg = msg_db.get_inbound(mid)
+        assert msg["status"] == "pending"  # reset to pending for retry
+        assert msg["retry_count"] == 1
+
+    @patch("claude_bridge.telegram_poller.telegram_send_message", return_value=True)
+    @patch("claude_bridge.telegram_poller.telegram_get_updates")
+    def test_max_retries_marks_failed(self, mock_get, mock_send, msg_db):
+        mock_get.return_value = ([], {"ok": True, "result": []})
+
+        mid = msg_db.create_inbound("telegram", "12345", "u1", "hello")
+        # Set retry_count to max-1 and delivered with old timestamp
+        from claude_bridge.message_db import _utcnow_offset
+        old_time = _utcnow_offset(-10)
+        msg_db.conn.execute(
+            "UPDATE inbound_messages SET status='delivered', delivered_at=?, retry_count=4 WHERE id=?",
+            (old_time, mid),
+        )
+        msg_db.conn.commit()
+
+        poller = TelegramPoller("fake-token", msg_db)
+        poller.poll_once()
+
+        msg = msg_db.get_inbound(mid)
+        assert msg["status"] == "failed"
+
+        # Should have created an error outbound message (already sent by poller)
+        outbound = msg_db.conn.execute("SELECT * FROM outbound_messages").fetchall()
+        assert len(outbound) == 1
+        assert "could not be delivered" in outbound[0]["message_text"]
