@@ -9,6 +9,8 @@ from unittest.mock import patch
 from claude_bridge.channel import format_message, parse_channel_context, CHANNELS
 from claude_bridge.db import BridgeDB
 from claude_bridge.cli import cmd_dispatch, cmd_create_agent, cmd_history, build_parser
+from claude_bridge.on_complete import main as on_complete_main
+import json
 
 
 @pytest.fixture
@@ -168,3 +170,66 @@ class TestDispatchWithChannel:
         cmd_history(db, _Args(name="backend", limit=10))
         captured = capsys.readouterr()
         assert "telegram" in captured.out
+
+
+class TestMultiChannelE2E:
+    """E2E test: dispatch from multiple channels, verify tracking through completion."""
+
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    def test_mixed_channel_dispatch(self, mock_spawn, cli_env, capsys):
+        db = cli_env["db"]
+        with patch("claude_bridge.cli.init_claude_md", return_value={"success": True, "message": "ok"}):
+            cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model=None))
+
+        # Dispatch from telegram
+        cmd_dispatch(db, _Args(name="backend", prompt="task 1", model=None, channel="telegram", chat_id="111", message_id="1"))
+
+        # Complete it so we can dispatch again
+        agent = db.get_agent("backend")
+        history = db.get_task_history(agent["session_id"])
+        db.update_task(history[0]["id"], status="done")
+        db.update_agent_state(agent["session_id"], "idle")
+
+        # Dispatch from discord
+        cmd_dispatch(db, _Args(name="backend", prompt="task 2", model=None, channel="discord", chat_id="222", message_id="2"))
+
+        # Check history has both channels
+        history = db.get_task_history(agent["session_id"])
+        channels = [t["channel"] for t in history]
+        assert "telegram" in channels
+        assert "discord" in channels
+
+    def test_on_complete_preserves_channel(self, cli_env, monkeypatch):
+        db = cli_env["db"]
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")
+        tid = db.create_task("backend--api", "fix bug", channel="telegram", channel_chat_id="12345")
+        result_file = str(cli_env["home"] / f"task-{tid}-result.json")
+        db.update_task(tid, status="running", pid=111, result_file=result_file)
+        db.update_agent_state("backend--api", "running")
+
+        with open(result_file, "w") as f:
+            json.dump({"is_error": False, "result": "done", "cost_usd": 0.01, "duration_ms": 5000, "num_turns": 1}, f)
+
+        monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", "backend--api"])
+        on_complete_main(db=db)
+
+        task = db.get_task(tid)
+        assert task["status"] == "done"
+        # Channel info preserved through completion
+        assert task["channel"] == "telegram"
+        assert task["channel_chat_id"] == "12345"
+
+    @patch("claude_bridge.cli.spawn_task", return_value=111)
+    def test_cli_dispatch_no_channel_flags(self, mock_spawn, cli_env):
+        """dispatch without --channel defaults to 'cli'."""
+        db = cli_env["db"]
+        with patch("claude_bridge.cli.init_claude_md", return_value={"success": True, "message": "ok"}):
+            cmd_create_agent(db, _Args(name="backend", path=str(cli_env["project"]), purpose="dev", model=None))
+
+        # Simulate CLI dispatch (no channel attrs)
+        args = _Args(name="backend", prompt="fix bug", model=None)
+        cmd_dispatch(db, args)
+
+        agent = db.get_agent("backend")
+        history = db.get_task_history(agent["session_id"])
+        assert history[0]["channel"] == "cli"
