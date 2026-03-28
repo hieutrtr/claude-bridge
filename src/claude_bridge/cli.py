@@ -122,6 +122,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--chat-id", default=None, help="Channel chat/thread ID")
     p.add_argument("--message-id", default=None, help="Channel message ID")
 
+    # setup-telegram
+    p = sub.add_parser("setup-telegram", help="Save Telegram bot token for notifications")
+    p.add_argument("token", help="Telegram bot token from @BotFather")
+
     # setup
     sub.add_parser("setup", help="Print Bridge Bot CLAUDE.md to stdout")
 
@@ -230,9 +234,16 @@ def cmd_dispatch(db: BridgeDB, args):
 
     session_id = agent["session_id"]
 
-    channel = getattr(args, "channel", "cli") or "cli"
+    channel = getattr(args, "channel", None)
     chat_id = getattr(args, "chat_id", None)
     message_id = getattr(args, "message_id", None)
+
+    # Auto-detect notification channel if not specified
+    if not channel or channel == "cli":
+        from .notify import get_default_channel
+        channel, default_chat_id = get_default_channel()
+        if not chat_id:
+            chat_id = default_chat_id
 
     # Check if busy — queue instead of reject
     running = db.get_running_task(session_id)
@@ -372,6 +383,33 @@ def cmd_memory(db: BridgeDB, args):
 
     report = format_memory_report(args.name, agent["project_dir"])
     print(report)
+    return 0
+
+
+def cmd_setup_telegram(db: BridgeDB, args):
+    """Save Telegram bot token to config."""
+    import json
+    config_path = os.path.expanduser("~/.claude-bridge/config.json")
+    config = {}
+    if os.path.isfile(config_path):
+        with open(config_path) as f:
+            try:
+                config = json.load(f)
+            except json.JSONDecodeError:
+                pass
+    config["telegram_bot_token"] = args.token
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+    print(f"Telegram bot token saved to {config_path}")
+
+    # Show auto-detected notification target
+    from .notify import get_default_telegram_chat_id
+    chat_id = get_default_telegram_chat_id()
+    if chat_id:
+        print(f"Default notification target: chat_id {chat_id}")
+    else:
+        print("No paired Telegram user found. Pair via /telegram:access pair <code> first.")
     return 0
 
 
@@ -674,9 +712,15 @@ def cmd_team_dispatch(db: BridgeDB, args):
     augmented = _build_team_prompt(args.prompt, args.name, members)
 
     session_id = lead["session_id"]
-    channel = getattr(args, "channel", "cli") or "cli"
+    channel = getattr(args, "channel", None)
     chat_id = getattr(args, "chat_id", None)
     message_id = getattr(args, "message_id", None)
+
+    if not channel or channel == "cli":
+        from .notify import get_default_channel
+        channel, default_chat_id = get_default_channel()
+        if not chat_id:
+            chat_id = default_chat_id
 
     # Check if busy — queue
     running = db.get_running_task(session_id)
@@ -780,6 +824,7 @@ COMMANDS = {
     "approve": cmd_approve,
     "deny": cmd_deny,
     "setup": cmd_setup,
+    "setup-telegram": cmd_setup_telegram,
     "setup-cron": cmd_setup_cron,
     "remove-cron": cmd_remove_cron,
 }
