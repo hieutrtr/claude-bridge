@@ -17,7 +17,7 @@ class TestGenerateAgentMd:
 
     def test_contains_stop_hook(self):
         content = generate_agent_md("backend--api", "backend", "/projects/api", "API dev")
-        assert "on-complete.py" in content
+        assert "claude_bridge.on_complete" in content
         assert "--session-id backend--api" in content
 
     def test_contains_tools(self):

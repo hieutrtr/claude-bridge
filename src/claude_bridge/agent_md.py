@@ -23,7 +23,7 @@ hooks:
   Stop:
     - hooks:
         - type: command
-          command: "python3 {on_complete_path} --session-id {session_id}"
+          command: "PYTHONPATH={src_path} python3 -m claude_bridge.on_complete --session-id {session_id}"
 ---
 
 # Agent: {agent_name}
@@ -49,8 +49,6 @@ def generate_agent_md(
 ) -> str:
     """Generate agent .md file content in native Claude Code format."""
     agent_file_name = f"bridge--{session_id}"
-    on_complete_path = os.path.expanduser("~/.claude-bridge/on-complete.py")
-
     src_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     return AGENT_TEMPLATE.format(
@@ -61,7 +59,6 @@ def generate_agent_md(
         purpose=purpose,
         model=model,
         src_path=src_path,
-        on_complete_path=on_complete_path,
     ).lstrip()
 
 

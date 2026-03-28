@@ -93,7 +93,7 @@ class TestCreateAgent:
         content = agent_file.read_text()
         assert "isolation: worktree" in content
         assert "memory: project" in content
-        assert "on-complete.py" in content
+        assert "claude_bridge.on_complete" in content
         assert "API dev" in content
 
     @patch("claude_bridge.cli.init_claude_md")
