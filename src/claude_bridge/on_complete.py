@@ -208,6 +208,9 @@ def main(db: BridgeDB | None = None):
             )
             deliver_notification(db, nid)
 
+        # Mark as reported so watcher doesn't send again
+        db.mark_task_reported(task_id)
+
     finally:
         if own_db:
             db.close()
