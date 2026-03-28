@@ -514,7 +514,7 @@ def cmd_setup_bot(db: BridgeDB, args):
     if mode == "channel":
         print("Bridge Bot ready. Start with:")
         print(f"  cd {target}")
-        print("  claude --channels server:bridge --dangerously-skip-permissions")
+        print("  claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions")
     else:
         print("Bridge Bot ready (Python MCP mode). Start with:")
         print(f"  cd {target}")

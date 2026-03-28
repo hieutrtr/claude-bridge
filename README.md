@@ -103,7 +103,7 @@ CLAUDE.md → ~/projects/bridge-bot/CLAUDE.md
 
 Bridge Bot ready. Start with:
   cd ~/projects/bridge-bot
-  claude --channels server:bridge --dangerously-skip-permissions
+  claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions
 ```
 
 What was created:
@@ -132,7 +132,7 @@ To remove later: `PYTHONPATH=src python3 -m claude_bridge.cli remove-cron`
 
 ```bash
 cd ~/projects/bridge-bot
-claude --channels server:bridge --dangerously-skip-permissions
+claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions
 ```
 
 What happens:
@@ -245,7 +245,7 @@ After the initial setup, start the Bridge Bot any time with:
 
 ```bash
 cd ~/projects/bridge-bot
-claude --channels server:bridge --dangerously-skip-permissions
+claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions
 ```
 
 - Channel server reconnects to Telegram automatically
