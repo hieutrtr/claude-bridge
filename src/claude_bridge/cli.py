@@ -424,63 +424,101 @@ def cmd_setup(db: BridgeDB, args):
     return 0
 
 
-def generate_mcp_json() -> str:
-    """Generate .mcp.json content for Bridge MCP server."""
+def _get_bot_token() -> str:
+    """Read bot token from config."""
     import json as _json
-    import shutil
-    src_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    python_path = shutil.which("python3") or sys.executable
-
-    # Read bot token from config
     config_path = os.path.expanduser("~/.claude-bridge/config.json")
-    bot_token = ""
     if os.path.isfile(config_path):
         try:
             with open(config_path) as f:
-                config = _json.load(f)
-            bot_token = config.get("telegram_bot_token", "")
+                return _json.load(f).get("telegram_bot_token", "")
         except (_json.JSONDecodeError, IOError):
             pass
+    return ""
 
-    mcp_config = {
-        "mcpServers": {
-            "bridge": {
-                "type": "stdio",
-                "command": python_path,
-                "args": ["-m", "claude_bridge.mcp_server"],
-                "env": {
-                    "PYTHONPATH": src_path,
-                    "TELEGRAM_BOT_TOKEN": bot_token,
-                },
+
+def generate_mcp_json(mode: str = "channel") -> str:
+    """Generate .mcp.json content."""
+    import json as _json
+    import shutil
+
+    src_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    channel_path = os.path.join(os.path.dirname(src_path), "channel", "server.ts")
+    bot_token = _get_bot_token()
+
+    if mode == "channel":
+        bun_path = shutil.which("bun") or "bun"
+        mcp_config = {
+            "mcpServers": {
+                "bridge": {
+                    "type": "stdio",
+                    "command": bun_path,
+                    "args": ["run", channel_path],
+                    "env": {
+                        "TELEGRAM_BOT_TOKEN": bot_token,
+                        "BRIDGE_SRC_PATH": src_path,
+                        "MESSAGES_DB_PATH": os.path.expanduser("~/.claude-bridge/messages.db"),
+                    },
+                }
             }
         }
-    }
+    else:
+        python_path = shutil.which("python3") or sys.executable
+        mcp_config = {
+            "mcpServers": {
+                "bridge": {
+                    "type": "stdio",
+                    "command": python_path,
+                    "args": ["-m", "claude_bridge.mcp_server"],
+                    "env": {
+                        "PYTHONPATH": src_path,
+                        "TELEGRAM_BOT_TOKEN": bot_token,
+                    },
+                }
+            }
+        }
     return _json.dumps(mcp_config, indent=2)
 
 
 def cmd_setup_bot(db: BridgeDB, args):
     """Generate CLAUDE.md + .mcp.json in target directory."""
+    import shutil
     from .bridge_bot_claude_md import generate_bridge_bot_claude_md
 
     target = os.path.expanduser(args.path)
     os.makedirs(target, exist_ok=True)
 
+    # Detect mode: channel (TypeScript) if bun is available, else python MCP
+    has_bun = shutil.which("bun") is not None
+    mode = "channel" if has_bun else "mcp"
+
     # Write CLAUDE.md
     claude_md_path = os.path.join(target, "CLAUDE.md")
     with open(claude_md_path, "w") as f:
-        f.write(generate_bridge_bot_claude_md())
+        f.write(generate_bridge_bot_claude_md(mode=mode))
     print(f"CLAUDE.md → {claude_md_path}")
 
     # Write .mcp.json
     mcp_json_path = os.path.join(target, ".mcp.json")
     with open(mcp_json_path, "w") as f:
-        f.write(generate_mcp_json())
+        f.write(generate_mcp_json(mode=mode))
     print(f".mcp.json → {mcp_json_path}")
 
+    # Check channel deps
+    channel_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "channel")
+    if mode == "channel" and not os.path.isdir(os.path.join(channel_dir, "node_modules")):
+        print(f"\nInstall channel dependencies first:")
+        print(f"  cd {os.path.abspath(channel_dir)} && bun install")
+
     print()
-    print("Bridge Bot ready. Start with:")
-    print(f"  cd {target}")
-    print("  claude --dangerously-skip-permissions")
+    if mode == "channel":
+        print("Bridge Bot ready. Start with:")
+        print(f"  cd {target}")
+        print("  claude --channels server:bridge --dangerously-skip-permissions")
+    else:
+        print("Bridge Bot ready (Python MCP mode). Start with:")
+        print(f"  cd {target}")
+        print("  claude --dangerously-skip-permissions")
     return 0
 
 
