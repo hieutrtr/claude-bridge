@@ -99,8 +99,38 @@ class BridgeDB:
         self._init_schema()
 
     def _init_schema(self):
+        # Migrate first so new columns exist before CREATE INDEX references them
+        self._migrate()
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+
+    def _migrate(self):
+        """Add columns that may be missing from older databases."""
+        existing = {
+            "tasks": set(),
+            "agents": set(),
+        }
+        for table in existing:
+            cursor = self.conn.execute(f"PRAGMA table_info({table})")
+            cols = {row[1] for row in cursor.fetchall()}
+            existing[table] = cols
+        # Skip migration if tables don't exist yet (fresh DB)
+        if not existing["tasks"] and not existing["agents"]:
+            return
+
+        migrations = [
+            ("tasks", "position", "INTEGER"),
+            ("tasks", "model", "TEXT"),
+            ("tasks", "task_type", "TEXT DEFAULT 'standard'"),
+            ("tasks", "parent_task_id", "INTEGER REFERENCES tasks(id)"),
+            ("tasks", "channel", "TEXT DEFAULT 'cli'"),
+            ("tasks", "channel_chat_id", "TEXT"),
+            ("tasks", "channel_message_id", "TEXT"),
+            ("agents", "model", "TEXT DEFAULT 'sonnet'"),
+        ]
+        for table, column, col_type in migrations:
+            if column not in existing[table]:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
     def close(self):
         self.conn.close()
