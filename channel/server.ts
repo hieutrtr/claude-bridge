@@ -199,9 +199,36 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }));
 
+// --- Notification Queue (prevent interleaving with tool responses) ---
+
+let toolCallInFlight = false;
+const pendingNotifications: Array<{ method: string; params: any }> = [];
+
+function queuedNotification(msg: { method: string; params: any }) {
+  if (toolCallInFlight) {
+    // Don't write to stdout while a tool response is pending
+    pendingNotifications.push(msg);
+    process.stderr.write(`bridge channel: queued notification (tool call in flight)\n`);
+  } else {
+    mcp.notification(msg);
+  }
+}
+
+function flushPendingNotifications() {
+  while (pendingNotifications.length > 0) {
+    const msg = pendingNotifications.shift()!;
+    try {
+      mcp.notification(msg);
+    } catch (err) {
+      process.stderr.write(`bridge channel: flush notification error: ${err}\n`);
+    }
+  }
+}
+
 // --- Tool Handlers ---
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
+  toolCallInFlight = true;
   const { name, arguments: args } = req.params;
 
   try {
@@ -276,21 +303,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         if (pending.length === 0) {
           return { content: [{ type: "text", text: "No pending messages" }] };
         }
-        // Re-push any pending messages that Claude might have missed
+        // Return pending messages as tool output so Claude sees them directly
         const messages = pending.map((m) => ({
           tracking_id: m.id,
           chat_id: m.chat_id,
           user: m.username,
           text: m.message_text,
         }));
-        // Also try pushing them again
-        for (const msg of pending) {
-          try {
-            pushMessage(mcp, msg.id, msg.chat_id, msg.user_id, msg.username, msg.message_text, msg.message_id, new Date().toISOString());
-          } catch {
-            // Push failed, but we return the messages as text so Claude sees them
-          }
-        }
+        // NOTE: Don't re-push here — we're inside a tool call.
+        // The messages are returned as text. Notifications will flush after this tool returns.
         return {
           content: [{
             type: "text",
@@ -304,6 +325,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
   } catch (err: any) {
     return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+  } finally {
+    toolCallInFlight = false;
+    // Flush any notifications that arrived during the tool call
+    flushPendingNotifications();
   }
 });
 
@@ -331,7 +356,9 @@ bot.on("message:text", async (ctx) => {
   try {
     const ts = new Date(ctx.message.date * 1000).toISOString();
     const trackingId = trackInbound(msgDb, chatId, userId, username, text, messageId);
-    pushMessage(mcp, trackingId, chatId, userId, username, text, messageId, ts);
+    // Use queued notification to avoid interleaving with tool responses
+    const notifier: import("./lib").McpNotifier = { notification: (msg) => queuedNotification(msg) };
+    pushMessage(notifier, trackingId, chatId, userId, username, text, messageId, ts);
   } catch (err) {
     process.stderr.write(`bridge channel: message handler error: ${err}\n`);
   }
@@ -351,11 +378,14 @@ async function main() {
     },
   });
 
+  // Queued notifier for background tasks (avoids interleaving with tool responses)
+  const bgNotifier: import("./lib").McpNotifier = { notification: (msg) => queuedNotification(msg) };
+
   // Outbound poller
   outboundInterval = setInterval(async () => {
     try {
       await processOutbound(
-        msgDb, mcp,
+        msgDb, bgNotifier,
         async (chatId, text) => { await bot.api.sendMessage(chatId, text); }
       );
     } catch (err) {
@@ -367,7 +397,7 @@ async function main() {
   retryInterval = setInterval(() => {
     try {
       processRetries(
-        msgDb, mcp,
+        msgDb, bgNotifier,
         async (chatId, text) => { await bot.api.sendMessage(chatId, text); },
         RETRY_TIMEOUT_MS, MAX_RETRIES
       );
