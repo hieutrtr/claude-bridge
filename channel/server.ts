@@ -6,7 +6,7 @@
  * via mcp.notification('notifications/claude/channel', ...) and exposes tools
  * for replying and managing agents.
  *
- * Start with: claude --channels server:bridge --dangerously-skip-permissions
+ * Start with: claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -17,11 +17,21 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { Bot } from "grammy";
 import { Database } from "bun:sqlite";
-import { readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
-import { execSync } from "child_process";
 import { mkdirSync } from "fs";
+
+import {
+  initInboundTracking,
+  isAllowed,
+  trackInbound,
+  acknowledgeInbound,
+  pushMessage,
+  processRetries,
+  processOutbound,
+  bridgeCli,
+  handleReply,
+} from "./lib";
 
 // --- Configuration ---
 
@@ -46,185 +56,19 @@ const ACCESS_FILE = join(
   "access.json"
 );
 
-// --- Access Control ---
-
-function loadAllowlist(): string[] {
-  try {
-    const data = JSON.parse(readFileSync(ACCESS_FILE, "utf8"));
-    return data.allowFrom ?? [];
-  } catch {
-    return []; // no file = permissive (empty list allows all)
-  }
-}
-
-function isAllowed(userId: string): boolean {
-  const allowed = loadAllowlist();
-  if (allowed.length === 0) return true; // empty = allow all
-  return allowed.includes(userId);
-}
-
-// --- Inbound Message Tracking (retry on no-ack) ---
-
 const RETRY_TIMEOUT_MS = 30000;
 const MAX_RETRIES = 5;
 
-// Ensure messages.db directory exists
+// --- Database ---
+
 mkdirSync(join(homedir(), ".claude-bridge"), { recursive: true });
 const msgDb = new Database(MESSAGES_DB_PATH);
-msgDb.run("PRAGMA journal_mode=WAL");
-msgDb.run(`CREATE TABLE IF NOT EXISTS inbound_tracking (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  chat_id TEXT NOT NULL,
-  user_id TEXT NOT NULL,
-  username TEXT,
-  message_text TEXT NOT NULL,
-  message_id TEXT,
-  status TEXT DEFAULT 'pushed',
-  retry_count INTEGER DEFAULT 0,
-  pushed_at TEXT,
-  acknowledged_at TEXT
-)`);
+initInboundTracking(msgDb);
 
-function trackInbound(chatId: string, userId: string, username: string, text: string, messageId: string): number {
-  const stmt = msgDb.prepare(
-    "INSERT INTO inbound_tracking (chat_id, user_id, username, message_text, message_id, pushed_at) VALUES (?, ?, ?, ?, ?, datetime('now'))"
-  );
-  return Number(stmt.run(chatId, userId, username, text, messageId).lastInsertRowid);
-}
-
-function acknowledgeInbound(trackingId: number): boolean {
-  const row = msgDb.query("SELECT * FROM inbound_tracking WHERE id = ?").get(trackingId) as any;
-  if (!row) return false;
-  msgDb.run("UPDATE inbound_tracking SET status = 'acknowledged', acknowledged_at = datetime('now') WHERE id = ?", [trackingId]);
-  return true;
-}
-
-function pushMessage(trackingId: number, chatId: string, userId: string, username: string, text: string, messageId: string, ts: string) {
-  mcp.notification({
-    method: "notifications/claude/channel",
-    params: {
-      content: text,
-      meta: {
-        chat_id: chatId,
-        message_id: messageId,
-        user: username,
-        user_id: userId,
-        ts,
-        tracking_id: String(trackingId),
-      },
-    },
-  });
-}
-
-// Retry interval: re-push unacknowledged messages
-let retryInterval: ReturnType<typeof setInterval> | null = null;
-
-function startRetryEngine() {
-  retryInterval = setInterval(() => {
-    try {
-      const unacked = msgDb.query(
-        `SELECT * FROM inbound_tracking
-         WHERE status = 'pushed'
-         AND (julianday('now') - julianday(pushed_at)) * 86400 > ?
-         ORDER BY id`
-      ).all(RETRY_TIMEOUT_MS / 1000) as any[];
-
-      for (const msg of unacked) {
-        if (msg.retry_count >= MAX_RETRIES) {
-          msgDb.run("UPDATE inbound_tracking SET status = 'failed' WHERE id = ?", [msg.id]);
-          // Notify user their message was lost
-          bot.api.sendMessage(msg.chat_id, "Sorry, your message could not be delivered to the Bridge Bot. Please try again.").catch(() => {});
-          process.stderr.write(`bridge channel: inbound #${msg.id} failed after ${MAX_RETRIES} retries\n`);
-        } else {
-          msgDb.run("UPDATE inbound_tracking SET retry_count = retry_count + 1, pushed_at = datetime('now') WHERE id = ?", [msg.id]);
-          pushMessage(msg.id, msg.chat_id, msg.user_id, msg.username, msg.message_text, msg.message_id, new Date().toISOString());
-          process.stderr.write(`bridge channel: retrying inbound #${msg.id} (attempt ${msg.retry_count + 1})\n`);
-        }
-      }
-    } catch (err) {
-      process.stderr.write(`bridge channel: retry engine error: ${err}\n`);
-    }
-  }, RETRY_TIMEOUT_MS);
-}
-
-// --- Bridge CLI subprocess ---
-
-function bridgeCli(command: string, args: string[] = []): string {
-  const pythonPath = process.env.PYTHON_PATH ?? "python3";
-  const cmd = `PYTHONPATH=${BRIDGE_SRC_PATH} ${pythonPath} -m claude_bridge.cli ${command} ${args.map((a) => `"${a.replace(/"/g, '\\"')}"`).join(" ")}`;
-  try {
-    return execSync(cmd, { timeout: 30000, encoding: "utf8" }).trim();
-  } catch (err: any) {
-    throw new Error(err.stderr?.trim() || err.message);
-  }
-}
-
-// --- Outbound message poller (reads messages.db) ---
+// --- Intervals ---
 
 let outboundInterval: ReturnType<typeof setInterval> | null = null;
-
-function startOutboundPoller(
-  mcp: Server,
-  bot: Bot
-) {
-  // Check if outbound_messages table exists before polling
-  const hasOutbound = msgDb.query(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='outbound_messages'"
-  ).get();
-  if (!hasOutbound) {
-    process.stderr.write("bridge channel: outbound_messages table not found, skipping outbound poller\n");
-    return;
-  }
-
-  outboundInterval = setInterval(async () => {
-    try {
-      const pending = msgDb
-        .query(
-          "SELECT * FROM outbound_messages WHERE status = 'pending' ORDER BY created_at LIMIT 10"
-        )
-        .all() as any[];
-
-      for (const msg of pending) {
-        try {
-          await bot.api.sendMessage(msg.chat_id, msg.message_text);
-          msgDb.run(
-            "UPDATE outbound_messages SET status = 'sent', sent_at = datetime('now') WHERE id = ?",
-            [msg.id]
-          );
-
-          // If this is a task completion notification, also push to Claude session
-          if (msg.source === "notification") {
-            mcp.notification({
-              method: "notifications/claude/channel",
-              params: {
-                content: msg.message_text,
-                meta: {
-                  source: "task_completion",
-                  chat_id: msg.chat_id,
-                },
-              },
-            });
-          }
-        } catch (err) {
-          const retryCount = (msg as any).retry_count + 1;
-          if (retryCount >= (msg as any).max_retries) {
-            msgDb.run(
-              "UPDATE outbound_messages SET status = 'failed', retry_count = ? WHERE id = ?",
-              [retryCount, msg.id]
-            );
-          } else {
-            msgDb.run(
-              "UPDATE outbound_messages SET retry_count = ? WHERE id = ?",
-              [retryCount, msg.id]
-            );
-          }
-        }
-      }
-    } catch (err) {
-      process.stderr.write(`bridge channel: outbound poller error: ${err}\n`);
-    }
-  }, 2000);
-}
+let retryInterval: ReturnType<typeof setInterval> | null = null;
 
 // --- MCP Server ---
 
@@ -238,8 +82,8 @@ const mcp = new Server(
       },
     },
     instructions: [
-      "Messages from Telegram arrive as <channel source=\"bridge\" chat_id=\"...\" user=\"...\" tracking_id=\"...\" ts=\"...\">.",
-      "IMPORTANT: After processing each message, call bridge_acknowledge(tracking_id) to confirm. If you don't acknowledge within 3 seconds, the message will be re-pushed.",
+      'Messages from Telegram arrive as <channel source="bridge" chat_id="..." user="..." tracking_id="..." ts="...">.',
+      "IMPORTANT: After processing each message, call bridge_acknowledge(tracking_id) to confirm. If you don't acknowledge within 30 seconds, the message will be re-pushed.",
       "Reply with the reply tool — pass chat_id back. Keep replies concise (users are on mobile).",
       "Use bridge_dispatch to send tasks to agents. Use bridge_status to check running tasks.",
       "Use bridge_agents to list available agents. Use bridge_get_notifications to check for completed tasks.",
@@ -260,10 +104,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           chat_id: { type: "string", description: "Telegram chat ID" },
           text: { type: "string", description: "Message text" },
-          reply_to: {
-            type: "string",
-            description: "Message ID to reply to (optional)",
-          },
+          reply_to: { type: "string", description: "Message ID to reply to (optional)" },
         },
         required: ["chat_id", "text"],
       },
@@ -360,56 +201,36 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   try {
     switch (name) {
       case "reply": {
-        const { chat_id, text, reply_to } = args as {
-          chat_id: string;
-          text: string;
-          reply_to?: string;
-        };
-        if (!isAllowed(chat_id)) {
-          return {
-            content: [{ type: "text", text: "Error: chat not in allowlist" }],
-          };
-        }
-        // Chunk if over 4096 chars
-        const chunks =
-          text.length > 4096 ? text.match(/.{1,4096}/gs) ?? [text] : [text];
-        for (const chunk of chunks) {
-          await bot.api.sendMessage(chat_id, chunk, {
-            ...(reply_to ? { reply_parameters: { message_id: Number(reply_to) } } : {}),
-          });
-        }
-        return { content: [{ type: "text", text: "sent" }] };
+        const { chat_id, text, reply_to } = args as { chat_id: string; text: string; reply_to?: string };
+        const result = await handleReply(
+          async (cid, txt, opts) => { await bot.api.sendMessage(cid, txt, opts ?? {}); },
+          chat_id, text, reply_to, ACCESS_FILE
+        );
+        return { content: [{ type: "text", text: result }] };
       }
 
       case "bridge_acknowledge": {
         const { tracking_id } = args as { tracking_id: number };
-        const ok = acknowledgeInbound(tracking_id);
-        return {
-          content: [{ type: "text", text: ok ? "acknowledged" : "not found" }],
-        };
+        const ok = acknowledgeInbound(msgDb, tracking_id);
+        return { content: [{ type: "text", text: ok ? "acknowledged" : "not found" }] };
       }
 
       case "bridge_dispatch": {
-        const { agent, prompt, model } = args as {
-          agent: string;
-          prompt: string;
-          model?: string;
-        };
+        const { agent, prompt, model } = args as { agent: string; prompt: string; model?: string };
         const cliArgs = [agent, prompt];
         if (model) cliArgs.push("--model", model);
-        const output = bridgeCli("dispatch", cliArgs);
+        const output = bridgeCli(BRIDGE_SRC_PATH, "dispatch", cliArgs);
         return { content: [{ type: "text", text: output }] };
       }
 
       case "bridge_status": {
         const { agent } = (args ?? {}) as { agent?: string };
-        const cliArgs = agent ? [agent] : [];
-        const output = bridgeCli("status", cliArgs);
+        const output = bridgeCli(BRIDGE_SRC_PATH, "status", agent ? [agent] : []);
         return { content: [{ type: "text", text: output }] };
       }
 
       case "bridge_agents": {
-        const output = bridgeCli("list-agents");
+        const output = bridgeCli(BRIDGE_SRC_PATH, "list-agents");
         return { content: [{ type: "text", text: output }] };
       }
 
@@ -417,39 +238,30 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const { agent, limit } = args as { agent: string; limit?: number };
         const cliArgs = [agent];
         if (limit) cliArgs.push("--limit", String(limit));
-        const output = bridgeCli("history", cliArgs);
+        const output = bridgeCli(BRIDGE_SRC_PATH, "history", cliArgs);
         return { content: [{ type: "text", text: output }] };
       }
 
       case "bridge_kill": {
         const { agent } = args as { agent: string };
-        const output = bridgeCli("kill", [agent]);
+        const output = bridgeCli(BRIDGE_SRC_PATH, "kill", [agent]);
         return { content: [{ type: "text", text: output }] };
       }
 
       case "bridge_create_agent": {
-        const { name: agentName, path, purpose, model } = args as {
-          name: string;
-          path: string;
-          purpose: string;
-          model?: string;
-        };
+        const { name: agentName, path, purpose, model } = args as { name: string; path: string; purpose: string; model?: string };
         const cliArgs = [agentName, path, "--purpose", purpose];
         if (model) cliArgs.push("--model", model);
-        const output = bridgeCli("create-agent", cliArgs);
+        const output = bridgeCli(BRIDGE_SRC_PATH, "create-agent", cliArgs);
         return { content: [{ type: "text", text: output }] };
       }
 
       case "bridge_get_notifications": {
-        // Read unreported tasks via watcher output
         try {
-          const output = bridgeCli("status");
-          // Also check for recently completed
+          const output = bridgeCli(BRIDGE_SRC_PATH, "status");
           return { content: [{ type: "text", text: output }] };
         } catch {
-          return {
-            content: [{ type: "text", text: "No pending notifications" }],
-          };
+          return { content: [{ type: "text", text: "No pending notifications" }] };
         }
       }
 
@@ -457,10 +269,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         throw new Error(`Unknown tool: ${name}`);
     }
   } catch (err: any) {
-    return {
-      content: [{ type: "text", text: `Error: ${err.message}` }],
-      isError: true,
-    };
+    return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
   }
 });
 
@@ -469,7 +278,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 const bot = new Bot(TOKEN);
 let botUsername = "";
 
-// Catch Grammy errors to prevent process crash
 bot.catch((err) => {
   process.stderr.write(`bridge channel: grammy error: ${err.message}\n`);
 });
@@ -481,28 +289,27 @@ bot.on("message:text", async (ctx) => {
   const text = ctx.message.text;
   const messageId = String(ctx.message.message_id);
 
-  if (!isAllowed(userId)) {
-    process.stderr.write(
-      `bridge channel: rejected message from non-allowed user ${userId}\n`
-    );
+  if (!isAllowed(userId, ACCESS_FILE)) {
+    process.stderr.write(`bridge channel: rejected message from non-allowed user ${userId}\n`);
     return;
   }
 
-  // Track in SQLite and push to Claude Code session
-  const ts = new Date(ctx.message.date * 1000).toISOString();
-  const trackingId = trackInbound(chatId, userId, username, text, messageId);
-  pushMessage(trackingId, chatId, userId, username, text, messageId, ts);
+  try {
+    const ts = new Date(ctx.message.date * 1000).toISOString();
+    const trackingId = trackInbound(msgDb, chatId, userId, username, text, messageId);
+    pushMessage(mcp, trackingId, chatId, userId, username, text, messageId, ts);
+  } catch (err) {
+    process.stderr.write(`bridge channel: message handler error: ${err}\n`);
+  }
 });
 
 // --- Startup ---
 
 async function main() {
-  // Get bot info
   const me = await bot.api.getMe();
   botUsername = me.username ?? "";
   process.stderr.write(`bridge channel: bot @${botUsername} connected\n`);
 
-  // Start bot polling (grammy handles getUpdates loop)
   bot.start({
     drop_pending_updates: true,
     onStart: () => {
@@ -510,17 +317,35 @@ async function main() {
     },
   });
 
-  // Start outbound message poller
-  startOutboundPoller(mcp, bot);
+  // Outbound poller
+  outboundInterval = setInterval(async () => {
+    try {
+      await processOutbound(
+        msgDb, mcp,
+        async (chatId, text) => { await bot.api.sendMessage(chatId, text); }
+      );
+    } catch (err) {
+      process.stderr.write(`bridge channel: outbound poller error: ${err}\n`);
+    }
+  }, 2000);
 
-  // Start inbound retry engine
-  startRetryEngine();
+  // Inbound retry engine
+  retryInterval = setInterval(() => {
+    try {
+      processRetries(
+        msgDb, mcp,
+        async (chatId, text) => { await bot.api.sendMessage(chatId, text); },
+        RETRY_TIMEOUT_MS, MAX_RETRIES
+      );
+    } catch (err) {
+      process.stderr.write(`bridge channel: retry engine error: ${err}\n`);
+    }
+  }, RETRY_TIMEOUT_MS);
 
-  // Connect MCP to Claude Code via stdio
+  // Connect MCP
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
 
-  // Shutdown on stdin close
   process.stdin.on("end", () => {
     process.stderr.write("bridge channel: stdin closed, shutting down\n");
     cleanup();
@@ -537,8 +362,6 @@ function cleanup() {
 
 process.on("SIGINT", cleanup);
 process.on("SIGTERM", cleanup);
-
-// Prevent unhandled rejections from crashing the MCP server
 process.on("unhandledRejection", (err) => {
   process.stderr.write(`bridge channel: unhandled rejection: ${err}\n`);
 });
