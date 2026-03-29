@@ -26,6 +26,7 @@ import {
   isAllowed,
   trackInbound,
   acknowledgeInbound,
+  getPendingInbound,
   pushMessage,
   processRetries,
   processOutbound,
@@ -83,11 +84,11 @@ const mcp = new Server(
     },
     instructions: [
       'Messages from Telegram arrive as <channel source="bridge" chat_id="..." user="..." tracking_id="..." ts="...">.',
-      "IMPORTANT: After processing each message, call bridge_acknowledge(tracking_id) to confirm. If you don't acknowledge within 30 seconds, the message will be re-pushed.",
+      "After processing each message: call bridge_acknowledge(tracking_id), then bridge_get_notifications(), then bridge_check_messages().",
+      "bridge_check_messages catches any messages that push notifications missed while you were busy.",
       "Reply with the reply tool — pass chat_id back. Keep replies concise (users are on mobile).",
       "Use bridge_dispatch to send tasks to agents. Use bridge_status to check running tasks.",
-      "Use bridge_agents to list available agents. Use bridge_get_notifications to check for completed tasks.",
-      "After processing a message, always call bridge_get_notifications to report any completions.",
+      "Use bridge_agents to list available agents.",
     ].join("\n"),
   }
 );
@@ -190,6 +191,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       description: "Get pending task completion notifications",
       inputSchema: { type: "object" as const, properties: {} },
     },
+    {
+      name: "bridge_check_messages",
+      description: "Check for any pending Telegram messages that may have been missed by push. Call this after completing each response as a safety net.",
+      inputSchema: { type: "object" as const, properties: {} },
+    },
   ],
 }));
 
@@ -263,6 +269,34 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         } catch {
           return { content: [{ type: "text", text: "No pending notifications" }] };
         }
+      }
+
+      case "bridge_check_messages": {
+        const pending = getPendingInbound(msgDb);
+        if (pending.length === 0) {
+          return { content: [{ type: "text", text: "No pending messages" }] };
+        }
+        // Re-push any pending messages that Claude might have missed
+        const messages = pending.map((m) => ({
+          tracking_id: m.id,
+          chat_id: m.chat_id,
+          user: m.username,
+          text: m.message_text,
+        }));
+        // Also try pushing them again
+        for (const msg of pending) {
+          try {
+            pushMessage(mcp, msg.id, msg.chat_id, msg.user_id, msg.username, msg.message_text, msg.message_id, new Date().toISOString());
+          } catch {
+            // Push failed, but we return the messages as text so Claude sees them
+          }
+        }
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({ pending_count: pending.length, messages }),
+          }],
+        };
       }
 
       default:

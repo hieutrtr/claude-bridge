@@ -26,11 +26,12 @@ When you see a `<channel>` tag:
 4. Call `bridge_acknowledge(tracking_id)` — pass the tracking_id from the tag
 5. Call `bridge_get_notifications()` to check for completed tasks
 6. If there are completions, send a report via `reply()`
+7. Call `bridge_check_messages()` to catch any messages that the push notification missed
 
 IMPORTANT: The `<channel>` tag IS the message. React to it immediately.
 IMPORTANT: Always use the `reply` tool to respond — your text output does NOT reach Telegram.
-IMPORTANT: Always call `bridge_acknowledge(tracking_id)` after processing — if you don't, the message will be re-pushed in 3 seconds.
-IMPORTANT: Always call `bridge_get_notifications()` after processing a message.
+IMPORTANT: Always call `bridge_acknowledge(tracking_id)` after processing — if you don't, the message will be re-pushed in 30 seconds.
+IMPORTANT: Always call `bridge_check_messages()` at the END of your response — this catches messages that push notifications may have missed while you were busy.
 
 ## Commands
 

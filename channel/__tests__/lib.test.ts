@@ -11,6 +11,7 @@ import {
   trackInbound,
   acknowledgeInbound,
   getInbound,
+  getPendingInbound,
   pushMessage,
   processRetries,
   processOutbound,
@@ -157,6 +158,36 @@ describe("acknowledgeInbound", () => {
     acknowledgeInbound(db, id);
     acknowledgeInbound(db, id); // no throw
     expect(getInbound(db, id)!.status).toBe("acknowledged");
+    db.close();
+  });
+});
+
+// --- Get Pending ---
+
+describe("getPendingInbound", () => {
+  test("returns only pushed messages", () => {
+    const db = tmpDb();
+    const id1 = trackInbound(db, "123", "u1", "hieu", "msg1", "1");
+    const id2 = trackInbound(db, "123", "u1", "hieu", "msg2", "2");
+    acknowledgeInbound(db, id1);
+
+    const pending = getPendingInbound(db);
+    expect(pending.length).toBe(1);
+    expect(pending[0].id).toBe(id2);
+    db.close();
+  });
+
+  test("returns empty when all acknowledged", () => {
+    const db = tmpDb();
+    const id1 = trackInbound(db, "123", "u1", "hieu", "msg1", "1");
+    acknowledgeInbound(db, id1);
+    expect(getPendingInbound(db).length).toBe(0);
+    db.close();
+  });
+
+  test("returns empty when no messages", () => {
+    const db = tmpDb();
+    expect(getPendingInbound(db).length).toBe(0);
     db.close();
   });
 });

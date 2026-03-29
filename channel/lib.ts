@@ -103,6 +103,12 @@ export function getInbound(db: Database, trackingId: number): InboundRow | null 
   return db.query("SELECT * FROM inbound_tracking WHERE id = ?").get(trackingId) as InboundRow | null;
 }
 
+export function getPendingInbound(db: Database): InboundRow[] {
+  return db.query(
+    "SELECT * FROM inbound_tracking WHERE status = 'pushed' ORDER BY id"
+  ).all() as InboundRow[];
+}
+
 // --- Push Message ---
 
 export interface McpNotifier {
