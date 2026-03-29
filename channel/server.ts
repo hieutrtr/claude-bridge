@@ -167,13 +167,18 @@ function startOutboundPoller(
   mcp: Server,
   bot: Bot
 ) {
-  // Use bun:sqlite for direct access to messages.db
-  const { Database } = require("bun:sqlite");
+  // Check if outbound_messages table exists before polling
+  const hasOutbound = msgDb.query(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='outbound_messages'"
+  ).get();
+  if (!hasOutbound) {
+    process.stderr.write("bridge channel: outbound_messages table not found, skipping outbound poller\n");
+    return;
+  }
 
   outboundInterval = setInterval(async () => {
     try {
-      const db = new Database(MESSAGES_DB_PATH);
-      const pending = db
+      const pending = msgDb
         .query(
           "SELECT * FROM outbound_messages WHERE status = 'pending' ORDER BY created_at LIMIT 10"
         )
@@ -182,7 +187,7 @@ function startOutboundPoller(
       for (const msg of pending) {
         try {
           await bot.api.sendMessage(msg.chat_id, msg.message_text);
-          db.run(
+          msgDb.run(
             "UPDATE outbound_messages SET status = 'sent', sent_at = datetime('now') WHERE id = ?",
             [msg.id]
           );
@@ -201,22 +206,20 @@ function startOutboundPoller(
             });
           }
         } catch (err) {
-          const retryCount = msg.retry_count + 1;
-          if (retryCount >= msg.max_retries) {
-            db.run(
+          const retryCount = (msg as any).retry_count + 1;
+          if (retryCount >= (msg as any).max_retries) {
+            msgDb.run(
               "UPDATE outbound_messages SET status = 'failed', retry_count = ? WHERE id = ?",
               [retryCount, msg.id]
             );
           } else {
-            db.run(
+            msgDb.run(
               "UPDATE outbound_messages SET retry_count = ? WHERE id = ?",
               [retryCount, msg.id]
             );
           }
         }
       }
-
-      db.close();
     } catch (err) {
       process.stderr.write(`bridge channel: outbound poller error: ${err}\n`);
     }
@@ -466,6 +469,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 const bot = new Bot(TOKEN);
 let botUsername = "";
 
+// Catch Grammy errors to prevent process crash
+bot.catch((err) => {
+  process.stderr.write(`bridge channel: grammy error: ${err.message}\n`);
+});
+
 bot.on("message:text", async (ctx) => {
   const chatId = String(ctx.chat.id);
   const userId = String(ctx.from.id);
@@ -496,6 +504,7 @@ async function main() {
 
   // Start bot polling (grammy handles getUpdates loop)
   bot.start({
+    drop_pending_updates: true,
     onStart: () => {
       process.stderr.write("bridge channel: polling started\n");
     },
@@ -528,6 +537,14 @@ function cleanup() {
 
 process.on("SIGINT", cleanup);
 process.on("SIGTERM", cleanup);
+
+// Prevent unhandled rejections from crashing the MCP server
+process.on("unhandledRejection", (err) => {
+  process.stderr.write(`bridge channel: unhandled rejection: ${err}\n`);
+});
+process.on("uncaughtException", (err) => {
+  process.stderr.write(`bridge channel: uncaught exception: ${err}\n`);
+});
 
 main().catch((err) => {
   process.stderr.write(`bridge channel: fatal: ${err}\n`);
