@@ -81,3 +81,15 @@ Key rules:
 - Milestone report after each milestone (specs/reports/milestone-{N}-report.md)
 - Commit format: `M{M}.T{T}: {description}`
 - Never call real `claude` CLI in tests — always mock subprocess
+
+## Debugging Critical Bugs
+
+When asked to fix a critical bug, DO NOT jump to conclusions. Follow this process:
+
+1. **Reproduce first** — confirm the exact failure. What input, what expected, what actual?
+2. **Challenge your first theory** — your first explanation is probably wrong or incomplete. Argue against it. Ask: "what else could cause this?"
+3. **Check the environment, not just the code** — zombie processes, stale state, competing services, wrong python version, missing files. Most "code bugs" are environment bugs.
+4. **Don't blame external systems too early** — "it's a Claude Code bug" or "it's a Telegram API issue" is lazy. Prove it by ruling out your own code first.
+5. **Add observability before guessing** — add logging/stderr output at each step so you can see WHERE it fails, not guess.
+6. **Test the actual integration, not just units** — mocked tests passing means your logic is correct, NOT that the system works. Test with real transports, real processes, real files.
+7. **Look for the boring cause** — competing processes, wrong file paths, stale caches, permission issues. The exciting theory (protocol corruption, race conditions) is usually wrong. The boring theory (zombie process stealing messages) is usually right.
