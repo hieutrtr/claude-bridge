@@ -414,13 +414,22 @@ async function main() {
     process.stderr.write("bridge channel: stdin closed, shutting down\n");
     cleanup();
   });
+  process.stdin.on("close", () => {
+    process.stderr.write("bridge channel: stdin close event, shutting down\n");
+    cleanup();
+  });
 }
 
+let cleanedUp = false;
 function cleanup() {
+  if (cleanedUp) return;
+  cleanedUp = true;
   if (outboundInterval) clearInterval(outboundInterval);
   if (retryInterval) clearInterval(retryInterval);
-  msgDb.close();
-  bot.stop();
+  try { msgDb.close(); } catch {}
+  try { bot.stop(); } catch {}
+  // Force exit after 2s in case bot.stop() hangs
+  setTimeout(() => process.exit(1), 2000);
   process.exit(0);
 }
 
