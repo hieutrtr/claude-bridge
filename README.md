@@ -29,7 +29,7 @@ Stop hook → on_complete.py             Updates SQLite, queues notification
 # 1. Clone and install
 git clone https://github.com/hieutrtr/claude-bridge.git ~/projects/claude-bridge
 cd ~/projects/claude-bridge
-pip install -e .
+pipx install -e .   # or: pip3 install -e . --break-system-packages
 
 # 2. Install Bun (channel server runtime)
 curl -fsSL https://bun.sh/install | bash
@@ -59,7 +59,18 @@ The wizard asks for your Telegram bot token, creates the bridge-bot project, dep
 ```bash
 git clone https://github.com/hieutrtr/claude-bridge.git ~/projects/claude-bridge
 cd ~/projects/claude-bridge
-pip install -e .
+
+# Option A: pipx (recommended — isolated, clean)
+brew install pipx
+pipx install -e .
+
+# Option B: pip with --break-system-packages (Homebrew Python)
+pip3 install -e . --break-system-packages
+
+# Option C: venv
+python3 -m venv ~/.claude-bridge/venv
+~/.claude-bridge/venv/bin/pip install -e .
+# Then use: ~/.claude-bridge/venv/bin/bridge-cli (or add to PATH)
 ```
 
 This gives you the `bridge-cli` command.
@@ -237,8 +248,8 @@ claude --dangerously-load-development-channels server:bridge --dangerously-skip-
 
 ```bash
 # Python tests (370+ tests)
-pip install -e .
-python -m pytest tests/ --ignore=tests/test_mcp_server.py -v
+pipx install -e .   # or: pip3 install -e . --break-system-packages
+python3 -m pytest tests/ --ignore=tests/test_mcp_server.py -v
 
 # TypeScript tests (43 tests)
 cd channel && bun test
