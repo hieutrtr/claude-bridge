@@ -25,7 +25,9 @@ from .memory import format_memory_report
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from . import __version__
     parser = argparse.ArgumentParser(prog="bridge-cli", description="Claude Bridge CLI")
+    parser.add_argument("--version", action="version", version=f"claude-bridge {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     # create-agent
@@ -148,6 +150,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     # watcher (called by cron)
     sub.add_parser("watcher", help="Run watcher (cron fallback for dead PIDs)")
+
+    # doctor
+    p = sub.add_parser("doctor", help="Diagnose installation health")
+    p.add_argument("--fix", action="store_true", help="Attempt auto-repair")
+
+    # uninstall
+    p = sub.add_parser("uninstall", help="Remove claude-bridge data and config")
+    p.add_argument("--force", action="store_true", help="Skip confirmation prompt")
 
     return parser
 
@@ -1016,6 +1026,209 @@ def cmd_team_status(db: BridgeDB, args):
     return 0
 
 
+def _cmd_doctor(args) -> int:
+    """Diagnose installation health."""
+    import shutil
+    import json as _json
+    from . import __version__, get_channel_server_path
+
+    issues = 0
+    warnings = 0
+
+    print(f"Claude Bridge Doctor v{__version__}\n")
+
+    # Python
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    if sys.version_info >= (3, 11):
+        print(f"  ✓ Python {py_ver}")
+    else:
+        print(f"  ✗ Python {py_ver} (need ≥3.11)")
+        issues += 1
+
+    # Bun
+    bun = shutil.which("bun")
+    if bun:
+        print(f"  ✓ Bun found at {bun}")
+    else:
+        print(f"  ✗ Bun not found")
+        issues += 1
+
+    # Claude CLI
+    claude = shutil.which("claude")
+    if claude:
+        print(f"  ✓ Claude CLI found")
+    else:
+        print(f"  ✗ Claude CLI not found")
+        issues += 1
+
+    # bridge-cli
+    bridge = shutil.which("bridge-cli")
+    if bridge:
+        print(f"  ✓ bridge-cli at {bridge}")
+    else:
+        print(f"  ⚠ bridge-cli not in PATH")
+        warnings += 1
+
+    # Data directory
+    bridge_home = os.path.expanduser("~/.claude-bridge")
+    if os.path.isdir(bridge_home):
+        print(f"  ✓ Data dir: {bridge_home}")
+    else:
+        print(f"  ✗ Data dir missing: {bridge_home}")
+        issues += 1
+
+    # Config
+    config_path = os.path.join(bridge_home, "config.json")
+    if os.path.isfile(config_path):
+        try:
+            with open(config_path) as f:
+                config = _json.load(f)
+            token = config.get("telegram_bot_token", "")
+            masked = token[:5] + "..." + token[-4:] if len(token) > 10 else "(empty)"
+            print(f"  ✓ Config: token {masked}")
+        except Exception:
+            print(f"  ⚠ Config: malformed")
+            warnings += 1
+    else:
+        print(f"  ✗ Config missing (run: bridge-cli setup)")
+        issues += 1
+
+    # Channel server
+    bundled = get_channel_server_path()
+    deployed = os.path.join(bridge_home, "channel", "dist", "server.js")
+    if os.path.isfile(deployed):
+        print(f"  ✓ Channel server deployed")
+    elif os.path.isfile(bundled):
+        print(f"  ⚠ Channel server bundled but not deployed (run: bridge-cli setup)")
+        warnings += 1
+        if getattr(args, "fix", False):
+            os.makedirs(os.path.dirname(deployed), exist_ok=True)
+            shutil.copy2(bundled, deployed)
+            print(f"    → Fixed: deployed to {deployed}")
+    else:
+        print(f"  ✗ Channel server not found")
+        issues += 1
+
+    # Database
+    db_path = os.path.join(bridge_home, "bridge.db")
+    if os.path.isfile(db_path):
+        try:
+            db = BridgeDB(db_path)
+            agents = db.list_agents()
+            tasks = db.conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+            db.close()
+            print(f"  ✓ Database: {len(agents)} agents, {tasks} tasks")
+        except Exception as e:
+            print(f"  ⚠ Database error: {e}")
+            warnings += 1
+    else:
+        print(f"  ⚠ Database not created yet")
+        warnings += 1
+
+    # Cron
+    import subprocess
+    try:
+        crontab = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+        if CRON_MARKER in (crontab.stdout or ""):
+            print(f"  ✓ Watcher cron installed")
+        else:
+            print(f"  ⚠ Watcher cron not installed (run: bridge-cli setup-cron)")
+            warnings += 1
+            if getattr(args, "fix", False):
+                cmd_setup_cron(None, args)
+                print(f"    → Fixed: cron installed")
+    except Exception:
+        print(f"  ⚠ Cannot check crontab")
+        warnings += 1
+
+    # Agent .md files
+    agents_dir = os.path.expanduser("~/.claude/agents")
+    if os.path.isdir(agents_dir):
+        bridge_agents = [f for f in os.listdir(agents_dir) if f.startswith("bridge--")]
+        print(f"  ✓ Agent files: {len(bridge_agents)}")
+    else:
+        print(f"  ⚠ No agent files yet")
+        warnings += 1
+
+    # Summary
+    print()
+    if issues == 0 and warnings == 0:
+        print("All checks passed ✓")
+        return 0
+    elif issues == 0:
+        print(f"{warnings} warning(s), no critical issues")
+        return 1
+    else:
+        print(f"{issues} critical issue(s), {warnings} warning(s)")
+        return 2
+
+
+def _cmd_uninstall(args) -> int:
+    """Remove claude-bridge data and config."""
+    import glob
+    import subprocess
+
+    bridge_home = os.path.expanduser("~/.claude-bridge")
+    agents_dir = os.path.expanduser("~/.claude/agents")
+
+    # Summary
+    items = []
+    if os.path.isdir(bridge_home):
+        items.append(f"  ~/.claude-bridge/ (data, config, databases)")
+    agent_files = glob.glob(os.path.join(agents_dir, "bridge--*.md")) if os.path.isdir(agents_dir) else []
+    if agent_files:
+        items.append(f"  {len(agent_files)} agent .md files in ~/.claude/agents/")
+    try:
+        crontab = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+        if CRON_MARKER in (crontab.stdout or ""):
+            items.append(f"  Watcher cron job")
+    except Exception:
+        pass
+
+    if not items:
+        print("Nothing to uninstall.")
+        return 0
+
+    print("Will remove:")
+    for item in items:
+        print(item)
+    print("\nWill NOT remove:")
+    print("  Bot project directory (your CLAUDE.md + .mcp.json)")
+    print("  Python/Bun packages (uninstall manually)")
+
+    if not getattr(args, "force", False):
+        confirm = input("\nContinue? [y/N] ").strip().lower()
+        if confirm not in ("y", "yes"):
+            print("Cancelled.")
+            return 0
+
+    # Remove cron
+    try:
+        crontab = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+        if CRON_MARKER in (crontab.stdout or ""):
+            lines = [l for l in crontab.stdout.split("\n") if CRON_MARKER not in l]
+            subprocess.run(["crontab", "-"], input="\n".join(lines).strip() + "\n", capture_output=True, text=True)
+            print("  ✓ Cron removed")
+    except Exception:
+        pass
+
+    # Remove agent files
+    for f in agent_files:
+        os.remove(f)
+    if agent_files:
+        print(f"  ✓ {len(agent_files)} agent files removed")
+
+    # Remove data dir
+    if os.path.isdir(bridge_home):
+        import shutil
+        shutil.rmtree(bridge_home)
+        print(f"  ✓ {bridge_home} removed")
+
+    print("\nUninstall complete.")
+    print("To remove the package: pip uninstall claude-bridge")
+    return 0
+
+
 COMMANDS = {
     "create-agent": cmd_create_agent,
     "delete-agent": cmd_delete_agent,
@@ -1044,6 +1257,8 @@ COMMANDS = {
     "remove-cron": cmd_remove_cron,
     "on-complete": None,  # handled specially below
     "watcher": None,  # handled specially below
+    "doctor": None,  # handled specially below
+    "uninstall": None,  # handled specially below
 }
 
 
@@ -1062,6 +1277,10 @@ def main():
         from .watcher import main as watcher_main
         watcher_main()
         return
+    if args.command == "doctor":
+        sys.exit(_cmd_doctor(args))
+    if args.command == "uninstall":
+        sys.exit(_cmd_uninstall(args))
 
     db = BridgeDB()
     try:
