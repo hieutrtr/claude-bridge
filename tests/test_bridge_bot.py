@@ -30,7 +30,7 @@ class TestChannelMode:
 
     def test_contains_notifications(self):
         content = generate_bridge_bot_claude_md(mode="channel")
-        assert "bridge_get_notifications" in content
+        assert "task_completion" in content
 
     def test_contains_onboarding(self):
         content = generate_bridge_bot_claude_md(mode="channel")
