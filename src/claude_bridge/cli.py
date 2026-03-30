@@ -492,20 +492,7 @@ def cmd_setup(db: BridgeDB, args):
     has_bun = shutil.which("bun") is not None
     mode = "channel" if has_bun else "mcp"
 
-    # Write CLAUDE.md
-    claude_md_path = os.path.join(bot_dir, "CLAUDE.md")
-    with open(claude_md_path, "w") as f:
-        f.write(generate_bridge_bot_claude_md(mode=mode))
-
-    # Write .mcp.json
-    mcp_json_path = os.path.join(bot_dir, ".mcp.json")
-    with open(mcp_json_path, "w") as f:
-        f.write(generate_mcp_json(mode=mode))
-
-    print(f"  CLAUDE.md → {claude_md_path}")
-    print(f"  .mcp.json → {mcp_json_path}")
-
-    # --- Step 3: Deploy channel server ---
+    # --- Step 2b: Deploy channel server FIRST (so .mcp.json uses stable path) ---
     bundled = get_channel_server_path()
     deployed_dir = os.path.join(bridge_home, "channel", "dist")
     deployed_path = os.path.join(deployed_dir, "server.js")
@@ -513,9 +500,20 @@ def cmd_setup(db: BridgeDB, args):
     if os.path.isfile(bundled):
         os.makedirs(deployed_dir, exist_ok=True)
         shutil.copy2(bundled, deployed_path)
-        print(f"\nStep 3/4: Channel server deployed to {deployed_path}")
-    else:
-        print(f"\nStep 3/4: Channel server not bundled (using source)")
+        print(f"  Channel server → {deployed_path}")
+
+    # Write CLAUDE.md
+    claude_md_path = os.path.join(bot_dir, "CLAUDE.md")
+    with open(claude_md_path, "w") as f:
+        f.write(generate_bridge_bot_claude_md(mode=mode))
+
+    # Write .mcp.json (uses deployed path at ~/.claude-bridge/channel/dist/server.js)
+    mcp_json_path = os.path.join(bot_dir, ".mcp.json")
+    with open(mcp_json_path, "w") as f:
+        f.write(generate_mcp_json(mode=mode))
+
+    print(f"  CLAUDE.md → {claude_md_path}")
+    print(f"  .mcp.json → {mcp_json_path}")
 
     # --- Step 4: Cron ---
     print(f"\nStep 4/4: Watcher cron")
@@ -554,16 +552,21 @@ def generate_mcp_json(mode: str = "channel") -> str:
     import json as _json
     import shutil
 
-    from . import get_channel_server_path
     src_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     bot_token = _get_bot_token()
 
-    # Use bundled server.js if it exists, fall back to source server.ts
-    bundled = get_channel_server_path()
-    if os.path.isfile(bundled):
-        channel_path = bundled
+    # Always use the deployed path (stable location, survives reinstall)
+    deployed = os.path.expanduser("~/.claude-bridge/channel/dist/server.js")
+    if os.path.isfile(deployed):
+        channel_path = deployed
     else:
-        channel_path = os.path.join(os.path.dirname(src_path), "channel", "server.ts")
+        # Fall back to bundled in package or source
+        from . import get_channel_server_path
+        bundled = get_channel_server_path()
+        if os.path.isfile(bundled):
+            channel_path = bundled
+        else:
+            channel_path = os.path.join(os.path.dirname(src_path), "channel", "server.ts")
 
     if mode == "channel":
         bun_path = shutil.which("bun") or "bun"
