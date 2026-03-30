@@ -14,7 +14,7 @@ from .db import BridgeDB
 from .dispatcher import pid_alive, kill_process
 
 
-DEFAULT_TIMEOUT_MINUTES = 30
+DEFAULT_TIMEOUT_MINUTES = 360
 
 
 def watch(timeout_minutes: int = DEFAULT_TIMEOUT_MINUTES, db: BridgeDB | None = None):
