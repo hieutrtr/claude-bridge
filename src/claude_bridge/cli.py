@@ -451,13 +451,20 @@ def cmd_setup(db: BridgeDB, args):
     token = getattr(args, "token", None)
     existing_token = _get_bot_token()
 
-    if not token and not no_prompt and not existing_token:
+    if not token and not no_prompt:
         print("Step 1/4: Telegram Bot Token")
-        print("  Get one from @BotFather on Telegram (/newbot)")
-        token = input("  Bot token: ").strip()
+        if existing_token:
+            masked = existing_token[:5] + "..." + existing_token[-4:] if len(existing_token) > 10 else existing_token
+            print(f"  Current token: {masked}")
+            new_token = input("  New token (Enter to keep current): ").strip()
+            token = new_token if new_token else existing_token
+        else:
+            print("  Get one from @BotFather on Telegram (/newbot)")
+            token = input("  Bot token: ").strip()
     elif not token and existing_token:
         token = existing_token
-        print(f"Step 1/4: Token already configured (skip)")
+        if no_prompt:
+            print(f"Step 1/4: Token already configured (skip)")
 
     if token and token != existing_token:
         config_path = os.path.join(bridge_home, "config.json")
