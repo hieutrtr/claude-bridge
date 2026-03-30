@@ -127,7 +127,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("token", help="Telegram bot token from @BotFather")
 
     # setup
-    sub.add_parser("setup", help="Print Bridge Bot CLAUDE.md to stdout")
+    p = sub.add_parser("setup", help="Interactive setup wizard (or --no-prompt for scripted)")
+    p.add_argument("--token", default=None, help="Telegram bot token")
+    p.add_argument("--bot-dir", default=None, help="Bridge bot project directory")
+    p.add_argument("--no-prompt", action="store_true", help="Non-interactive mode")
 
     # setup-bot
     p = sub.add_parser("setup-bot", help="Generate CLAUDE.md + .mcp.json in target directory")
@@ -425,9 +428,101 @@ def cmd_setup_telegram(db: BridgeDB, args):
 
 
 def cmd_setup(db: BridgeDB, args):
-    """Print Bridge Bot CLAUDE.md to stdout. Redirect to a file with > CLAUDE.md"""
+    """Interactive setup wizard. Orchestrates setup-telegram + setup-bot + setup-cron."""
+    import json as _json
+    import shutil
+    from . import get_channel_server_path
     from .bridge_bot_claude_md import generate_bridge_bot_claude_md
-    print(generate_bridge_bot_claude_md())
+
+    no_prompt = getattr(args, "no_prompt", False)
+    bridge_home = os.path.expanduser("~/.claude-bridge")
+
+    # --- Step 1: Telegram bot token ---
+    token = getattr(args, "token", None)
+    existing_token = _get_bot_token()
+
+    if not token and not no_prompt and not existing_token:
+        print("Step 1/4: Telegram Bot Token")
+        print("  Get one from @BotFather on Telegram (/newbot)")
+        token = input("  Bot token: ").strip()
+    elif not token and existing_token:
+        token = existing_token
+        print(f"Step 1/4: Token already configured (skip)")
+
+    if token and token != existing_token:
+        config_path = os.path.join(bridge_home, "config.json")
+        config = {}
+        if os.path.isfile(config_path):
+            try:
+                with open(config_path) as f:
+                    config = _json.load(f)
+            except (_json.JSONDecodeError, IOError):
+                pass
+        config["telegram_bot_token"] = token
+        os.makedirs(bridge_home, exist_ok=True)
+        with open(config_path, "w") as f:
+            _json.dump(config, f, indent=2)
+        print(f"  Token saved to {config_path}")
+
+    # --- Step 2: Bridge Bot project directory ---
+    bot_dir = getattr(args, "bot_dir", None)
+
+    if not bot_dir and not no_prompt:
+        default_dir = os.path.expanduser("~/projects/bridge-bot")
+        print(f"\nStep 2/4: Bridge Bot Project Directory")
+        user_input = input(f"  Directory [{default_dir}]: ").strip()
+        bot_dir = user_input if user_input else default_dir
+    elif not bot_dir:
+        bot_dir = os.path.expanduser("~/projects/bridge-bot")
+
+    bot_dir = os.path.expanduser(bot_dir)
+    os.makedirs(bot_dir, exist_ok=True)
+
+    # Detect mode
+    has_bun = shutil.which("bun") is not None
+    mode = "channel" if has_bun else "mcp"
+
+    # Write CLAUDE.md
+    claude_md_path = os.path.join(bot_dir, "CLAUDE.md")
+    with open(claude_md_path, "w") as f:
+        f.write(generate_bridge_bot_claude_md(mode=mode))
+
+    # Write .mcp.json
+    mcp_json_path = os.path.join(bot_dir, ".mcp.json")
+    with open(mcp_json_path, "w") as f:
+        f.write(generate_mcp_json(mode=mode))
+
+    print(f"  CLAUDE.md → {claude_md_path}")
+    print(f"  .mcp.json → {mcp_json_path}")
+
+    # --- Step 3: Deploy channel server ---
+    bundled = get_channel_server_path()
+    deployed_dir = os.path.join(bridge_home, "channel", "dist")
+    deployed_path = os.path.join(deployed_dir, "server.js")
+
+    if os.path.isfile(bundled):
+        os.makedirs(deployed_dir, exist_ok=True)
+        shutil.copy2(bundled, deployed_path)
+        print(f"\nStep 3/4: Channel server deployed to {deployed_path}")
+    else:
+        print(f"\nStep 3/4: Channel server not bundled (using source)")
+
+    # --- Step 4: Cron ---
+    print(f"\nStep 4/4: Watcher cron")
+    cmd_setup_cron(db, args)
+
+    # --- Done ---
+    print(f"\n{'='*50}")
+    print("Setup complete!")
+    print()
+    print("Start the Bridge Bot:")
+    print(f"  cd {bot_dir}")
+    if mode == "channel":
+        print("  claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions")
+    else:
+        print("  claude --dangerously-skip-permissions")
+    print()
+    print("Then DM your bot on Telegram to pair.")
     return 0
 
 
