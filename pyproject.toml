@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "claude-bridge"
+name = "claude-agent-bridge"
 version = "0.1.0"
 description = "Multi-session Claude Code dispatch from Telegram"
 readme = "README.md"
