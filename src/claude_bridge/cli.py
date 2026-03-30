@@ -139,6 +139,13 @@ def build_parser() -> argparse.ArgumentParser:
     # remove-cron
     sub.add_parser("remove-cron", help="Remove watcher cron job")
 
+    # on-complete (called by Stop hook)
+    p = sub.add_parser("on-complete", help="Stop hook handler (called by Claude Code)")
+    p.add_argument("--session-id", required=True, help="Session ID")
+
+    # watcher (called by cron)
+    sub.add_parser("watcher", help="Run watcher (cron fallback for dead PIDs)")
+
     return parser
 
 
@@ -442,9 +449,16 @@ def generate_mcp_json(mode: str = "channel") -> str:
     import json as _json
     import shutil
 
+    from . import get_channel_server_path
     src_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    channel_path = os.path.join(os.path.dirname(src_path), "channel", "server.ts")
     bot_token = _get_bot_token()
+
+    # Use bundled server.js if it exists, fall back to source server.ts
+    bundled = get_channel_server_path()
+    if os.path.isfile(bundled):
+        channel_path = bundled
+    else:
+        channel_path = os.path.join(os.path.dirname(src_path), "channel", "server.ts")
 
     if mode == "channel":
         bun_path = shutil.which("bun") or "bun"
@@ -456,7 +470,6 @@ def generate_mcp_json(mode: str = "channel") -> str:
                     "args": ["run", channel_path],
                     "env": {
                         "TELEGRAM_BOT_TOKEN": bot_token,
-                        "BRIDGE_SRC_PATH": src_path,
                         "MESSAGES_DB_PATH": os.path.expanduser("~/.claude-bridge/messages.db"),
                     },
                 }
@@ -528,10 +541,14 @@ CRON_MARKER = "# claude-bridge-watcher"
 def _get_cron_line() -> str:
     """Get the cron line for the watcher."""
     import shutil
-    src_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     log_path = os.path.expanduser("~/.claude-bridge/watcher.log")
-    python_path = shutil.which("python3") or sys.executable
-    return f"* * * * * PYTHONPATH={src_path} {python_path} -m claude_bridge.watcher >> {log_path} 2>&1 {CRON_MARKER}"
+    bridge_cli = shutil.which("bridge-cli")
+    if bridge_cli:
+        return f"* * * * * {bridge_cli} watcher >> {log_path} 2>&1 {CRON_MARKER}"
+    else:
+        src_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        python_path = shutil.which("python3") or sys.executable
+        return f"* * * * * PYTHONPATH={src_path} {python_path} -m claude_bridge.watcher >> {log_path} 2>&1 {CRON_MARKER}"
 
 
 def cmd_setup_cron(db: BridgeDB, args):
@@ -930,12 +947,26 @@ COMMANDS = {
     "setup-telegram": cmd_setup_telegram,
     "setup-cron": cmd_setup_cron,
     "remove-cron": cmd_remove_cron,
+    "on-complete": None,  # handled specially below
+    "watcher": None,  # handled specially below
 }
 
 
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
+    # Special commands that don't use the standard db + handler pattern
+    if args.command == "on-complete":
+        from .on_complete import main as on_complete_main
+        # on_complete parses its own --session-id from sys.argv
+        sys.argv = ["on-complete", "--session-id", args.session_id]
+        on_complete_main()
+        return
+    if args.command == "watcher":
+        from .watcher import main as watcher_main
+        watcher_main()
+        return
 
     db = BridgeDB()
     try:

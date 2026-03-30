@@ -101,8 +101,12 @@ def install_stop_hook(project_dir: str, session_id: str) -> str:
             except json.JSONDecodeError:
                 settings = {}
 
-    # Build hook command
-    hook_command = f"PYTHONPATH={src_path} {python_path} -m claude_bridge.on_complete --session-id {session_id}"
+    # Build hook command — use bridge-cli if installed, fall back to PYTHONPATH
+    bridge_cli = shutil.which("bridge-cli")
+    if bridge_cli:
+        hook_command = f"{bridge_cli} on-complete --session-id {session_id}"
+    else:
+        hook_command = f"PYTHONPATH={src_path} {python_path} -m claude_bridge.on_complete --session-id {session_id}"
 
     # Set Stop hook
     settings["hooks"] = settings.get("hooks", {})

@@ -1,0 +1,8 @@
+{
+  "name": "claude-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "bun build channel/server.ts --outfile src/claude_bridge/channel_server/dist/server.js --target bun --bundle --minify"
+  }
+}

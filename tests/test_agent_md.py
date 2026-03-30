@@ -25,7 +25,7 @@ class TestGenerateAgentMd:
         with open(path) as f:
             settings = json.load(f)
         hook_cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
-        assert "claude_bridge.on_complete" in hook_cmd
+        assert "on-complete" in hook_cmd and "session-id" in hook_cmd
         assert "--session-id backend--api" in hook_cmd
 
     def test_contains_tools(self):

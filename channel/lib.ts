@@ -252,9 +252,16 @@ export async function processOutbound(
 // --- Bridge CLI ---
 
 export function bridgeCli(srcPath: string, command: string, args: string[] = []): string {
-  const pythonPath = process.env.PYTHON_PATH ?? "python3";
   const escapedArgs = args.map((a) => `"${a.replace(/"/g, '\\"')}"`).join(" ");
-  const cmd = `PYTHONPATH=${srcPath} ${pythonPath} -m claude_bridge.cli ${command} ${escapedArgs}`;
+  // Try installed bridge-cli first, fall back to PYTHONPATH mode
+  let cmd: string;
+  try {
+    execSync("which bridge-cli", { encoding: "utf8" });
+    cmd = `bridge-cli ${command} ${escapedArgs}`;
+  } catch {
+    const pythonPath = process.env.PYTHON_PATH ?? "python3";
+    cmd = `PYTHONPATH=${srcPath} ${pythonPath} -m claude_bridge.cli ${command} ${escapedArgs}`;
+  }
   try {
     return execSync(cmd, { timeout: 30000, encoding: "utf8" }).trim();
   } catch (err: any) {
