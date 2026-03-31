@@ -11,17 +11,30 @@ from .db import BridgeDB
 
 
 def get_default_telegram_chat_id() -> str | None:
-    """Get the default Telegram chat_id from the access allowlist."""
+    """Get the default Telegram chat_id from bridge config."""
+    config_path = os.path.expanduser("~/.claude-bridge/config.json")
+    if os.path.isfile(config_path):
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+            chat_id = config.get("telegram_chat_id")
+            if chat_id:
+                return str(chat_id)
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    # Fallback: read from official plugin access.json (legacy)
     access_path = os.path.expanduser("~/.claude/channels/telegram/access.json")
-    if not os.path.isfile(access_path):
-        return None
-    try:
-        with open(access_path) as f:
-            access = json.load(f)
-        allowed = access.get("allowFrom", [])
-        return allowed[0] if allowed else None
-    except (json.JSONDecodeError, IOError, IndexError):
-        return None
+    if os.path.isfile(access_path):
+        try:
+            with open(access_path) as f:
+                access = json.load(f)
+            allowed = access.get("allowFrom", [])
+            return allowed[0] if allowed else None
+        except (json.JSONDecodeError, IOError, IndexError):
+            pass
+
+    return None
 
 
 def get_default_channel() -> tuple[str, str | None]:
@@ -39,7 +52,7 @@ def get_bot_token() -> str | None:
     if token:
         return token
 
-    # Try config file
+    # Read from bridge config
     config_path = os.path.expanduser("~/.claude-bridge/config.json")
     if os.path.isfile(config_path):
         try:
@@ -48,24 +61,6 @@ def get_bot_token() -> str | None:
             return config.get("telegram_bot_token")
         except (json.JSONDecodeError, IOError):
             pass
-
-    # Try .mcp.json in common bridge-bot locations
-    for path in [
-        os.path.expanduser("~/projects/bridge-bot/.mcp.json"),
-        os.path.expanduser("~/projects/claude-bridge-bot/.mcp.json"),
-    ]:
-        if os.path.isfile(path):
-            try:
-                with open(path) as f:
-                    mcp = json.load(f)
-                token = (mcp.get("mcpServers", {})
-                         .get("telegram", {})
-                         .get("env", {})
-                         .get("TELEGRAM_BOT_TOKEN"))
-                if token:
-                    return token
-            except (json.JSONDecodeError, IOError):
-                pass
 
     return None
 

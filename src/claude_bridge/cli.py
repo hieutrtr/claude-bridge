@@ -125,12 +125,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--message-id", default=None, help="Channel message ID")
 
     # setup-telegram
-    p = sub.add_parser("setup-telegram", help="Save Telegram bot token for notifications")
+    p = sub.add_parser("setup-telegram", help="Save Telegram bot token and chat ID")
     p.add_argument("token", help="Telegram bot token from @BotFather")
+    p.add_argument("--chat-id", default=None, help="Your Telegram user/chat ID")
 
     # setup
     p = sub.add_parser("setup", help="Interactive setup wizard (or --no-prompt for scripted)")
     p.add_argument("--token", default=None, help="Telegram bot token")
+    p.add_argument("--chat-id", default=None, help="Your Telegram user/chat ID")
     p.add_argument("--bot-dir", default=None, help="Bridge bot project directory")
     p.add_argument("--no-prompt", action="store_true", help="Non-interactive mode")
 
@@ -411,7 +413,7 @@ def cmd_memory(db: BridgeDB, args):
 
 
 def cmd_setup_telegram(db: BridgeDB, args):
-    """Save Telegram bot token to config."""
+    """Save Telegram bot token and chat ID to config."""
     import json
     config_path = os.path.expanduser("~/.claude-bridge/config.json")
     config = {}
@@ -422,18 +424,15 @@ def cmd_setup_telegram(db: BridgeDB, args):
             except json.JSONDecodeError:
                 pass
     config["telegram_bot_token"] = args.token
+    chat_id = getattr(args, "chat_id", None)
+    if chat_id:
+        config["telegram_chat_id"] = chat_id
     os.makedirs(os.path.dirname(config_path), exist_ok=True)
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
-    print(f"Telegram bot token saved to {config_path}")
-
-    # Show auto-detected notification target
-    from .notify import get_default_telegram_chat_id
-    chat_id = get_default_telegram_chat_id()
+    print(f"Telegram config saved to {config_path}")
     if chat_id:
-        print(f"Default notification target: chat_id {chat_id}")
-    else:
-        print("No paired Telegram user found. Pair via /telegram:access pair <code> first.")
+        print(f"  Chat ID: {chat_id}")
     return 0
 
 
@@ -480,6 +479,41 @@ def cmd_setup(db: BridgeDB, args):
         with open(config_path, "w") as f:
             _json.dump(config, f, indent=2)
         print(f"  Token saved to {config_path}")
+
+    # --- Step 1b: Telegram chat ID ---
+    chat_id = getattr(args, "chat_id", None)
+    config_path = os.path.join(bridge_home, "config.json")
+    existing_chat_id = None
+    if os.path.isfile(config_path):
+        try:
+            with open(config_path) as f:
+                existing_chat_id = _json.load(f).get("telegram_chat_id")
+        except (_json.JSONDecodeError, IOError):
+            pass
+
+    if not chat_id and not no_prompt:
+        if existing_chat_id:
+            print(f"\n  Chat ID: {existing_chat_id}")
+            new_id = input("  New chat ID (Enter to keep): ").strip()
+            chat_id = new_id if new_id else existing_chat_id
+        else:
+            print("\n  Your Telegram user ID (send /start to @userinfobot to find it)")
+            chat_id = input("  Chat ID: ").strip()
+    elif not chat_id:
+        chat_id = existing_chat_id
+
+    if chat_id and chat_id != existing_chat_id:
+        config = {}
+        if os.path.isfile(config_path):
+            try:
+                with open(config_path) as f:
+                    config = _json.load(f)
+            except (_json.JSONDecodeError, IOError):
+                pass
+        config["telegram_chat_id"] = chat_id
+        with open(config_path, "w") as f:
+            _json.dump(config, f, indent=2)
+        print(f"  Chat ID saved")
 
     # --- Step 2: Bridge Bot project directory ---
     bot_dir = getattr(args, "bot_dir", None)

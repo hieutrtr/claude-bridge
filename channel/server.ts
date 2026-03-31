@@ -49,13 +49,7 @@ const BRIDGE_SRC_PATH = process.env.BRIDGE_SRC_PATH ?? process.env.PYTHONPATH ??
 const MESSAGES_DB_PATH =
   process.env.MESSAGES_DB_PATH ??
   join(homedir(), ".claude-bridge", "messages.db");
-const ACCESS_FILE = join(
-  homedir(),
-  ".claude",
-  "channels",
-  "telegram",
-  "access.json"
-);
+const CONFIG_FILE = join(homedir(), ".claude-bridge", "config.json");
 
 const RETRY_TIMEOUT_MS = 30000;
 const MAX_RETRIES = 5;
@@ -244,7 +238,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const { chat_id, text, reply_to } = args as { chat_id: string; text: string; reply_to?: string };
         const result = await handleReply(
           async (cid, txt, opts) => { await bot.api.sendMessage(cid, txt, opts ?? {}); },
-          chat_id, text, reply_to, ACCESS_FILE
+          chat_id, text, reply_to, CONFIG_FILE
         );
         return { content: [{ type: "text", text: result }] };
       }
@@ -357,7 +351,7 @@ bot.on("message:text", async (ctx) => {
   const text = ctx.message.text;
   const messageId = String(ctx.message.message_id);
 
-  if (!isAllowed(userId, ACCESS_FILE)) {
+  if (!isAllowed(userId, CONFIG_FILE)) {
     process.stderr.write(`bridge channel: rejected message from non-allowed user ${userId}\n`);
     return;
   }

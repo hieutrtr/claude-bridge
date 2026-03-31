@@ -58,9 +58,13 @@ export function initInboundTracking(db: Database): void {
 
 // --- Access Control ---
 
-export function loadAllowlist(accessPath: string): string[] {
+export function loadAllowlist(configPath: string): string[] {
   try {
-    const data = JSON.parse(readFileSync(accessPath, "utf8"));
+    const data = JSON.parse(readFileSync(configPath, "utf8"));
+    // Support both config.json format (telegram_chat_id) and legacy access.json (allowFrom)
+    if (data.telegram_chat_id) {
+      return [String(data.telegram_chat_id)];
+    }
     return data.allowFrom ?? [];
   } catch {
     return [];
