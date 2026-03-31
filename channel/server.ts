@@ -210,15 +210,22 @@ function queuedNotification(msg: { method: string; params: any }) {
     pendingNotifications.push(msg);
     process.stderr.write(`bridge channel: queued notification (tool call in flight)\n`);
   } else {
-    mcp.notification(msg);
+    // Fire-and-forget but catch errors to prevent unhandled rejections
+    // that can kill grammY's polling loop
+    Promise.resolve(mcp.notification(msg)).catch((err) => {
+      process.stderr.write(`bridge channel: notification error: ${err}\n`);
+    });
   }
 }
 
 function flushPendingNotifications() {
   while (pendingNotifications.length > 0) {
     const msg = pendingNotifications.shift()!;
+    // Catch both sync throws and async rejections
     try {
-      mcp.notification(msg);
+      Promise.resolve(mcp.notification(msg)).catch((err) => {
+        process.stderr.write(`bridge channel: flush notification error: ${err}\n`);
+      });
     } catch (err) {
       process.stderr.write(`bridge channel: flush notification error: ${err}\n`);
     }
@@ -338,7 +345,9 @@ const bot = new Bot(TOKEN);
 let botUsername = "";
 
 bot.catch((err) => {
+  // Log but don't rethrow — prevents polling loop from dying on transient errors
   process.stderr.write(`bridge channel: grammy error: ${err.message}\n`);
+  process.stderr.write(`bridge channel: grammy error stack: ${err.stack}\n`);
 });
 
 bot.on("message:text", async (ctx) => {
@@ -364,6 +373,42 @@ bot.on("message:text", async (ctx) => {
   }
 });
 
+// --- Polling with auto-restart ---
+
+let pollingActive = false;
+
+function startPolling(dropPending = true) {
+  pollingActive = true;
+  bot.start({
+    drop_pending_updates: dropPending,
+    onStart: () => {
+      process.stderr.write("bridge channel: polling started\n");
+    },
+  }).then(() => {
+    // bot.start() resolves when polling stops (e.g. bot.stop() called)
+    // If we didn't intend to stop, restart
+    if (pollingActive && !cleanedUp) {
+      process.stderr.write("bridge channel: polling stopped unexpectedly, restarting in 3s...\n");
+      setTimeout(() => {
+        if (pollingActive && !cleanedUp) {
+          startPolling(false);
+        }
+      }, 3000);
+    }
+  }).catch((err) => {
+    process.stderr.write(`bridge channel: polling error: ${err}\n`);
+    // Restart after error
+    if (pollingActive && !cleanedUp) {
+      process.stderr.write("bridge channel: restarting polling in 5s...\n");
+      setTimeout(() => {
+        if (pollingActive && !cleanedUp) {
+          startPolling(false);
+        }
+      }, 5000);
+    }
+  });
+}
+
 // --- Startup ---
 
 async function main() {
@@ -371,12 +416,7 @@ async function main() {
   botUsername = me.username ?? "";
   process.stderr.write(`bridge channel: bot @${botUsername} connected\n`);
 
-  bot.start({
-    drop_pending_updates: true,
-    onStart: () => {
-      process.stderr.write("bridge channel: polling started\n");
-    },
-  });
+  startPolling();
 
   // Queued notifier for background tasks (avoids interleaving with tool responses)
   const bgNotifier: import("./lib").McpNotifier = { notification: (msg) => queuedNotification(msg) };
@@ -424,6 +464,7 @@ let cleanedUp = false;
 function cleanup() {
   if (cleanedUp) return;
   cleanedUp = true;
+  pollingActive = false;
   if (outboundInterval) clearInterval(outboundInterval);
   if (retryInterval) clearInterval(retryInterval);
   try { msgDb.close(); } catch {}

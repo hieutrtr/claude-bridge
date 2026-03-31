@@ -144,7 +144,7 @@ def tool_kill(db: BridgeDB, agent: str) -> str:
 
 
 def tool_create_agent(
-    db: BridgeDB, name: str, path: str, purpose: str, model: str = "sonnet",
+    db: BridgeDB, name: str, path: str, purpose: str, model: str = "opus",
 ) -> str:
     """Create a new agent."""
     if db.get_agent(name):

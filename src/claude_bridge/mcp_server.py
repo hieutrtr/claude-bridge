@@ -68,7 +68,7 @@ def create_server(db: BridgeDB | None = None, msg_db: MessageDB | None = None) -
         return mcp_tools.tool_kill(_db(), agent)
 
     @server.tool()
-    def bridge_create_agent(name: str, path: str, purpose: str, model: str = "sonnet") -> str:
+    def bridge_create_agent(name: str, path: str, purpose: str, model: str = "opus") -> str:
         """Create a new agent for a project directory."""
         return mcp_tools.tool_create_agent(_db(), name, path, purpose, model)
 

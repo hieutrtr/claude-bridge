@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 
 def get_channel_server_path() -> str:
