@@ -553,8 +553,33 @@ def cmd_setup(db: BridgeDB, args):
     with open(mcp_json_path, "w") as f:
         f.write(generate_mcp_json(mode=mode))
 
+    # Write .claude/settings.local.json — auto-allow bridge tools + disable plugin
+    settings_dir = os.path.join(bot_dir, ".claude")
+    os.makedirs(settings_dir, exist_ok=True)
+    settings_path = os.path.join(settings_dir, "settings.local.json")
+    bot_settings = {
+        "permissions": {
+            "allow": [
+                "mcp__bridge__reply",
+                "mcp__bridge__bridge_acknowledge",
+                "mcp__bridge__bridge_dispatch",
+                "mcp__bridge__bridge_status",
+                "mcp__bridge__bridge_agents",
+                "mcp__bridge__bridge_history",
+                "mcp__bridge__bridge_kill",
+                "mcp__bridge__bridge_create_agent",
+                "mcp__bridge__bridge_get_notifications",
+                "mcp__bridge__bridge_check_messages",
+            ]
+        },
+        "enabledPlugins": {},
+    }
+    with open(settings_path, "w") as f:
+        _json.dump(bot_settings, f, indent=2)
+
     print(f"  CLAUDE.md → {claude_md_path}")
     print(f"  .mcp.json → {mcp_json_path}")
+    print(f"  settings.local.json → {settings_path}")
 
     # --- Step 4: Cron ---
     print(f"\nStep 4/4: Watcher cron")
@@ -654,6 +679,8 @@ def cmd_setup_bot(db: BridgeDB, args):
     has_bun = shutil.which("bun") is not None
     mode = "channel" if has_bun else "mcp"
 
+    import json as _json
+
     # Write CLAUDE.md
     claude_md_path = os.path.join(target, "CLAUDE.md")
     with open(claude_md_path, "w") as f:
@@ -665,6 +692,38 @@ def cmd_setup_bot(db: BridgeDB, args):
     with open(mcp_json_path, "w") as f:
         f.write(generate_mcp_json(mode=mode))
     print(f".mcp.json → {mcp_json_path}")
+
+    # Write .claude/settings.local.json — auto-allow all bridge tools
+    settings_dir = os.path.join(target, ".claude")
+    os.makedirs(settings_dir, exist_ok=True)
+    settings_path = os.path.join(settings_dir, "settings.local.json")
+    settings = {}
+    if os.path.isfile(settings_path):
+        try:
+            with open(settings_path) as f:
+                settings = _json.load(f)
+        except (_json.JSONDecodeError, IOError):
+            pass
+    settings["permissions"] = settings.get("permissions", {})
+    settings["permissions"]["allow"] = list(set(
+        settings["permissions"].get("allow", []) + [
+            "mcp__bridge__reply",
+            "mcp__bridge__bridge_acknowledge",
+            "mcp__bridge__bridge_dispatch",
+            "mcp__bridge__bridge_status",
+            "mcp__bridge__bridge_agents",
+            "mcp__bridge__bridge_history",
+            "mcp__bridge__bridge_kill",
+            "mcp__bridge__bridge_create_agent",
+            "mcp__bridge__bridge_get_notifications",
+            "mcp__bridge__bridge_check_messages",
+        ]
+    ))
+    # Disable official Telegram plugin
+    settings["enabledPlugins"] = {}
+    with open(settings_path, "w") as f:
+        _json.dump(settings, f, indent=2)
+    print(f".claude/settings.local.json → {settings_path}")
 
     # Check channel deps
     channel_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "channel")

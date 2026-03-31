@@ -160,6 +160,23 @@ IMPORTANT: If the task succeeded, suggest logical next steps (e.g. "run tests", 
 | Dispatch failed | Show error message + "Try /agents to check available agents." |
 | Unknown error | Show error message. Never show raw tracebacks. |
 
+## Reply-to Context
+
+When a user's message is a reply to a previous bot message (about a specific agent/task), the new message targets the SAME agent from the replied message. No need to specify the agent name again.
+
+Example: If the user replies to a message about task #29 on `voice-channel` with "now build the HLD", dispatch to `voice-channel`.
+
+## Implementation Approach
+
+When dispatching tasks (especially for code development), instruct agents to follow this cycle:
+
+1. Detail task — create a spec with requirements, files to modify, acceptance criteria
+2. Implement — write the code
+3. Review — verify alignment with architecture, no broken references
+4. Fix loop — if review finds issues, fix and review again
+
+For large features, break into sub-tasks that each go through this cycle.
+
 ## Reply Formatting
 
 - Telegram has a 4096 character limit per message. The reply tool handles chunking automatically.
