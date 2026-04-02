@@ -29,6 +29,7 @@ import {
   getPendingInbound,
   pushMessage,
   downloadTelegramFile,
+  safeName,
   processRetries,
   processOutbound,
   bridgeCli,
@@ -82,6 +83,7 @@ const mcp = new Server(
     instructions: [
       'Messages from Telegram arrive as <channel source="bridge" chat_id="..." user="..." tracking_id="..." ts="...">.',
       'If the tag has an image_path attribute, Read that file — it is a photo the sender attached.',
+      'If the tag has attachment_file_id, call download_attachment with that file_id to fetch the file, then Read the returned path.',
       "After processing each message: call bridge_acknowledge(tracking_id), then bridge_get_notifications(), then bridge_check_messages().",
       "bridge_check_messages catches any messages that push notifications missed while you were busy.",
       "Reply with the reply tool — pass chat_id back. Keep replies concise (users are on mobile).",
@@ -193,6 +195,20 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: "bridge_check_messages",
       description: "Check for any pending Telegram messages that may have been missed by push. Call this after completing each response as a safety net.",
       inputSchema: { type: "object" as const, properties: {} },
+    },
+    {
+      name: "download_attachment",
+      description: "Download a file attachment from Telegram. Returns the local file path. Use when a channel message has attachment_file_id.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          file_id: {
+            type: "string",
+            description: "The attachment_file_id from the channel message meta",
+          },
+        },
+        required: ["file_id"],
+      },
     },
   ],
 }));
@@ -325,6 +341,29 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         };
       }
 
+      case "download_attachment": {
+        const { file_id } = args as { file_id: string };
+        if (!file_id) {
+          return { content: [{ type: "text", text: "Error: file_id is required" }], isError: true };
+        }
+
+        const localPath = await downloadTelegramFile(
+          (fid) => bot.api.getFile(fid),
+          TOKEN,
+          file_id,
+          INBOX_DIR
+        );
+
+        if (!localPath) {
+          return {
+            content: [{ type: "text", text: "Error: failed to download file — it may have expired (Telegram files expire after ~1 hour)" }],
+            isError: true,
+          };
+        }
+
+        return { content: [{ type: "text", text: localPath }] };
+      }
+
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -405,6 +444,42 @@ bot.on("message:photo", async (ctx) => {
     process.stderr.write(`bridge channel: photo received from ${username}, path=${imagePath}\n`);
   } catch (err) {
     process.stderr.write(`bridge channel: photo handler error: ${err}\n`);
+  }
+});
+
+bot.on("message:document", async (ctx) => {
+  const chatId = String(ctx.chat.id);
+  const userId = String(ctx.from.id);
+  const username = ctx.from.username ?? userId;
+  const messageId = String(ctx.message.message_id);
+
+  if (!isAllowed(userId, CONFIG_FILE)) {
+    process.stderr.write(`bridge channel: rejected document from non-allowed user ${userId}\n`);
+    return;
+  }
+
+  try {
+    const ts = new Date(ctx.message.date * 1000).toISOString();
+    const doc = ctx.message.document;
+    const name = safeName(doc.file_name);
+    const text = ctx.message.caption ?? `(document: ${name ?? "file"})`;
+
+    const trackingId = trackInbound(msgDb, chatId, userId, username, text, messageId);
+    const notifier: import("./lib").McpNotifier = { notification: (msg) => queuedNotification(msg) };
+    pushMessage(notifier, trackingId, chatId, userId, username, text, messageId, ts, {
+      attachment_kind: "document",
+      attachment_file_id: doc.file_id,
+      attachment_size: doc.file_size ? String(doc.file_size) : undefined,
+      attachment_mime: doc.mime_type,
+      attachment_name: name,
+    });
+
+    process.stderr.write(
+      `bridge channel: document received from ${username}: ${name ?? "unnamed"} ` +
+      `(${doc.mime_type}, ${doc.file_size} bytes)\n`
+    );
+  } catch (err) {
+    process.stderr.write(`bridge channel: document handler error: ${err}\n`);
   }
 });
 

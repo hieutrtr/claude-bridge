@@ -14,6 +14,7 @@ import {
   getPendingInbound,
   pushMessage,
   downloadTelegramFile,
+  safeName,
   processRetries,
   processOutbound,
   handleReply,
@@ -393,6 +394,90 @@ describe("downloadTelegramFile", () => {
       globalThis.fetch = originalFetch;
       rmSync(dir, { recursive: true });
     }
+  });
+});
+
+// --- safeName ---
+
+describe("safeName", () => {
+  test("strips dangerous characters", () => {
+    expect(safeName("report<script>.pdf")).toBe("report_script_.pdf");
+    expect(safeName("path/../../etc/passwd")).toBe("path_.._.._etc_passwd");
+  });
+
+  test("returns undefined for undefined input", () => {
+    expect(safeName(undefined)).toBeUndefined();
+  });
+
+  test("returns undefined for null input", () => {
+    expect(safeName(null)).toBeUndefined();
+  });
+
+  test("returns undefined for empty string", () => {
+    expect(safeName("")).toBeUndefined();
+  });
+
+  test("returns undefined when only dangerous chars", () => {
+    expect(safeName("/<>:*?|")).toBeUndefined();
+  });
+
+  test("leaves safe filenames unchanged", () => {
+    expect(safeName("normal-file.pdf")).toBe("normal-file.pdf");
+    expect(safeName("report_2024.docx")).toBe("report_2024.docx");
+    expect(safeName("my file (1).txt")).toBe("my file (1).txt");
+  });
+
+  test("strips path separators", () => {
+    expect(safeName("path\\to\\file.txt")).toBe("path_to_file.txt");
+    expect(safeName("dir/file.txt")).toBe("dir_file.txt");
+  });
+
+  test("strips newlines and semicolons", () => {
+    expect(safeName("file\nname.txt")).toBe("file_name.txt");
+    expect(safeName("file\rname.txt")).toBe("file_name.txt");
+    expect(safeName("file;name.txt")).toBe("file_name.txt");
+  });
+
+  test("strips square brackets", () => {
+    expect(safeName("file[1].txt")).toBe("file_1_.txt");
+  });
+});
+
+// --- pushMessage with document attachment meta ---
+
+describe("pushMessage with attachment meta", () => {
+  test("includes all document attachment fields", () => {
+    const notifier = mockNotifier();
+    pushMessage(notifier, 1, "123", "456", "alice", "report.pdf", "789", "2026-01-01T00:00:00Z", {
+      attachment_kind: "document",
+      attachment_file_id: "BAADBBxxxx",
+      attachment_size: "1234567",
+      attachment_mime: "application/pdf",
+      attachment_name: "report.pdf",
+    });
+    const meta = notifier.calls[0].params.meta;
+    expect(meta.attachment_kind).toBe("document");
+    expect(meta.attachment_file_id).toBe("BAADBBxxxx");
+    expect(meta.attachment_size).toBe("1234567");
+    expect(meta.attachment_mime).toBe("application/pdf");
+    expect(meta.attachment_name).toBe("report.pdf");
+  });
+
+  test("filters undefined attachment fields", () => {
+    const notifier = mockNotifier();
+    pushMessage(notifier, 1, "123", "456", "alice", "(document: file)", "789", "2026-01-01T00:00:00Z", {
+      attachment_kind: "document",
+      attachment_file_id: "BAADBBxxxx",
+      attachment_size: undefined,
+      attachment_mime: undefined,
+      attachment_name: undefined,
+    });
+    const meta = notifier.calls[0].params.meta;
+    expect(meta.attachment_kind).toBe("document");
+    expect(meta.attachment_file_id).toBe("BAADBBxxxx");
+    expect("attachment_size" in meta).toBe(false);
+    expect("attachment_mime" in meta).toBe(false);
+    expect("attachment_name" in meta).toBe(false);
   });
 });
 

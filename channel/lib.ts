@@ -198,6 +198,21 @@ export async function downloadTelegramFile(
   }
 }
 
+// --- Filename Sanitization ---
+
+/**
+ * Sanitize filename from Telegram — strip dangerous characters.
+ * Returns undefined if input is undefined/null/empty.
+ */
+export function safeName(name: string | undefined | null): string | undefined {
+  if (!name) return undefined;
+  // Strip dangerous characters: < > [ ] \r \n ; / \ : * ? " |
+  const cleaned = name.replace(/[<>\[\]\r\n;/\\:*?"|]/g, "_").trim();
+  // If nothing meaningful remains (empty or all underscores), return undefined
+  if (!cleaned || /^_+$/.test(cleaned)) return undefined;
+  return cleaned;
+}
+
 // --- Retry Engine ---
 
 export function processRetries(
