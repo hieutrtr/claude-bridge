@@ -483,6 +483,177 @@ bot.on("message:document", async (ctx) => {
   }
 });
 
+bot.on("message:voice", async (ctx) => {
+  const chatId = String(ctx.chat.id);
+  const userId = String(ctx.from.id);
+  const username = ctx.from.username ?? userId;
+  const messageId = String(ctx.message.message_id);
+
+  if (!isAllowed(userId, CONFIG_FILE)) return;
+
+  try {
+    const ts = new Date(ctx.message.date * 1000).toISOString();
+    const voice = ctx.message.voice;
+    const duration = voice.duration;
+    const text = ctx.message.caption ?? `(voice message, ${duration}s)`;
+
+    const trackingId = trackInbound(msgDb, chatId, userId, username, text, messageId);
+    const notifier: import("./lib").McpNotifier = { notification: (msg) => queuedNotification(msg) };
+    pushMessage(notifier, trackingId, chatId, userId, username, text, messageId, ts, {
+      attachment_kind: "voice",
+      attachment_file_id: voice.file_id,
+      attachment_size: voice.file_size ? String(voice.file_size) : undefined,
+      attachment_mime: voice.mime_type ?? "audio/ogg",
+    });
+
+    process.stderr.write(`bridge channel: voice received from ${username} (${duration}s)\n`);
+  } catch (err) {
+    process.stderr.write(`bridge channel: voice handler error: ${err}\n`);
+  }
+});
+
+bot.on("message:audio", async (ctx) => {
+  const chatId = String(ctx.chat.id);
+  const userId = String(ctx.from.id);
+  const username = ctx.from.username ?? userId;
+  const messageId = String(ctx.message.message_id);
+
+  if (!isAllowed(userId, CONFIG_FILE)) return;
+
+  try {
+    const ts = new Date(ctx.message.date * 1000).toISOString();
+    const audio = ctx.message.audio;
+    const name = safeName(audio.file_name);
+    const title = audio.title ?? name ?? "audio";
+    const text = ctx.message.caption ?? `(audio: ${title})`;
+
+    const trackingId = trackInbound(msgDb, chatId, userId, username, text, messageId);
+    const notifier: import("./lib").McpNotifier = { notification: (msg) => queuedNotification(msg) };
+    pushMessage(notifier, trackingId, chatId, userId, username, text, messageId, ts, {
+      attachment_kind: "audio",
+      attachment_file_id: audio.file_id,
+      attachment_size: audio.file_size ? String(audio.file_size) : undefined,
+      attachment_mime: audio.mime_type,
+      attachment_name: name,
+    });
+
+    process.stderr.write(`bridge channel: audio received from ${username}: ${title}\n`);
+  } catch (err) {
+    process.stderr.write(`bridge channel: audio handler error: ${err}\n`);
+  }
+});
+
+bot.on("message:video", async (ctx) => {
+  const chatId = String(ctx.chat.id);
+  const userId = String(ctx.from.id);
+  const username = ctx.from.username ?? userId;
+  const messageId = String(ctx.message.message_id);
+
+  if (!isAllowed(userId, CONFIG_FILE)) return;
+
+  try {
+    const ts = new Date(ctx.message.date * 1000).toISOString();
+    const video = ctx.message.video;
+    const name = safeName(video.file_name);
+    const text = ctx.message.caption ?? `(video: ${name ?? "video"}, ${video.duration}s)`;
+
+    const trackingId = trackInbound(msgDb, chatId, userId, username, text, messageId);
+    const notifier: import("./lib").McpNotifier = { notification: (msg) => queuedNotification(msg) };
+    pushMessage(notifier, trackingId, chatId, userId, username, text, messageId, ts, {
+      attachment_kind: "video",
+      attachment_file_id: video.file_id,
+      attachment_size: video.file_size ? String(video.file_size) : undefined,
+      attachment_mime: video.mime_type,
+      attachment_name: name,
+    });
+
+    process.stderr.write(`bridge channel: video received from ${username}: ${name ?? "video"} (${video.duration}s)\n`);
+  } catch (err) {
+    process.stderr.write(`bridge channel: video handler error: ${err}\n`);
+  }
+});
+
+bot.on("message:video_note", async (ctx) => {
+  const chatId = String(ctx.chat.id);
+  const userId = String(ctx.from.id);
+  const username = ctx.from.username ?? userId;
+  const messageId = String(ctx.message.message_id);
+
+  if (!isAllowed(userId, CONFIG_FILE)) return;
+
+  try {
+    const ts = new Date(ctx.message.date * 1000).toISOString();
+    const vn = ctx.message.video_note;
+    const text = `(video note, ${vn.duration}s)`;
+
+    const trackingId = trackInbound(msgDb, chatId, userId, username, text, messageId);
+    const notifier: import("./lib").McpNotifier = { notification: (msg) => queuedNotification(msg) };
+    pushMessage(notifier, trackingId, chatId, userId, username, text, messageId, ts, {
+      attachment_kind: "video_note",
+      attachment_file_id: vn.file_id,
+      attachment_size: vn.file_size ? String(vn.file_size) : undefined,
+    });
+
+    process.stderr.write(`bridge channel: video_note received from ${username} (${vn.duration}s)\n`);
+  } catch (err) {
+    process.stderr.write(`bridge channel: video_note handler error: ${err}\n`);
+  }
+});
+
+bot.on("message:sticker", async (ctx) => {
+  const chatId = String(ctx.chat.id);
+  const userId = String(ctx.from.id);
+  const username = ctx.from.username ?? userId;
+  const messageId = String(ctx.message.message_id);
+
+  if (!isAllowed(userId, CONFIG_FILE)) return;
+
+  try {
+    const ts = new Date(ctx.message.date * 1000).toISOString();
+    const sticker = ctx.message.sticker;
+    const emoji = sticker.emoji ?? "";
+    const setName = sticker.set_name ?? "";
+    const text = `(sticker ${emoji}${setName ? ` from ${setName}` : ""})`;
+
+    const trackingId = trackInbound(msgDb, chatId, userId, username, text, messageId);
+    const notifier: import("./lib").McpNotifier = { notification: (msg) => queuedNotification(msg) };
+    pushMessage(notifier, trackingId, chatId, userId, username, text, messageId, ts);
+    // Sticker: text only, NO attachment meta — emoji is sufficient context
+
+    process.stderr.write(`bridge channel: sticker received from ${username}: ${emoji}\n`);
+  } catch (err) {
+    process.stderr.write(`bridge channel: sticker handler error: ${err}\n`);
+  }
+});
+
+bot.on("message:animation", async (ctx) => {
+  const chatId = String(ctx.chat.id);
+  const userId = String(ctx.from.id);
+  const username = ctx.from.username ?? userId;
+  const messageId = String(ctx.message.message_id);
+
+  if (!isAllowed(userId, CONFIG_FILE)) return;
+
+  try {
+    const ts = new Date(ctx.message.date * 1000).toISOString();
+    const anim = ctx.message.animation;
+    const name = safeName(anim.file_name);
+    const text = ctx.message.caption ?? `(GIF: ${name ?? "animation"})`;
+
+    const trackingId = trackInbound(msgDb, chatId, userId, username, text, messageId);
+    const notifier: import("./lib").McpNotifier = { notification: (msg) => queuedNotification(msg) };
+    pushMessage(notifier, trackingId, chatId, userId, username, text, messageId, ts, {
+      attachment_kind: "animation",
+      attachment_file_id: anim.file_id,
+      attachment_size: anim.file_size ? String(anim.file_size) : undefined,
+      attachment_mime: anim.mime_type,
+      attachment_name: name,
+    });
+  } catch (err) {
+    process.stderr.write(`bridge channel: animation handler error: ${err}\n`);
+  }
+});
+
 // --- Polling with auto-restart ---
 
 let pollingActive = false;
