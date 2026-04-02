@@ -8,8 +8,9 @@
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Bot } from "grammy";
 import { Database } from "bun:sqlite";
-import { readFileSync } from "fs";
+import { readFileSync, mkdirSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
+import { join } from "path";
 
 // --- Types ---
 
@@ -127,22 +128,74 @@ export function pushMessage(
   username: string,
   text: string,
   messageId: string,
-  ts: string
+  ts: string,
+  extraMeta?: Record<string, string | undefined>
 ): void {
+  const meta: Record<string, string> = {
+    chat_id: chatId,
+    message_id: messageId,
+    user: username,
+    user_id: userId,
+    ts,
+    tracking_id: String(trackingId),
+  };
+
+  // Merge extra meta (image_path, attachment_*, ...)
+  if (extraMeta) {
+    for (const [k, v] of Object.entries(extraMeta)) {
+      if (v !== undefined) meta[k] = v;
+    }
+  }
+
   notifier.notification({
     method: "notifications/claude/channel",
-    params: {
-      content: text,
-      meta: {
-        chat_id: chatId,
-        message_id: messageId,
-        user: username,
-        user_id: userId,
-        ts,
-        tracking_id: String(trackingId),
-      },
-    },
+    params: { content: text, meta },
   });
+}
+
+/**
+ * Download a file from Telegram Bot API to a local directory.
+ * Returns local file path on success, undefined on failure.
+ *
+ * @param getFile - Injected function to call Telegram getFile API (testable)
+ * @param token - Bot token for constructing download URL
+ * @param fileId - Telegram file_id to download
+ * @param inboxDir - Directory to save downloaded file
+ * @param extOverride - Override file extension (optional)
+ */
+export async function downloadTelegramFile(
+  getFile: (fileId: string) => Promise<{ file_path?: string; file_unique_id: string }>,
+  token: string,
+  fileId: string,
+  inboxDir: string,
+  extOverride?: string
+): Promise<string | undefined> {
+  try {
+    const file = await getFile(fileId);
+    if (!file.file_path) return undefined;
+
+    const url = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      process.stderr.write(`bridge channel: file download HTTP ${res.status}\n`);
+      return undefined;
+    }
+
+    const buf = Buffer.from(await res.arrayBuffer());
+    const ext = extOverride ?? file.file_path.split(".").pop() ?? "bin";
+    const safeUniqueId = file.file_unique_id.replace(/[^a-zA-Z0-9_-]/g, "");
+    const filename = `${Date.now()}-${safeUniqueId}.${ext}`;
+    const localPath = join(inboxDir, filename);
+
+    mkdirSync(inboxDir, { recursive: true });
+    writeFileSync(localPath, buf);
+
+    process.stderr.write(`bridge channel: downloaded file to ${localPath} (${buf.length} bytes)\n`);
+    return localPath;
+  } catch (err) {
+    process.stderr.write(`bridge channel: file download error: ${err}\n`);
+    return undefined;
+  }
 }
 
 // --- Retry Engine ---

@@ -28,6 +28,7 @@ import {
   acknowledgeInbound,
   getPendingInbound,
   pushMessage,
+  downloadTelegramFile,
   processRetries,
   processOutbound,
   bridgeCli,
@@ -50,6 +51,7 @@ const MESSAGES_DB_PATH =
   process.env.MESSAGES_DB_PATH ??
   join(homedir(), ".claude-bridge", "messages.db");
 const CONFIG_FILE = join(homedir(), ".claude-bridge", "config.json");
+const INBOX_DIR = join(homedir(), ".claude-bridge", "inbox");
 
 const RETRY_TIMEOUT_MS = 30000;
 const MAX_RETRIES = 5;
@@ -57,6 +59,7 @@ const MAX_RETRIES = 5;
 // --- Database ---
 
 mkdirSync(join(homedir(), ".claude-bridge"), { recursive: true });
+mkdirSync(INBOX_DIR, { recursive: true });
 const msgDb = new Database(MESSAGES_DB_PATH);
 initInboundTracking(msgDb);
 
@@ -78,6 +81,7 @@ const mcp = new Server(
     },
     instructions: [
       'Messages from Telegram arrive as <channel source="bridge" chat_id="..." user="..." tracking_id="..." ts="...">.',
+      'If the tag has an image_path attribute, Read that file — it is a photo the sender attached.',
       "After processing each message: call bridge_acknowledge(tracking_id), then bridge_get_notifications(), then bridge_check_messages().",
       "bridge_check_messages catches any messages that push notifications missed while you were busy.",
       "Reply with the reply tool — pass chat_id back. Keep replies concise (users are on mobile).",
@@ -364,6 +368,43 @@ bot.on("message:text", async (ctx) => {
     pushMessage(notifier, trackingId, chatId, userId, username, text, messageId, ts);
   } catch (err) {
     process.stderr.write(`bridge channel: message handler error: ${err}\n`);
+  }
+});
+
+bot.on("message:photo", async (ctx) => {
+  const chatId = String(ctx.chat.id);
+  const userId = String(ctx.from.id);
+  const username = ctx.from.username ?? userId;
+  const caption = ctx.message.caption ?? "(photo)";
+  const messageId = String(ctx.message.message_id);
+
+  if (!isAllowed(userId, CONFIG_FILE)) {
+    process.stderr.write(`bridge channel: rejected photo from non-allowed user ${userId}\n`);
+    return;
+  }
+
+  try {
+    const ts = new Date(ctx.message.date * 1000).toISOString();
+
+    // Download highest resolution photo (last element = largest)
+    const photos = ctx.message.photo;
+    const best = photos[photos.length - 1];
+    const imagePath = await downloadTelegramFile(
+      (fid) => ctx.api.getFile(fid),
+      TOKEN,
+      best.file_id,
+      INBOX_DIR
+    );
+
+    const trackingId = trackInbound(msgDb, chatId, userId, username, caption, messageId);
+    const notifier: import("./lib").McpNotifier = { notification: (msg) => queuedNotification(msg) };
+    pushMessage(notifier, trackingId, chatId, userId, username, caption, messageId, ts, {
+      image_path: imagePath,
+    });
+
+    process.stderr.write(`bridge channel: photo received from ${username}, path=${imagePath}\n`);
+  } catch (err) {
+    process.stderr.write(`bridge channel: photo handler error: ${err}\n`);
   }
 });
 

@@ -13,6 +13,7 @@ import {
   getInbound,
   getPendingInbound,
   pushMessage,
+  downloadTelegramFile,
   processRetries,
   processOutbound,
   handleReply,
@@ -224,6 +225,174 @@ describe("pushMessage", () => {
     const notifier = mockNotifier();
     pushMessage(notifier, 7, "123", "u1", "hieu", "hello", "1", "2026-01-01T00:00:00Z");
     expect(typeof notifier.calls[0].params.meta.tracking_id).toBe("string");
+  });
+
+  test("includes extraMeta in notification", () => {
+    const notifier = mockNotifier();
+    pushMessage(notifier, 1, "123", "456", "alice", "hello", "789", "2026-01-01T00:00:00Z", {
+      image_path: "/inbox/photo.jpg",
+    });
+    expect(notifier.calls[0].params.meta.image_path).toBe("/inbox/photo.jpg");
+  });
+
+  test("without extraMeta still works (backward compatible)", () => {
+    const notifier = mockNotifier();
+    pushMessage(notifier, 1, "123", "456", "alice", "hello", "789", "2026-01-01T00:00:00Z");
+    expect(notifier.calls[0].params.meta.image_path).toBeUndefined();
+    // Core fields still present
+    expect(notifier.calls[0].params.meta.chat_id).toBe("123");
+    expect(notifier.calls[0].params.meta.user).toBe("alice");
+  });
+
+  test("extraMeta with undefined values are filtered out", () => {
+    const notifier = mockNotifier();
+    pushMessage(notifier, 1, "123", "456", "alice", "hello", "789", "2026-01-01T00:00:00Z", {
+      image_path: undefined,
+      attachment_file_id: "some-id",
+    });
+    const meta = notifier.calls[0].params.meta;
+    expect("image_path" in meta).toBe(false);
+    expect(meta.attachment_file_id).toBe("some-id");
+  });
+});
+
+// --- Download Telegram File ---
+
+describe("downloadTelegramFile", () => {
+  test("saves file to inbox and returns path", async () => {
+    const dir = tmpDir();
+    const fileContent = new Uint8Array([0x89, 0x50, 0x4e, 0x47]); // PNG header bytes
+
+    // Mock getFile
+    const getFile = async (fileId: string) => ({
+      file_path: "photos/file_42.jpg",
+      file_unique_id: "abc123",
+    });
+
+    // Mock global fetch
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      arrayBuffer: async () => fileContent.buffer,
+    })) as any;
+
+    try {
+      const result = await downloadTelegramFile(getFile, "BOT_TOKEN", "file-id-1", dir);
+      expect(result).toBeDefined();
+      expect(result!.startsWith(dir)).toBe(true);
+      expect(result!).toContain("abc123");
+      expect(result!.endsWith(".jpg")).toBe(true);
+
+      // Verify file exists and has correct content
+      const { readFileSync } = await import("fs");
+      const written = readFileSync(result!);
+      expect(written.length).toBe(fileContent.length);
+    } finally {
+      globalThis.fetch = originalFetch;
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  test("returns undefined when getFile fails", async () => {
+    const dir = tmpDir();
+    const getFile = async () => { throw new Error("API error"); };
+
+    try {
+      const result = await downloadTelegramFile(getFile as any, "TOKEN", "fid", dir);
+      expect(result).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  test("returns undefined when file_path is missing", async () => {
+    const dir = tmpDir();
+    const getFile = async () => ({ file_path: undefined as any, file_unique_id: "abc" });
+
+    try {
+      const result = await downloadTelegramFile(getFile, "TOKEN", "fid", dir);
+      expect(result).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  test("returns undefined on HTTP error", async () => {
+    const dir = tmpDir();
+    const getFile = async () => ({ file_path: "photos/f.jpg", file_unique_id: "abc" });
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({ ok: false, status: 404 })) as any;
+
+    try {
+      const result = await downloadTelegramFile(getFile, "TOKEN", "fid", dir);
+      expect(result).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  test("filename format is timestamp-uniqueId.ext", async () => {
+    const dir = tmpDir();
+    const getFile = async () => ({ file_path: "photos/file.png", file_unique_id: "UniqueXYZ" });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+    })) as any;
+
+    try {
+      const result = await downloadTelegramFile(getFile, "TOKEN", "fid", dir);
+      expect(result).toBeDefined();
+      const filename = result!.split("/").pop()!;
+      // Format: {timestamp}-{uniqueId}.{ext}
+      expect(filename).toMatch(/^\d+-UniqueXYZ\.png$/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  test("uses extOverride when provided", async () => {
+    const dir = tmpDir();
+    const getFile = async () => ({ file_path: "photos/file.bin", file_unique_id: "abc" });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      arrayBuffer: async () => new Uint8Array([1]).buffer,
+    })) as any;
+
+    try {
+      const result = await downloadTelegramFile(getFile, "TOKEN", "fid", dir, "jpg");
+      expect(result).toBeDefined();
+      expect(result!.endsWith(".jpg")).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  test("sanitizes file_unique_id in filename", async () => {
+    const dir = tmpDir();
+    const getFile = async () => ({ file_path: "photos/f.jpg", file_unique_id: "abc/../../evil" });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      arrayBuffer: async () => new Uint8Array([1]).buffer,
+    })) as any;
+
+    try {
+      const result = await downloadTelegramFile(getFile, "TOKEN", "fid", dir);
+      expect(result).toBeDefined();
+      const filename = result!.split("/").pop()!;
+      // Should not contain path traversal characters
+      expect(filename).not.toContain("/");
+      expect(filename).not.toContain("..");
+    } finally {
+      globalThis.fetch = originalFetch;
+      rmSync(dir, { recursive: true });
+    }
   });
 });
 
