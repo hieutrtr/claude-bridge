@@ -8,9 +8,12 @@
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Bot } from "grammy";
 import { Database } from "bun:sqlite";
-import { readFileSync, mkdirSync, writeFileSync } from "fs";
+import { readFileSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, existsSync } from "fs";
 import { execSync } from "child_process";
 import { join } from "path";
+
+/** Maximum file size in bytes (20MB — Telegram Bot API limit) */
+export const FILE_SIZE_LIMIT = 20 * 1024 * 1024;
 
 // --- Types ---
 
@@ -162,40 +165,116 @@ export function pushMessage(
  * @param fileId - Telegram file_id to download
  * @param inboxDir - Directory to save downloaded file
  * @param extOverride - Override file extension (optional)
+ * @param fileSizeBytes - Known file size for pre-download rejection (optional)
  */
 export async function downloadTelegramFile(
   getFile: (fileId: string) => Promise<{ file_path?: string; file_unique_id: string }>,
   token: string,
   fileId: string,
   inboxDir: string,
-  extOverride?: string
+  extOverride?: string,
+  fileSizeBytes?: number
 ): Promise<string | undefined> {
+  // Size check BEFORE download
+  if (fileSizeBytes && fileSizeBytes > FILE_SIZE_LIMIT) {
+    const sizeMB = (fileSizeBytes / 1024 / 1024).toFixed(1);
+    process.stderr.write(
+      `bridge channel: file too large (${sizeMB}MB > ${FILE_SIZE_LIMIT / 1024 / 1024}MB), skipping download\n`
+    );
+    return undefined;
+  }
+
   try {
     const file = await getFile(fileId);
-    if (!file.file_path) return undefined;
-
-    const url = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
-    const res = await fetch(url);
-    if (!res.ok) {
-      process.stderr.write(`bridge channel: file download HTTP ${res.status}\n`);
+    if (!file.file_path) {
+      process.stderr.write("bridge channel: getFile returned no file_path — file may have expired\n");
       return undefined;
     }
 
-    const buf = Buffer.from(await res.arrayBuffer());
-    const ext = extOverride ?? file.file_path.split(".").pop() ?? "bin";
-    const safeUniqueId = file.file_unique_id.replace(/[^a-zA-Z0-9_-]/g, "");
-    const filename = `${Date.now()}-${safeUniqueId}.${ext}`;
-    const localPath = join(inboxDir, filename);
+    const url = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
 
-    mkdirSync(inboxDir, { recursive: true });
-    writeFileSync(localPath, buf);
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
 
-    process.stderr.write(`bridge channel: downloaded file to ${localPath} (${buf.length} bytes)\n`);
-    return localPath;
+      if (!res.ok) {
+        process.stderr.write(`bridge channel: file download HTTP ${res.status}\n`);
+        return undefined;
+      }
+
+      const buf = Buffer.from(await res.arrayBuffer());
+
+      // Double-check actual size after download
+      if (buf.length > FILE_SIZE_LIMIT) {
+        process.stderr.write(
+          `bridge channel: downloaded file exceeds limit (${buf.length} bytes), discarding\n`
+        );
+        return undefined;
+      }
+
+      const ext = extOverride ?? file.file_path.split(".").pop() ?? "bin";
+      const safeExt = ext.replace(/[^a-zA-Z0-9]/g, "");
+      const safeUniqueId = file.file_unique_id.replace(/[^a-zA-Z0-9_-]/g, "");
+      const filename = `${Date.now()}-${safeUniqueId}.${safeExt}`;
+      const localPath = join(inboxDir, filename);
+
+      mkdirSync(inboxDir, { recursive: true });
+      writeFileSync(localPath, buf);
+
+      process.stderr.write(`bridge channel: downloaded file to ${localPath} (${buf.length} bytes)\n`);
+      return localPath;
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      if (err.name === "AbortError") {
+        process.stderr.write("bridge channel: file download timed out after 30s\n");
+      } else {
+        process.stderr.write(`bridge channel: file download network error: ${err}\n`);
+      }
+      return undefined;
+    }
   } catch (err) {
-    process.stderr.write(`bridge channel: file download error: ${err}\n`);
+    process.stderr.write(`bridge channel: getFile API error: ${err}\n`);
     return undefined;
   }
+}
+
+/**
+ * Clean up old files in INBOX_DIR.
+ * Deletes files older than maxAgeMs (default 24 hours).
+ * Returns number of files deleted.
+ */
+export function cleanupInbox(inboxDir: string, maxAgeMs: number = 24 * 60 * 60 * 1000): number {
+  if (!existsSync(inboxDir)) return 0;
+
+  const now = Date.now();
+  let deleted = 0;
+
+  try {
+    const files = readdirSync(inboxDir);
+    for (const file of files) {
+      const filePath = join(inboxDir, file);
+      try {
+        const stat = statSync(filePath);
+        if (!stat.isFile()) continue;
+
+        const age = now - stat.mtimeMs;
+        if (age > maxAgeMs) {
+          unlinkSync(filePath);
+          deleted++;
+          process.stderr.write(`bridge channel: cleaned up ${file} (age: ${Math.round(age / 3600000)}h)\n`);
+        }
+      } catch (err) {
+        // Skip files that can't be stat'd or deleted
+        process.stderr.write(`bridge channel: cleanup skip ${file}: ${err}\n`);
+      }
+    }
+  } catch (err) {
+    process.stderr.write(`bridge channel: cleanup error: ${err}\n`);
+  }
+
+  return deleted;
 }
 
 // --- Filename Sanitization ---

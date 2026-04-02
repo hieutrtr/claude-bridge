@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { Database } from "bun:sqlite";
-import { writeFileSync, mkdirSync, rmSync } from "fs";
+import { writeFileSync, mkdirSync, rmSync, utimesSync, existsSync, readdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
@@ -18,6 +18,8 @@ import {
   processRetries,
   processOutbound,
   handleReply,
+  cleanupInbox,
+  FILE_SIZE_LIMIT,
   type McpNotifier,
 } from "../lib";
 
@@ -713,5 +715,157 @@ describe("message flow integration", () => {
     expect(notifier.calls.length).toBe(3);
     expect(notifier.calls[2].params.content).toBe("second");
     db.close();
+  });
+});
+
+// --- Phase 4: cleanupInbox ---
+
+describe("cleanupInbox", () => {
+  test("deletes files older than maxAgeMs", () => {
+    const dir = tmpDir();
+    // Create old file (mtime = 25h ago)
+    const oldFile = join(dir, "old.jpg");
+    writeFileSync(oldFile, "old content");
+    const pastTime = new Date(Date.now() - 25 * 3600 * 1000);
+    utimesSync(oldFile, pastTime, pastTime);
+
+    // Create new file (just created)
+    const newFile = join(dir, "new.jpg");
+    writeFileSync(newFile, "new content");
+
+    const deleted = cleanupInbox(dir, 24 * 3600 * 1000);
+
+    expect(deleted).toBe(1);
+    expect(existsSync(oldFile)).toBe(false);
+    expect(existsSync(newFile)).toBe(true);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("returns 0 for non-existent directory", () => {
+    const deleted = cleanupInbox("/tmp/nonexistent-inbox-test-" + Date.now());
+    expect(deleted).toBe(0);
+  });
+
+  test("skips files newer than maxAgeMs", () => {
+    const dir = tmpDir();
+    for (let i = 0; i < 3; i++) {
+      writeFileSync(join(dir, `recent-${i}.jpg`), "data");
+    }
+    const deleted = cleanupInbox(dir, 24 * 3600 * 1000);
+    expect(deleted).toBe(0);
+    expect(readdirSync(dir).length).toBe(3);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("returns 0 for empty directory", () => {
+    const dir = tmpDir();
+    const deleted = cleanupInbox(dir, 24 * 3600 * 1000);
+    expect(deleted).toBe(0);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("deletes multiple old files at once", () => {
+    const dir = tmpDir();
+    for (let i = 0; i < 3; i++) {
+      const f = join(dir, `old-${i}.jpg`);
+      writeFileSync(f, "old");
+      const pastTime = new Date(Date.now() - 48 * 3600 * 1000);
+      utimesSync(f, pastTime, pastTime);
+    }
+    writeFileSync(join(dir, "new.jpg"), "new");
+
+    const deleted = cleanupInbox(dir, 24 * 3600 * 1000);
+    expect(deleted).toBe(3);
+    expect(readdirSync(dir).length).toBe(1);
+    rmSync(dir, { recursive: true });
+  });
+});
+
+// --- Phase 4: FILE_SIZE_LIMIT ---
+
+describe("FILE_SIZE_LIMIT", () => {
+  test("equals 20MB (20 * 1024 * 1024)", () => {
+    expect(FILE_SIZE_LIMIT).toBe(20 * 1024 * 1024);
+  });
+});
+
+// --- Phase 4: downloadTelegramFile size rejection ---
+
+describe("downloadTelegramFile with fileSizeBytes", () => {
+  test("rejects file over size limit without calling getFile", async () => {
+    let getFileCalled = false;
+    const mockGetFile = async (_fileId: string) => {
+      getFileCalled = true;
+      return { file_path: "photos/test.jpg", file_unique_id: "abc123" };
+    };
+
+    const result = await downloadTelegramFile(
+      mockGetFile,
+      "fake-token",
+      "fake-file-id",
+      "/tmp/inbox-test",
+      undefined,
+      25 * 1024 * 1024 // 25MB — over the 20MB limit
+    );
+
+    expect(result).toBeUndefined();
+    expect(getFileCalled).toBe(false);
+  });
+
+  test("allows file under size limit (proceeds to getFile)", async () => {
+    let getFileCalled = false;
+    const mockGetFile = async (_fileId: string) => {
+      getFileCalled = true;
+      return { file_path: undefined as string | undefined, file_unique_id: "abc123" };
+    };
+
+    const result = await downloadTelegramFile(
+      mockGetFile,
+      "fake-token",
+      "fake-file-id",
+      "/tmp/inbox-test",
+      undefined,
+      5 * 1024 * 1024 // 5MB — under limit
+    );
+
+    expect(result).toBeUndefined(); // undefined because file_path missing
+    expect(getFileCalled).toBe(true); // but getFile WAS called
+  });
+
+  test("allows download when fileSizeBytes is not provided", async () => {
+    let getFileCalled = false;
+    const mockGetFile = async (_fileId: string) => {
+      getFileCalled = true;
+      return { file_path: undefined as string | undefined, file_unique_id: "abc123" };
+    };
+
+    const result = await downloadTelegramFile(
+      mockGetFile,
+      "fake-token",
+      "fake-file-id",
+      "/tmp/inbox-test"
+    );
+
+    expect(result).toBeUndefined();
+    expect(getFileCalled).toBe(true);
+  });
+
+  test("file at exactly the limit is allowed", async () => {
+    let getFileCalled = false;
+    const mockGetFile = async (_fileId: string) => {
+      getFileCalled = true;
+      return { file_path: undefined as string | undefined, file_unique_id: "abc" };
+    };
+
+    await downloadTelegramFile(
+      mockGetFile,
+      "fake-token",
+      "fake-file-id",
+      "/tmp/inbox-test",
+      undefined,
+      FILE_SIZE_LIMIT // exactly 20MB — should be allowed
+    );
+
+    expect(getFileCalled).toBe(true);
   });
 });

@@ -30,6 +30,8 @@ import {
   pushMessage,
   downloadTelegramFile,
   safeName,
+  cleanupInbox,
+  FILE_SIZE_LIMIT,
   processRetries,
   processOutbound,
   bridgeCli,
@@ -68,6 +70,7 @@ initInboundTracking(msgDb);
 
 let outboundInterval: ReturnType<typeof setInterval> | null = null;
 let retryInterval: ReturnType<typeof setInterval> | null = null;
+let cleanupInterval: ReturnType<typeof setInterval> | null = null;
 
 // --- MCP Server ---
 
@@ -356,7 +359,13 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
         if (!localPath) {
           return {
-            content: [{ type: "text", text: "Error: failed to download file — it may have expired (Telegram files expire after ~1 hour)" }],
+            content: [{
+              type: "text",
+              text: "Error: failed to download file. Possible causes:\n" +
+                    "- File has expired (Telegram files expire after ~1 hour)\n" +
+                    "- File exceeds 20MB size limit\n" +
+                    "- Network error or timeout"
+            }],
             isError: true,
           };
         }
@@ -432,8 +441,19 @@ bot.on("message:photo", async (ctx) => {
       (fid) => ctx.api.getFile(fid),
       TOKEN,
       best.file_id,
-      INBOX_DIR
+      INBOX_DIR,
+      undefined,
+      best.file_size  // Pass file size for pre-download limit check
     );
+
+    // Notify user if photo was rejected due to size
+    if (!imagePath && best.file_size && best.file_size > FILE_SIZE_LIMIT) {
+      await bot.api.sendMessage(chatId,
+        `Photo too large (${(best.file_size / 1024 / 1024).toFixed(1)}MB). ` +
+        `Maximum: ${FILE_SIZE_LIMIT / 1024 / 1024}MB.`
+      );
+      return;
+    }
 
     const trackingId = trackInbound(msgDb, chatId, userId, username, caption, messageId);
     const notifier: import("./lib").McpNotifier = { notification: (msg) => queuedNotification(msg) };
@@ -462,6 +482,16 @@ bot.on("message:document", async (ctx) => {
     const ts = new Date(ctx.message.date * 1000).toISOString();
     const doc = ctx.message.document;
     const name = safeName(doc.file_name);
+
+    // Reject oversized documents before processing
+    if (doc.file_size && doc.file_size > FILE_SIZE_LIMIT) {
+      await bot.api.sendMessage(chatId,
+        `File "${name ?? "file"}" too large (${(doc.file_size / 1024 / 1024).toFixed(1)}MB). ` +
+        `Maximum: ${FILE_SIZE_LIMIT / 1024 / 1024}MB.`
+      );
+      return;
+    }
+
     const text = ctx.message.caption ?? `(document: ${name ?? "file"})`;
 
     const trackingId = trackInbound(msgDb, chatId, userId, username, text, messageId);
@@ -714,6 +744,21 @@ async function main() {
     }
   }, 2000);
 
+  // Cleanup inbox on startup
+  cleanupInbox(INBOX_DIR);
+
+  // Periodic cleanup every 6 hours
+  cleanupInterval = setInterval(() => {
+    try {
+      const deleted = cleanupInbox(INBOX_DIR);
+      if (deleted > 0) {
+        process.stderr.write(`bridge channel: inbox cleanup: ${deleted} files removed\n`);
+      }
+    } catch (err) {
+      process.stderr.write(`bridge channel: cleanup interval error: ${err}\n`);
+    }
+  }, 6 * 60 * 60 * 1000);
+
   // Inbound retry engine
   retryInterval = setInterval(() => {
     try {
@@ -748,6 +793,7 @@ function cleanup() {
   pollingActive = false;
   if (outboundInterval) clearInterval(outboundInterval);
   if (retryInterval) clearInterval(retryInterval);
+  if (cleanupInterval) clearInterval(cleanupInterval);
   try { msgDb.close(); } catch {}
   try { bot.stop(); } catch {}
   // Force exit after 2s in case bot.stop() hangs
