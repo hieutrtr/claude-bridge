@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 AGENT_TEMPLATE = """---
@@ -46,10 +47,9 @@ def generate_agent_md(
     model: str = "sonnet",
 ) -> str:
     """Generate agent .md file content in native Claude Code format."""
-    import shutil
     agent_file_name = f"bridge--{session_id}"
     src_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    python_path = shutil.which("python3") or "python3"
+    python_path = sys.executable
 
     return AGENT_TEMPLATE.format(
         agent_file_name=agent_file_name,
@@ -86,7 +86,7 @@ def install_stop_hook(project_dir: str, session_id: str) -> str:
     import shutil
 
     src_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    python_path = shutil.which("python3") or "python3"
+    python_path = sys.executable
 
     settings_dir = os.path.join(project_dir, ".claude")
     os.makedirs(settings_dir, exist_ok=True)

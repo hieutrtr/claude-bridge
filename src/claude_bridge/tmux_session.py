@@ -12,7 +12,15 @@ import subprocess
 import time
 
 TMUX_SESSION_NAME = "claude-bridge"
-LOG_PATH = os.path.expanduser("~/.claude-bridge/bridge-bot.log")
+
+
+def _get_log_path() -> str:
+    """Get log path respecting CLAUDE_BRIDGE_HOME env var."""
+    from . import get_bridge_home
+    return str(get_bridge_home() / "bridge-bot.log")
+
+
+LOG_PATH = _get_log_path()
 
 
 def tmux_available() -> bool:

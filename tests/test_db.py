@@ -265,6 +265,94 @@ class TestTaskQueue:
         assert task["position"] is None
 
 
+class TestMigration:
+    def test_reported_column_exists_on_new_db(self, tmp_path):
+        """FIX-02: 'reported' column must exist on fresh DB (via schema)."""
+        db_path = str(tmp_path / "fresh.db")
+        db = BridgeDB(db_path)
+        cursor = db.conn.execute("PRAGMA table_info(tasks)")
+        cols = {row[1] for row in cursor.fetchall()}
+        db.close()
+        assert "reported" in cols
+
+    def test_reported_column_added_by_migration(self, tmp_path):
+        """FIX-02: 'reported' column added to existing DB missing the column."""
+        import sqlite3 as _sqlite3
+
+        db_path = str(tmp_path / "old.db")
+        # Create a legacy DB without 'reported' column
+        conn = _sqlite3.connect(db_path)
+        conn.executescript("""
+            PRAGMA journal_mode=WAL;
+            CREATE TABLE agents (
+                name TEXT NOT NULL,
+                project_dir TEXT NOT NULL,
+                session_id TEXT NOT NULL UNIQUE,
+                agent_file TEXT NOT NULL,
+                purpose TEXT,
+                state TEXT DEFAULT 'created',
+                PRIMARY KEY (name, project_dir)
+            );
+            CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES agents(session_id),
+                prompt TEXT NOT NULL,
+                status TEXT DEFAULT 'pending'
+            );
+        """)
+        conn.close()
+
+        # BridgeDB should migrate and add 'reported'
+        db = BridgeDB(db_path)
+        cursor = db.conn.execute("PRAGMA table_info(tasks)")
+        cols = {row[1] for row in cursor.fetchall()}
+        db.close()
+        assert "reported" in cols
+
+
+class TestAtomicDispatch:
+    def test_reserves_free_agent(self, db):
+        """FIX-04: atomic check creates task with status 'running' when agent free."""
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "")
+        task_id, is_busy = db.atomic_check_and_create_task("backend--api", "fix bug")
+        assert not is_busy
+        assert task_id is not None
+        task = db.get_task(task_id)
+        assert task["status"] == "running"
+
+    def test_detects_busy_agent(self, db):
+        """FIX-04: atomic check returns is_busy=True when agent already running."""
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "")
+        # Put agent in running state
+        t1 = db.create_task("backend--api", "first task")
+        db.update_task(t1, status="running", pid=12345)
+
+        task_id, is_busy = db.atomic_check_and_create_task("backend--api", "second task")
+        assert is_busy
+        assert task_id is None
+
+    def test_exclusive_prevents_double_spawn(self, db):
+        """FIX-04: sequential calls on same free agent — only first succeeds."""
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "")
+        # Simulate two rapid sequential calls (can't truly test concurrent in same thread)
+        t1, b1 = db.atomic_check_and_create_task("backend--api", "task A")
+        t2, b2 = db.atomic_check_and_create_task("backend--api", "task B")
+        # First call reserves; second sees running task
+        assert not b1 and t1 is not None
+        assert b2 and t2 is None
+
+    def test_preserves_channel_info(self, db):
+        """FIX-04: channel metadata stored in atomically-created task."""
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "")
+        task_id, _ = db.atomic_check_and_create_task(
+            "backend--api", "task", channel="telegram", channel_chat_id="123", channel_message_id="456"
+        )
+        task = db.get_task(task_id)
+        assert task["channel"] == "telegram"
+        assert task["channel_chat_id"] == "123"
+        assert task["channel_message_id"] == "456"
+
+
 class TestModelRouting:
     def test_default_model_is_sonnet(self, db):
         db.create_agent("backend", "/p/api", "backend--api", "/a.md", "dev")

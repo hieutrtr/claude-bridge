@@ -30,7 +30,13 @@ from .tmux_session import (
     get_session_uptime,
 )
 
-CONFIG_PATH = os.path.expanduser("~/.claude-bridge/config.json")
+def _get_config_path() -> str:
+    """Get config.json path respecting CLAUDE_BRIDGE_HOME env var."""
+    from . import get_bridge_home
+    return str(get_bridge_home() / "config.json")
+
+
+CONFIG_PATH = _get_config_path()  # Computed at import; set CLAUDE_BRIDGE_HOME before running
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,12 +73,19 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _load_config() -> dict | None:
-    """Load config from ~/.claude-bridge/config.json. Returns None if missing/invalid."""
-    if not os.path.isfile(CONFIG_PATH):
+def _load_config(config_path: str | None = None) -> dict | None:
+    """Load config from bridge home config.json. Returns None if missing/invalid.
+
+    config_path overrides the default; if omitted, reads the module-level
+    CONFIG_PATH which is computed from CLAUDE_BRIDGE_HOME / config.json.
+    Tests may patch the module-level CONFIG_PATH directly.
+    """
+    if config_path is None:
+        config_path = CONFIG_PATH  # module global — patchable in tests
+    if not os.path.isfile(config_path):
         return None
     try:
-        with open(CONFIG_PATH) as f:
+        with open(config_path) as f:
             return json.load(f)
     except (json.JSONDecodeError, IOError):
         return None
@@ -96,19 +109,40 @@ def _build_claude_command(config: dict) -> list[str]:
     return cmd
 
 
+def _validate_config(config: dict | None) -> list[str]:
+    """Validate bridge config and return a list of error strings (empty = OK)."""
+    if config is None:
+        return ["❌ Bridge not configured. Run: bridge-cli setup"]
+
+    errors = []
+
+    bot_dir = config.get("bot_dir")
+    if not bot_dir:
+        errors.append("❌ Bridge not configured (bot_dir missing). Run: bridge-cli setup")
+    elif not os.path.isdir(bot_dir):
+        errors.append(f"❌ bot_dir not found: {bot_dir}  →  Run: bridge-cli setup")
+
+    token = config.get("telegram_bot_token", "")
+    if not token:
+        errors.append("❌ Telegram bot token missing. Run: bridge-cli setup")
+
+    mode = config.get("mode", "")
+    if mode not in ("channel", "mcp", ""):
+        errors.append(f"❌ Unknown mode '{mode}'. Expected: channel or mcp")
+
+    return errors
+
+
 def cmd_start(args) -> int:
     """Start the Bridge Bot."""
     config = _load_config()
-    if not config:
-        print("Error: No config found. Run 'bridge-cli setup' first.", file=sys.stderr)
+    errors = _validate_config(config)
+    if errors:
+        for err in errors:
+            print(err, file=sys.stderr)
         return 1
 
-    bot_dir = config.get("bot_dir")
-    if not bot_dir or not os.path.isdir(bot_dir):
-        print(f"Error: Bot directory not found: {bot_dir}", file=sys.stderr)
-        print("Run 'bridge-cli setup' to configure.", file=sys.stderr)
-        return 1
-
+    bot_dir = config["bot_dir"]
     claude_cmd = _build_claude_command(config)
 
     # Foreground mode — replace process

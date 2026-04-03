@@ -22,7 +22,13 @@ def _utcnow_offset(seconds: int) -> str:
     t = datetime.now(timezone.utc) + timedelta(seconds=seconds)
     return t.strftime("%Y-%m-%dT%H:%M:%S.%f")
 
-DEFAULT_MESSAGES_DB_PATH = os.path.expanduser("~/.claude-bridge/messages.db")
+def _default_messages_db_path() -> str:
+    """Compute default messages DB path respecting CLAUDE_BRIDGE_HOME env var."""
+    from . import get_bridge_home
+    return str(get_bridge_home() / "messages.db")
+
+
+DEFAULT_MESSAGES_DB_PATH = None  # Use _default_messages_db_path() at runtime
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -70,7 +76,9 @@ CREATE INDEX IF NOT EXISTS idx_outbound_status ON outbound_messages(status);
 class MessageDB:
     """SQLite database for message queue."""
 
-    def __init__(self, db_path: str = DEFAULT_MESSAGES_DB_PATH):
+    def __init__(self, db_path: str | None = None):
+        if db_path is None:
+            db_path = _default_messages_db_path()
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row

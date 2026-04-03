@@ -19,5 +19,9 @@ build/
 *.db
 *.log
 
+# Environment secrets (keep .env.example tracked)
+channel/.env
+.env
+
 # OS
 .DS_Store

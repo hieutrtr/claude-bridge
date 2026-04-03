@@ -1,4 +1,16 @@
-"""Tests for Bridge MCP server."""
+"""Tests for Bridge MCP server.
+
+These tests require the `mcp` package (added as a dependency in v0.2.0).
+Run with: pytest tests/test_mcp_server.py -v
+
+If you see ImportError here, install the dependency:
+    pip install mcp>=1.0
+    # or re-install the package:
+    pip install -e .
+
+To run the full test suite including these tests:
+    pytest tests/ -v
+"""
 
 from __future__ import annotations
 

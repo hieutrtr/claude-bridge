@@ -9,7 +9,7 @@ import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Bot } from "grammy";
 import { Database } from "bun:sqlite";
 import { readFileSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, existsSync } from "fs";
-import { execSync } from "child_process";
+import { execSync, execFileSync } from "child_process";
 import { join } from "path";
 
 /** Maximum file size in bytes (20MB — Telegram Bot API limit) */
@@ -403,18 +403,27 @@ export async function processOutbound(
 // --- Bridge CLI ---
 
 export function bridgeCli(srcPath: string, command: string, args: string[] = []): string {
-  const escapedArgs = args.map((a) => `"${a.replace(/"/g, '\\"')}"`).join(" ");
-  // Try installed bridge-cli first, fall back to PYTHONPATH mode
-  let cmd: string;
+  // Use execFileSync (not shell string) to prevent command injection via args
+  const execOpts = { timeout: 30000, encoding: "utf8" as const };
+
+  let hasBridgeCli = false;
   try {
     execSync("which bridge-cli", { encoding: "utf8" });
-    cmd = `bridge-cli ${command} ${escapedArgs}`;
+    hasBridgeCli = true;
   } catch {
-    const pythonPath = process.env.PYTHON_PATH ?? "python3";
-    cmd = `PYTHONPATH=${srcPath} ${pythonPath} -m claude_bridge.cli ${command} ${escapedArgs}`;
+    // bridge-cli not in PATH, will use python fallback
   }
+
   try {
-    return execSync(cmd, { timeout: 30000, encoding: "utf8" }).trim();
+    if (hasBridgeCli) {
+      return execFileSync("bridge-cli", [command, ...args], execOpts).trim();
+    } else {
+      const pythonPath = process.env.PYTHON_PATH ?? "python3";
+      return execFileSync(pythonPath, ["-m", "claude_bridge.cli", command, ...args], {
+        ...execOpts,
+        env: { ...process.env, PYTHONPATH: srcPath },
+      }).trim();
+    }
   } catch (err: any) {
     throw new Error(err.stderr?.trim() || err.message);
   }

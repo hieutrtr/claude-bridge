@@ -4,11 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-agent-bridge"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Multi-session Claude Code dispatch from Telegram"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
+dependencies = [
+    "mcp>=1.0",
+]
 keywords = ["claude", "claude-code", "telegram", "ai", "cli"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -23,6 +26,9 @@ classifiers = [
 [project.scripts]
 bridge-cli = "claude_bridge.cli:main"
 bridge = "claude_bridge.bridge_cmd:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "claude_bridge.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]

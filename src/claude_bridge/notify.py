@@ -12,7 +12,8 @@ from .db import BridgeDB
 
 def get_default_telegram_chat_id() -> str | None:
     """Get the default Telegram chat_id from bridge config."""
-    config_path = os.path.expanduser("~/.claude-bridge/config.json")
+    from . import get_bridge_home
+    config_path = str(get_bridge_home() / "config.json")
     if os.path.isfile(config_path):
         try:
             with open(config_path) as f:
@@ -53,7 +54,8 @@ def get_bot_token() -> str | None:
         return token
 
     # Read from bridge config
-    config_path = os.path.expanduser("~/.claude-bridge/config.json")
+    from . import get_bridge_home
+    config_path = str(get_bridge_home() / "config.json")
     if os.path.isfile(config_path):
         try:
             with open(config_path) as f:

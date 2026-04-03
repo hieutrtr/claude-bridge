@@ -795,10 +795,16 @@ function cleanup() {
   if (retryInterval) clearInterval(retryInterval);
   if (cleanupInterval) clearInterval(cleanupInterval);
   try { msgDb.close(); } catch {}
-  try { bot.stop(); } catch {}
-  // Force exit after 2s in case bot.stop() hangs
-  setTimeout(() => process.exit(1), 2000);
-  process.exit(0);
+  // Force exit after 3s if bot.stop() hangs
+  const exitTimer = setTimeout(() => process.exit(1), 3000);
+  if (typeof (exitTimer as any).unref === "function") (exitTimer as any).unref();
+  // Await bot.stop() properly so it can flush pending messages before exit
+  Promise.resolve(
+    (async () => { try { await bot.stop(); } catch {} })()
+  ).then(() => {
+    clearTimeout(exitTimer);
+    process.exit(0);
+  });
 }
 
 process.on("SIGINT", cleanup);

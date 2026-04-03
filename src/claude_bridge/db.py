@@ -10,7 +10,13 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-DEFAULT_DB_PATH = os.path.expanduser("~/.claude-bridge/bridge.db")
+def _default_db_path() -> str:
+    """Compute default DB path respecting CLAUDE_BRIDGE_HOME env var."""
+    from . import get_bridge_home
+    return str(get_bridge_home() / "bridge.db")
+
+
+DEFAULT_DB_PATH = None  # Use _default_db_path() at runtime
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -104,7 +110,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_unreported ON tasks(status, reported)
 class BridgeDB:
     """SQLite database for agent and task tracking."""
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH):
+    def __init__(self, db_path: str | None = None):
+        if db_path is None:
+            db_path = _default_db_path()
         self.db_path = db_path
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.conn = sqlite3.connect(db_path)
@@ -140,6 +148,7 @@ class BridgeDB:
             ("tasks", "channel", "TEXT DEFAULT 'cli'"),
             ("tasks", "channel_chat_id", "TEXT"),
             ("tasks", "channel_message_id", "TEXT"),
+            ("tasks", "reported", "INTEGER DEFAULT 0"),
             ("agents", "model", "TEXT DEFAULT 'sonnet'"),
         ]
         for table, column, col_type in migrations:
@@ -148,6 +157,54 @@ class BridgeDB:
 
     def close(self):
         self.conn.close()
+
+    def atomic_check_and_create_task(
+        self,
+        session_id: str,
+        prompt: str,
+        channel: str = "cli",
+        channel_chat_id: str | None = None,
+        channel_message_id: str | None = None,
+    ) -> tuple[int | None, bool]:
+        """Atomically check for running task and create new task if agent is free.
+
+        Uses BEGIN EXCLUSIVE to prevent race conditions when concurrent dispatches
+        both check for a running task and both try to spawn.
+
+        Creates task with status='running' so subsequent exclusive checks see it as busy.
+
+        Returns:
+            (task_id, False) — dispatch reserved, caller should spawn and update task
+            (None, True)     — agent is busy, caller should queue instead
+        """
+        # Switch to manual transaction mode to use BEGIN EXCLUSIVE
+        old_isolation = self.conn.isolation_level
+        self.conn.isolation_level = None  # autocommit
+        try:
+            self.conn.execute("BEGIN EXCLUSIVE")
+            running = self.conn.execute(
+                "SELECT id FROM tasks WHERE session_id = ? AND status = 'running' LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if running:
+                self.conn.execute("COMMIT")
+                return None, True
+            cursor = self.conn.execute(
+                """INSERT INTO tasks (session_id, prompt, status, channel, channel_chat_id, channel_message_id)
+                   VALUES (?, ?, 'running', ?, ?, ?)""",
+                (session_id, prompt, channel, channel_chat_id, channel_message_id),
+            )
+            task_id = cursor.lastrowid
+            self.conn.execute("COMMIT")
+            return task_id, False
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+        finally:
+            self.conn.isolation_level = old_isolation
 
     # --- Agent operations ---
 

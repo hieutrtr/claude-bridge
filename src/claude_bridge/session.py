@@ -50,7 +50,8 @@ def validate_project_dir(path: str) -> str | None:
 
 def get_workspace_dir(session_id: str) -> str:
     """Get workspace directory path for a session."""
-    return os.path.expanduser(f"~/.claude-bridge/workspaces/{session_id}")
+    from . import get_bridge_home
+    return str(get_bridge_home() / "workspaces" / session_id)
 
 
 def get_tasks_dir(session_id: str) -> str:

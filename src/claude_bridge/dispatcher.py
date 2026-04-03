@@ -86,12 +86,18 @@ def pid_alive(pid: int) -> bool:
         return True  # Process exists but we can't signal it
 
 
-def kill_process(pid: int, graceful: bool = True) -> bool:
-    """Kill a process. Returns True if process was killed."""
+def kill_process(pid: int, graceful: bool = True, timeout: int = 3) -> bool:
+    """Kill a process. Returns True if process was killed.
+
+    Args:
+        pid: Process ID to kill.
+        graceful: If True, send SIGTERM first and wait up to `timeout` seconds.
+        timeout: Seconds to wait after SIGTERM before sending SIGKILL (default 3).
+    """
     try:
         if graceful:
             os.kill(pid, signal.SIGTERM)
-            for _ in range(10):
+            for _ in range(timeout):
                 time.sleep(1)
                 if not pid_alive(pid):
                     return True

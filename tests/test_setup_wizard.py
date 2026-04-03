@@ -118,6 +118,46 @@ class TestSetupWizardNonInteractive:
         assert result == 0
 
 
+class TestSetupBotGitignore:
+    """FIX-03: .mcp.json must be added to .gitignore to prevent token exposure."""
+
+    def _run_setup_bot(self, db, target):
+        from claude_bridge.cli import cmd_setup_bot
+        import argparse
+        args = argparse.Namespace(path=target)
+        with patch("claude_bridge.cli._get_bot_token", return_value="test:TOKEN"):
+            cmd_setup_bot(db, args)
+
+    def test_gitignore_created_with_mcp_json(self, wizard_env):
+        target = str(wizard_env["tmp"] / "botdir")
+        os.makedirs(target)
+        self._run_setup_bot(wizard_env["db"], target)
+        gitignore_path = os.path.join(target, ".gitignore")
+        assert os.path.isfile(gitignore_path)
+        content = Path(gitignore_path).read_text()
+        assert ".mcp.json" in content
+
+    def test_gitignore_appended_if_exists(self, wizard_env):
+        target = str(wizard_env["tmp"] / "botdir")
+        os.makedirs(target)
+        gitignore_path = os.path.join(target, ".gitignore")
+        # Pre-existing .gitignore without .mcp.json
+        Path(gitignore_path).write_text("*.pyc\n__pycache__/\n")
+        self._run_setup_bot(wizard_env["db"], target)
+        content = Path(gitignore_path).read_text()
+        assert "*.pyc" in content  # original content preserved
+        assert ".mcp.json" in content  # entry added
+
+    def test_gitignore_not_duplicated(self, wizard_env):
+        target = str(wizard_env["tmp"] / "botdir")
+        os.makedirs(target)
+        self._run_setup_bot(wizard_env["db"], target)
+        # Run again — .mcp.json should not appear twice
+        self._run_setup_bot(wizard_env["db"], target)
+        content = Path(os.path.join(target, ".gitignore")).read_text()
+        assert content.count(".mcp.json") == 1
+
+
 class TestSetupParser:
     def test_parser_has_setup_with_flags(self):
         parser = build_parser()

@@ -18,6 +18,7 @@ from claude_bridge.bridge_cmd import (
     cmd_status,
     _load_config,
     _build_claude_command,
+    _validate_config,
     main,
     build_parser,
 )
@@ -46,20 +47,17 @@ def config_file(tmp_path, config_dir):
 
 class TestLoadConfig:
     def test_load_valid(self, config_file):
-        with patch("claude_bridge.bridge_cmd.CONFIG_PATH", config_file):
-            config = _load_config()
-            assert config is not None
-            assert config["mode"] == "channel"
+        config = _load_config(config_file)
+        assert config is not None
+        assert config["mode"] == "channel"
 
     def test_missing_file(self, tmp_path):
-        with patch("claude_bridge.bridge_cmd.CONFIG_PATH", str(tmp_path / "nonexistent.json")):
-            assert _load_config() is None
+        assert _load_config(str(tmp_path / "nonexistent.json")) is None
 
     def test_invalid_json(self, tmp_path):
         bad_file = tmp_path / "bad.json"
         bad_file.write_text("not json")
-        with patch("claude_bridge.bridge_cmd.CONFIG_PATH", str(bad_file)):
-            assert _load_config() is None
+        assert _load_config(str(bad_file)) is None
 
 
 class TestBuildClaudeCommand:
@@ -80,22 +78,90 @@ class TestBuildClaudeCommand:
         assert cmd == ["claude", "--dangerously-skip-permissions"]
 
 
+class TestValidateConfig:
+    def test_none_config(self):
+        errors = _validate_config(None)
+        assert len(errors) == 1
+        assert "bridge-cli setup" in errors[0]
+
+    def test_missing_bot_dir_key(self, tmp_path):
+        errors = _validate_config({"telegram_bot_token": "tok", "mode": "mcp"})
+        assert any("bot_dir missing" in e for e in errors)
+
+    def test_bot_dir_not_found(self, tmp_path):
+        errors = _validate_config({
+            "bot_dir": str(tmp_path / "missing"),
+            "telegram_bot_token": "tok",
+            "mode": "mcp",
+        })
+        assert any("bot_dir not found" in e for e in errors)
+
+    def test_missing_token(self, tmp_path):
+        bot_dir = tmp_path / "bot"
+        bot_dir.mkdir()
+        errors = _validate_config({"bot_dir": str(bot_dir), "mode": "mcp"})
+        assert any("token" in e.lower() for e in errors)
+
+    def test_invalid_mode(self, tmp_path):
+        bot_dir = tmp_path / "bot"
+        bot_dir.mkdir()
+        errors = _validate_config({
+            "bot_dir": str(bot_dir),
+            "telegram_bot_token": "tok",
+            "mode": "bad_mode",
+        })
+        assert any("Unknown mode" in e for e in errors)
+
+    def test_valid_config(self, tmp_path):
+        bot_dir = tmp_path / "bot"
+        bot_dir.mkdir()
+        errors = _validate_config({
+            "bot_dir": str(bot_dir),
+            "telegram_bot_token": "123:abc",
+            "mode": "channel",
+        })
+        assert errors == []
+
+    def test_empty_mode_allowed(self, tmp_path):
+        """Mode defaults to mcp when empty — should not error."""
+        bot_dir = tmp_path / "bot"
+        bot_dir.mkdir()
+        errors = _validate_config({
+            "bot_dir": str(bot_dir),
+            "telegram_bot_token": "tok",
+        })
+        assert errors == []
+
+
 class TestCmdStart:
     def test_no_config(self, tmp_path, capsys):
         with patch("claude_bridge.bridge_cmd.CONFIG_PATH", str(tmp_path / "nope.json")):
             args = Namespace(foreground=False)
             assert cmd_start(args) == 1
-            assert "No config found" in capsys.readouterr().err
+            err = capsys.readouterr().err
+            assert "bridge-cli setup" in err
 
     def test_missing_bot_dir(self, tmp_path, capsys):
-        config = {"bot_dir": str(tmp_path / "missing"), "mode": "mcp"}
+        config = {"bot_dir": str(tmp_path / "missing"), "telegram_bot_token": "tok", "mode": "mcp"}
         config_path = str(tmp_path / "config.json")
         with open(config_path, "w") as f:
             json.dump(config, f)
         with patch("claude_bridge.bridge_cmd.CONFIG_PATH", config_path):
             args = Namespace(foreground=False)
             assert cmd_start(args) == 1
-            assert "Bot directory not found" in capsys.readouterr().err
+            assert "bot_dir not found" in capsys.readouterr().err
+
+    def test_missing_token(self, tmp_path, capsys):
+        bot_dir = tmp_path / "bot"
+        bot_dir.mkdir()
+        config = {"bot_dir": str(bot_dir), "mode": "mcp"}
+        config_path = str(tmp_path / "config.json")
+        with open(config_path, "w") as f:
+            json.dump(config, f)
+        with patch("claude_bridge.bridge_cmd.CONFIG_PATH", config_path):
+            args = Namespace(foreground=False)
+            assert cmd_start(args) == 1
+            assert "token" in capsys.readouterr().err.lower()
 
     def test_no_tmux(self, config_file, config_dir, capsys):
         with patch("claude_bridge.bridge_cmd.CONFIG_PATH", config_file), \
