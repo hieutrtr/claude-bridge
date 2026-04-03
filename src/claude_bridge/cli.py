@@ -1109,9 +1109,22 @@ def cmd_delete_team(db: BridgeDB, args):
 
 def _build_team_prompt(original_prompt: str, team_name: str, members: list[dict]) -> str:
     """Build augmented prompt for team lead with team context."""
+    import shutil as _shutil
+
     member_lines = []
     for m in members:
         member_lines.append(f"- {m['name']}: {m['purpose']} (project: {m['project_dir']})")
+
+    # Prefer bridge-cli binary (installed via pipx/pip) over PYTHONPATH trick
+    bridge_cli_bin = _shutil.which("bridge-cli")
+    if bridge_cli_bin:
+        dispatch_cmd = f"{bridge_cli_bin} dispatch <agent_name> \"<sub-task prompt>\""
+        status_cmd = f"{bridge_cli_bin} status <agent_name>"
+    else:
+        # Fallback: use sys.executable + PYTHONPATH to find the package
+        src_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        dispatch_cmd = f"PYTHONPATH={src_path} {sys.executable} -m claude_bridge.cli dispatch <agent_name> \"<sub-task prompt>\""
+        status_cmd = f"PYTHONPATH={src_path} {sys.executable} -m claude_bridge.cli status <agent_name>"
 
     return f"""TEAM TASK
 =========
@@ -1124,10 +1137,10 @@ Your teammates:
 {chr(10).join(member_lines)}
 
 To dispatch sub-tasks to teammates, use the Bash tool:
-  PYTHONPATH={os.path.dirname(os.path.dirname(os.path.abspath(__file__)))} python3 -m claude_bridge.cli dispatch <agent_name> "<sub-task prompt>"
+  {dispatch_cmd}
 
 To check teammate status:
-  PYTHONPATH={os.path.dirname(os.path.dirname(os.path.abspath(__file__)))} python3 -m claude_bridge.cli status <agent_name>
+  {status_cmd}
 
 INSTRUCTIONS
 ============
@@ -1350,7 +1363,18 @@ def _cmd_doctor(args) -> int:
     bundled = get_channel_server_path()
     deployed = os.path.join(bridge_home, "channel", "dist", "server.js")
     if os.path.isfile(deployed):
-        print(f"  ✓ Channel server deployed at {deployed}")
+        # Check if the bundled version is newer than the deployed version (stale detection)
+        if os.path.isfile(bundled):
+            bundled_mtime = os.path.getmtime(bundled)
+            deployed_mtime = os.path.getmtime(deployed)
+            if bundled_mtime > deployed_mtime:
+                print(f"  ⚠ Channel server deployed but may be stale (bundled version is newer)")
+                print(f"    Fix: bridge-cli setup  (to redeploy the updated server)")
+                warnings += 1
+            else:
+                print(f"  ✓ Channel server deployed at {deployed}")
+        else:
+            print(f"  ✓ Channel server deployed at {deployed}")
     elif os.path.isfile(bundled):
         print(f"  ⚠ Channel server bundled but not deployed (run: bridge-cli setup)")
         warnings += 1
@@ -1394,25 +1418,36 @@ def _cmd_doctor(args) -> int:
                 print(f"    Fix: bridge-cli setup-bot {bot_dir}")
                 warnings += 1
 
-    # Telegram connectivity — test getMe if token available
+    # Telegram connectivity — test getMe if token available (1 retry on failure)
     if config:
         token = config.get("telegram_bot_token", "")
         if token:
-            try:
-                from urllib.request import urlopen, Request as _Req
-                import json as _j
-                url = f"https://api.telegram.org/bot{token}/getMe"
-                req = _Req(url)
-                with urlopen(req, timeout=5) as resp:
-                    result = _j.loads(resp.read())
-                if result.get("ok"):
-                    bot_name = result.get("result", {}).get("username", "?")
+            from urllib.request import urlopen, Request as _Req
+            import json as _j
+            import time as _time
+            url = f"https://api.telegram.org/bot{token}/getMe"
+            _tg_last_exc: Exception | None = None
+            _tg_result: dict | None = None
+            for _attempt in range(2):  # try twice
+                try:
+                    req = _Req(url)
+                    with urlopen(req, timeout=10) as resp:
+                        _tg_result = _j.loads(resp.read())
+                    _tg_last_exc = None
+                    break
+                except Exception as _e:
+                    _tg_last_exc = _e
+                    if _attempt == 0:
+                        _time.sleep(1)  # brief pause before retry
+            if _tg_result is not None:
+                if _tg_result.get("ok"):
+                    bot_name = _tg_result.get("result", {}).get("username", "?")
                     print(f"  ✓ Telegram: bot @{bot_name} is reachable")
                 else:
                     print(f"  ✗ Telegram: getMe failed — token may be invalid")
                     issues += 1
-            except Exception as e:
-                print(f"  ⚠ Telegram: cannot reach API ({type(e).__name__}) — offline?")
+            else:
+                print(f"  ⚠ Telegram: cannot reach API ({type(_tg_last_exc).__name__}) — offline? (tried twice)")
                 warnings += 1
 
     # Database

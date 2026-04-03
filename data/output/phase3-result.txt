@@ -1,0 +1,149 @@
+====================================================================
+PHASE 3 RESULT — CLAUDE BRIDGE
+Ngày: 2026-04-03
+====================================================================
+
+STATUS: ✅ COMPLETE — All 6 P2 polish + new feature tasks done.
+
+====================================================================
+TASKS DONE
+====================================================================
+
+IMP-10 [✓] CHANGELOG.md
+  Files created: CHANGELOG.md
+  - Format: Keep a Changelog (keepachangelog.com)
+  - v0.2.0 entry: full Added/Fixed/Changed sections documenting IMP-01..09
+  - v0.1.0 entry: initial release feature list
+  - cli.py: --version now prints "claude-bridge 0.2.0\nSee CHANGELOG.md for what's new."
+  Acceptance:
+    ✓ CHANGELOG.md exists with entries from v0.1.0
+    ✓ Format: version + date + Added/Fixed/Changed sections
+    ✓ bridge-cli --version mentions CHANGELOG.md
+
+IMP-11 [✓] Expanded doctor checks
+  Files changed: src/claude_bridge/cli.py (_cmd_doctor)
+  New checks added:
+    ✓ Shows CLAUDE_BRIDGE_HOME path at top (ℹ Bridge home: ...)
+    ✓ Bun version (bun --version in output, not just "found")
+    ✓ Claude CLI version (claude --version in output)
+    ✓ tmux moved to top with install hints
+    ✓ Config: shows mode= alongside token
+    ✓ Stop hooks: reads settings.local.json in bot_dir, checks bridge tool permissions
+    ✓ Telegram connectivity: calls getMe API if token present; warns on timeout (offline)
+    ✓ Daemon status: shows if system service is installed
+    ✓ Agent files: better message ("create with: bridge-cli create-agent")
+    ✓ Each failed check prints specific fix command
+  Acceptance:
+    ✓ doctor checks stop hook installation status
+    ✓ doctor verifies Telegram token connectivity (warns if offline)
+    ✓ doctor shows bridge home path
+    ✓ Output format: ✓/✗/⚠/ℹ with actionable messages
+
+IMP-12 [✓] Architecture diagram in README
+  Files changed: README.md
+  - Added mermaid sequenceDiagram showing full end-to-end flow:
+    You → Channel Server → Bridge Bot → bridge-cli → Claude Code Agent → Stop hook → Notification
+  - Renamed original ASCII block to "Component Map"
+  - Added link to specs/MVP.md for detailed architecture
+  Acceptance:
+    ✓ README has mermaid diagram (renders on GitHub — native mermaid support)
+    ✓ Diagram shows end-to-end flow with all components
+    ✓ Link to specs/MVP.md
+
+IMP-13 [✓] Troubleshooting guide + test docs
+  Files changed: README.md, tests/test_mcp_server.py
+  - README Troubleshooting: expanded from 6 rows to 15 rows (>= 12 required)
+  - Added quick diagnostics section with bridge-cli doctor commands
+  - New entries: bun build fails, bridge start fails, reset everything,
+    check stop hook, bot not responding after pairing, permission denied,
+    bridge-cli not found, ModuleNotFoundError mcp, agent tasks fail,
+    worktree error
+  - test_mcp_server.py: added module docstring explaining:
+    - requires `mcp` package (added in v0.2.0)
+    - how to run: pytest tests/test_mcp_server.py -v
+    - how to install missing dep
+    - how to run full suite: pytest tests/ -v
+  Acceptance:
+    ✓ Troubleshooting has 15 common error scenarios (>= 12)
+    ✓ Each row: symptom → likely cause → fix command
+    ✓ test_mcp_server.py has docstring explaining when it can run
+    ✓ Note: "Run full suite: pytest tests/ -v"
+
+IMP-14 [✓] CLAUDE_BRIDGE_HOME env var support
+  Files created/changed:
+    - src/claude_bridge/__init__.py  (added get_bridge_home())
+    - src/claude_bridge/db.py        (BridgeDB uses get_bridge_home() lazily)
+    - src/claude_bridge/session.py   (get_workspace_dir uses get_bridge_home())
+    - src/claude_bridge/tmux_session.py (LOG_PATH uses get_bridge_home())
+    - src/claude_bridge/message_db.py (MessageDB uses get_bridge_home() lazily)
+    - src/claude_bridge/bridge_cmd.py (CONFIG_PATH uses get_bridge_home())
+    - src/claude_bridge/notify.py    (config_path uses get_bridge_home())
+    - src/claude_bridge/cli.py       (all inline ~.claude-bridge refs updated)
+    - tests/test_imp14_bridge_home.py (9 new tests)
+  get_bridge_home() logic:
+    return Path(os.environ["CLAUDE_BRIDGE_HOME"]) if set else Path.home() / ".claude-bridge"
+  Acceptance:
+    ✓ CLAUDE_BRIDGE_HOME=/tmp/test-bridge bridge-cli setup → uses /tmp/test-bridge/
+    ✓ All paths in bridge go through get_bridge_home()
+    ✓ bridge-cli doctor shows bridge home path (ℹ Bridge home: ...)
+    ✓ get_bridge_home() documented in __init__.py
+
+IMP-15 [✓] Setup wizard daemon install (systemd/launchd)
+  Files created/changed:
+    - src/claude_bridge/daemon.py    (NEW — full systemd + launchd support)
+    - src/claude_bridge/cli.py       (bridge-cli daemon subcommand + setup wizard step)
+    - tests/test_imp15_daemon.py     (10 new tests)
+  Features:
+    - get_platform() → 'linux' | 'macos' | 'other'
+    - install_daemon() / uninstall_daemon() / start_daemon() / stop_daemon()
+    - Linux: ~/.config/systemd/user/claude-bridge.service
+    - macOS: ~/Library/LaunchAgents/ai.claude-bridge.plist
+    - Both templates include CLAUDE_BRIDGE_HOME env var passthrough
+    - bridge-cli setup asks "Install as background service? [y/N]"
+      (skipped in --no-prompt mode)
+    - bridge-cli daemon install|uninstall|start|stop|status|logs
+    - bridge-cli doctor shows daemon status
+  Acceptance:
+    ✓ bridge-cli setup offers daemon install (optional, skippable)
+    ✓ Linux: creates ~/.config/systemd/user/claude-bridge.service
+    ✓ macOS: creates ~/Library/LaunchAgents/ai.claude-bridge.plist
+    ✓ bridge-cli daemon (start|stop|status|logs|install|uninstall) command
+    ✓ bridge-cli doctor shows daemon install status
+
+====================================================================
+TEST RESULTS
+====================================================================
+
+Baseline (Phase 2 end): 415 tests pass
+After Phase 3:          434 tests pass (+19 new tests)
+  - test_imp14_bridge_home.py: 9 tests
+  - test_imp15_daemon.py: 10 tests
+
+RESULT: 434/434 PASS — zero regressions
+
+====================================================================
+FILES CHANGED SUMMARY
+====================================================================
+
+New files:
+  CHANGELOG.md
+  src/claude_bridge/daemon.py
+  tests/test_imp14_bridge_home.py
+  tests/test_imp15_daemon.py
+
+Modified files:
+  src/claude_bridge/__init__.py      (get_bridge_home())
+  src/claude_bridge/db.py            (lazy default db path)
+  src/claude_bridge/session.py       (workspace uses get_bridge_home)
+  src/claude_bridge/tmux_session.py  (LOG_PATH uses get_bridge_home)
+  src/claude_bridge/message_db.py    (lazy default messages db path)
+  src/claude_bridge/bridge_cmd.py    (CONFIG_PATH, _load_config update)
+  src/claude_bridge/notify.py        (config_path uses get_bridge_home)
+  src/claude_bridge/cli.py           (doctor, setup, daemon cmd, CHANGELOG ref)
+  README.md                          (mermaid diagram, troubleshooting)
+  tests/test_mcp_server.py           (docstring)
+  tests/test_bridge_cmd.py           (tests use explicit config_path arg)
+
+====================================================================
+READY FOR REVIEW: Yes (not committed, as requested)
+====================================================================

@@ -53,9 +53,13 @@ python -m claude_bridge.cli status
 
 ## Dependencies
 
-Python 3.11+ with stdlib only (sqlite3, subprocess, argparse, json, os, signal).
-No pip dependencies for the core package.
+Python 3.11+ with stdlib only for the core package (sqlite3, subprocess, argparse, json, os, signal).
+One optional dependency: `mcp>=1.0` — required only when using MCP server mode (`mcp_server.py`).
 `claude` CLI must be installed and in PATH.
+
+Note: `pyproject.toml` declares `mcp>=1.0` as a dependency so `pip install claude-agent-bridge`
+works out-of-the-box for MCP mode. The core package (cli.py, db.py, session.py, dispatcher.py)
+remains stdlib-only. Version constraint is `"mcp>=1.0,<2.0"` to avoid breaking changes.
 
 ## Conventions
 

@@ -20,9 +20,15 @@ def derive_session_id(agent_name: str, project_dir: str) -> str:
 
 
 def derive_agent_file_name(session_id: str) -> str:
-    """Derive the native Claude Code agent .md filename.
+    """Derive the native Claude Code agent .md filename (slug only, no path/extension).
 
     Example: backend--my-api → bridge--backend--my-api
+
+    Naming convention:
+    - agent_file_name / agent_slug: just the name, e.g. "bridge--backend--my-api"
+    - agent_file_path / agent_md_path: full path with .md, e.g. "~/.claude/agents/bridge--backend--my-api.md"
+    - db.agents.agent_file column: stores the full path (agent_md_path)
+    Use get_agent_file_path(session_id) for the full path.
     """
     return f"bridge--{session_id}"
 

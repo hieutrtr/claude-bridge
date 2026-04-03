@@ -18,6 +18,19 @@
 
 set -e
 
+# ── Error trap ────────────────────────────────────────────────────────────────
+# On unexpected error, print a helpful message. We do NOT auto-delete the cloned
+# repo since it may already exist from a previous run (the script is idempotent).
+# If install fails partway, the user can rerun to continue from the last good state.
+_on_error() {
+  local lineno=$1
+  printf "\033[0;31m[claude-bridge]\033[0m ✗ Install failed at line %s.\n" "$lineno" >&2
+  printf "\033[1;33m[claude-bridge]\033[0m ⚠ To retry: rerun this script.\n" >&2
+  printf "\033[1;33m[claude-bridge]\033[0m ⚠ To start fresh: rm -rf %s and rerun.\n" \
+    "${CLAUDE_BRIDGE_SRC:-$HOME/projects/claude-bridge}" >&2
+}
+trap '_on_error $LINENO' ERR
+
 # ── Colors ────────────────────────────────────────────────────────────────────
 
 BLUE='\033[0;34m'
@@ -115,12 +128,38 @@ fi
 
 # ── Check/Install: Bun ────────────────────────────────────────────────────────
 
+# Detect musl libc (Alpine Linux, NixOS musl variants) — Bun requires glibc
+_check_musl() {
+  # ldd --version prints "musl" on musl-based systems
+  if ldd --version 2>&1 | grep -qi musl; then
+    return 0  # is musl
+  fi
+  # Also check /lib/libc.musl* existence
+  if ls /lib/libc.musl* >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
 if command -v bun >/dev/null 2>&1; then
   BUN_VER=$(bun --version)
   success "Bun $BUN_VER"
 else
+  # Warn early if running on musl/Alpine (Bun is glibc-only)
+  if [ "$OS" = "linux" ] || [ "$OS" = "wsl" ]; then
+    if _check_musl; then
+      fail "Bun is not supported on musl libc (Alpine Linux, musl-based NixOS, etc.).
+  Bun requires glibc. Use a Debian/Ubuntu-based image or install Node.js instead.
+  Alternative: build the channel server with Node.js: cd channel && npm install && npx tsc"
+    fi
+  fi
+
   info "Bun not found — installing (required for channel server)..."
-  curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1 || true
+  # SECURITY NOTE: This pipes a remote script directly to bash. We trust bun.sh
+  # (official Bun installer) over HTTPS, but this pattern bypasses checksum
+  # verification. If you prefer, install Bun manually from https://bun.sh/install
+  # and rerun this script. The script output is shown below for transparency.
+  curl -fsSL https://bun.sh/install | bash 2>&1 || true
   # Reload PATH for common Bun install locations
   export PATH="$HOME/.bun/bin:$PATH"
   if command -v bun >/dev/null 2>&1; then

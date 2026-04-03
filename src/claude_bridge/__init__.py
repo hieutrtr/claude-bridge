@@ -20,6 +20,12 @@ def get_bridge_home() -> Path:
     Override the default (~/.claude-bridge) by setting CLAUDE_BRIDGE_HOME env var.
     Example: CLAUDE_BRIDGE_HOME=/tmp/test-bridge bridge-cli setup
 
+    WARNING: Changing CLAUDE_BRIDGE_HOME after initial setup will orphan existing data:
+    - The SQLite database (bridge.db) will be at the new path (empty — no agents)
+    - Workspaces at the old path will not be accessible
+    - Agent .md files in ~/.claude/agents/ are NOT affected (they use a fixed path)
+    To migrate: copy ~/.claude-bridge/ to the new location before changing the env var.
+
     Raises:
         ValueError: If CLAUDE_BRIDGE_HOME resolves to a dangerous system path.
     """

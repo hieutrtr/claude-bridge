@@ -132,6 +132,19 @@ class TestValidateConfig:
         })
         assert errors == []
 
+    def test_v01x_config_backward_compat(self, tmp_path):
+        """Old v0.1.x config without 'mode' field should be accepted (defaults to mcp)."""
+        bot_dir = tmp_path / "bot"
+        bot_dir.mkdir()
+        # Simulate a v0.1.x config: has bot_dir + token but no 'mode'
+        old_config = {
+            "bot_dir": str(bot_dir),
+            "telegram_bot_token": "123:abc",
+            # no 'mode' key — was not present in v0.1.x
+        }
+        errors = _validate_config(old_config)
+        assert errors == [], f"v0.1.x config should be valid, got: {errors}"
+
 
 class TestCmdStart:
     def test_no_config(self, tmp_path, capsys):

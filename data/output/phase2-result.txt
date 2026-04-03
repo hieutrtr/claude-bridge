@@ -1,0 +1,129 @@
+====================================================================
+PHASE 2 RESULT — CLAUDE BRIDGE
+Date: 2026-04-03
+====================================================================
+
+STATUS: ✅ COMPLETE — All 6 P1 issues fixed.
+
+====================================================================
+TASK RESULTS
+====================================================================
+
+IMP-04 | P1-1+P1-7 | Version + package name unification
+  Status: ✅ DONE
+  Files changed:
+    - pyproject.toml              → dynamic version (reads from __init__.py)
+    - package.json (root)         → "0.2.0" (was 0.1.0)
+    - channel/package.json        → "0.2.0" (was 1.0.0)
+  Single source of truth: src/claude_bridge/__init__.py (__version__ = "0.2.0")
+  Package name kept as "claude-agent-bridge" (PyPI name) — consistent across all manifests
+  Verification: `bridge-cli --version` → claude-bridge 0.2.0
+  Tests: 405/405 pass (no regressions)
+
+--------------------------------------------------------------------
+
+IMP-05 | P1-3 | Stop hook Python path fix
+  Status: ✅ DONE
+  Files changed:
+    - src/claude_bridge/agent_md.py
+      → generate_agent_md(): sys.executable (was shutil.which("python3") or "python3")
+      → install_stop_hook():  sys.executable (was shutil.which("python3") or "python3")
+      → added `import sys` at module level
+    - tests/test_agent_md.py
+      → test_uses_sys_executable_for_python_path(): verifies sys.executable in template
+      → test_stop_hook_uses_sys_executable(): verifies no bare "python3" in hook cmd
+  Tests: 6/6 pass in test_agent_md.py
+
+--------------------------------------------------------------------
+
+IMP-06 | P1-4 | bridge start config validation
+  Status: ✅ DONE
+  Files changed:
+    - src/claude_bridge/bridge_cmd.py
+      → NEW _validate_config(config) function: returns list of error strings
+        Checks: config exists, bot_dir present + valid dir, telegram_bot_token present,
+                mode valid (channel/mcp/"")
+      → cmd_start(): uses _validate_config(), prints each ❌ error, returns 1 on any error
+      → bot_dir extracted from validated config (NameError fix)
+    - tests/test_bridge_cmd.py
+      → import _validate_config
+      → NEW TestValidateConfig class (7 tests): none config, missing bot_dir, bot_dir not found,
+        missing token, invalid mode, valid config, empty mode allowed
+      → test_no_config: updated assertion (checks "bridge-cli setup" in err)
+      → test_missing_bot_dir: updated assertion ("bot_dir not found")
+      → NEW test_missing_token: verifies token check
+  Error message format: ❌ <description>  →  Run: bridge-cli setup
+  Tests: 35/35 pass in test_bridge_cmd.py
+
+--------------------------------------------------------------------
+
+IMP-07 | P1-5 | bun.lock committed
+  Status: ✅ DONE
+  Action: `cd channel && bun install` → generated channel/bun.lock (20KB)
+  Packages: 99 packages locked (@modelcontextprotocol/sdk@1.29.0, grammy@1.41.1, zod@3.25.76)
+  Verified: `bun install --frozen-lockfile` → "no changes" (reproducible)
+  .gitignore: bun.lock NOT ignored (tracked correctly)
+
+--------------------------------------------------------------------
+
+IMP-08 | P1-6 | .env.example for channel server
+  Status: ✅ DONE
+  Files created:
+    - channel/.env.example
+      → TELEGRAM_BOT_TOKEN   (required — documented format)
+      → MESSAGES_DB_PATH     (optional — default: ~/.claude-bridge/messages.db)
+      → BRIDGE_SRC_PATH      (optional — for manual testing without bridge-cli)
+      → PYTHON_PATH          (optional — python interpreter for stop-hook relay)
+      → Full comments: required/optional status, defaults, usage instructions
+  Files changed:
+    - .gitignore → added channel/.env and .env rules (protect secrets)
+  All env vars sourced from actual server.ts + lib.ts usage (process.env.*)
+
+--------------------------------------------------------------------
+
+IMP-09 | P1-2 | README Pairing Step 6 improved
+  Status: ✅ DONE
+  Files changed:
+    - README.md — Step 6 completely rewritten
+      → ASCII flow diagram showing Telegram → channel server → Claude session → Telegram
+      → Clear distinction: "type commands in the Claude Code session, NOT bridge-cli"
+      → Step-by-step numbered instructions (6 steps)
+      → Troubleshooting table with 5 common failure modes + fixes
+      → Context: what to look for in the Claude session window
+    - README.md — Development section: removed --ignore=tests/test_mcp_server.py
+      (mcp tests now work since IMP-02 added mcp dependency)
+
+====================================================================
+FULL TEST SUITE RESULTS
+====================================================================
+
+Command: python3 -m pytest tests/ -q --tb=short
+Result:  415 passed in 35.16s
+Baseline (before Phase 2): 405 passed
+
+Delta: +10 tests (7 new in TestValidateConfig + 2 in TestGenerateAgentMd + 1 for stop hook)
+Regressions: 0
+
+====================================================================
+FILES CHANGED SUMMARY
+====================================================================
+
+Modified:
+  src/claude_bridge/agent_md.py       IMP-05: sys.executable for python path
+  src/claude_bridge/bridge_cmd.py     IMP-06: _validate_config(), cmd_start() fix
+  pyproject.toml                      IMP-04: dynamic version from __init__.py
+  package.json                        IMP-04: version 0.1.0 → 0.2.0
+  channel/package.json                IMP-04: version 1.0.0 → 0.2.0
+  README.md                           IMP-09: Step 6 pairing rewrite + dev section
+  .gitignore                          IMP-08: added .env rules
+  tests/test_agent_md.py              IMP-05: 2 new test methods
+  tests/test_bridge_cmd.py            IMP-06: TestValidateConfig class + test updates
+
+Created:
+  channel/.env.example                IMP-08: env var documentation
+  channel/bun.lock                    IMP-07: 99 packages locked (20KB)
+
+====================================================================
+READY FOR PHASE 3: Yes
+All 6 P1 issues fixed. 415/415 tests pass. Not committed (as requested).
+====================================================================

@@ -40,6 +40,27 @@ def get_platform() -> str:
     return "other"
 
 
+def is_container_environment() -> bool:
+    """Detect if running inside a container (Docker, LXC) without a systemd user session.
+
+    Returns True if systemd --user is likely unavailable.
+    """
+    # Check for Docker/container markers
+    if os.path.exists("/.dockerenv"):
+        return True
+    # No D-Bus session bus → systemctl --user will fail
+    if not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+        # Also check if PID 1 is systemd (if not, likely a container)
+        try:
+            with open("/proc/1/comm") as f:
+                init_name = f.read().strip()
+            if init_name not in ("systemd", "init"):
+                return True
+        except OSError:
+            pass
+    return False
+
+
 def _get_bridge_cmd() -> str:
     """Return the bridge command path (bridge binary or python -m invocation)."""
     bridge = shutil.which("bridge")
@@ -66,6 +87,7 @@ RestartSec=10
 StandardOutput=append:{log_path}
 StandardError=append:{log_path}
 Environment="CLAUDE_BRIDGE_HOME={bridge_home}"
+Environment="PATH={path}"
 WorkingDirectory={bot_dir}
 
 [Install]
@@ -80,15 +102,26 @@ def _systemd_unit_path() -> Path:
 
 def install_systemd(bot_dir: str, bridge_home: str, log_path: str) -> tuple[bool, str]:
     """Install the systemd user service. Returns (success, message)."""
+    # Detect container environments where systemd --user is unavailable
+    if is_container_environment():
+        return False, (
+            "Container environment detected (no systemd user session). "
+            "systemctl --user requires a D-Bus session bus which is not available in Docker/LXC. "
+            "Alternatives: use 'bridge start' in a persistent shell, or add a cron job with 'bridge-cli setup-cron'."
+        )
+
     unit_path = _systemd_unit_path()
     unit_path.parent.mkdir(parents=True, exist_ok=True)
 
     bridge_cmd = _get_bridge_cmd()
+    # Include current PATH so pipx/local bin directories are accessible in the service
+    path_env = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
     content = SYSTEMD_UNIT_TEMPLATE.format(
         bridge_cmd=bridge_cmd,
         log_path=log_path,
         bridge_home=bridge_home,
         bot_dir=bot_dir,
+        path=path_env,
     )
     unit_path.write_text(content)
 
@@ -103,7 +136,12 @@ def install_systemd(bot_dir: str, bridge_home: str, log_path: str) -> tuple[bool
             capture_output=True, check=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        return False, f"systemctl error: {e}"
+        return False, (
+            f"systemctl error: {e}. "
+            "If running in a container or SSH session without D-Bus, systemd user services "
+            "are unavailable. Use 'bridge start' instead, or install a cron job with "
+            "'bridge-cli setup-cron'."
+        )
 
     return True, str(unit_path)
 
@@ -251,11 +289,23 @@ def install_launchd(bot_dir: str, bridge_home: str, log_path: str) -> tuple[bool
     plist_path.write_text(content)
 
     # Load into launchd
+    # macOS 12+ (Monterey+): use `launchctl bootstrap` (preferred over deprecated `load`)
+    # macOS 11 and earlier: use `launchctl load` (bootstrap may not be available)
     try:
-        subprocess.run(
-            ["launchctl", "load", str(plist_path)],
-            capture_output=True, check=True,
-        )
+        mac_ver = platform.mac_ver()[0]  # e.g. "14.2.0" or "" on non-macOS
+        major = int(mac_ver.split(".")[0]) if mac_ver else 0
+        if major >= 12:
+            # bootstrap target: gui/<uid>
+            uid = str(os.getuid())
+            subprocess.run(
+                ["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)],
+                capture_output=True, check=True,
+            )
+        else:
+            subprocess.run(
+                ["launchctl", "load", str(plist_path)],
+                capture_output=True, check=True,
+            )
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         return False, f"launchctl error: {e}"
 
@@ -266,10 +316,19 @@ def uninstall_launchd() -> tuple[bool, str]:
     """Remove the launchd agent plist. Returns (success, message)."""
     plist_path = _launchd_plist_path()
     try:
-        subprocess.run(
-            ["launchctl", "unload", str(plist_path)],
-            capture_output=True,
-        )
+        mac_ver = platform.mac_ver()[0]
+        major = int(mac_ver.split(".")[0]) if mac_ver else 0
+        if major >= 12:
+            uid = str(os.getuid())
+            subprocess.run(
+                ["launchctl", "bootout", f"gui/{uid}", str(plist_path)],
+                capture_output=True,
+            )
+        else:
+            subprocess.run(
+                ["launchctl", "unload", str(plist_path)],
+                capture_output=True,
+            )
     except FileNotFoundError:
         pass
 

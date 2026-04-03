@@ -315,7 +315,19 @@ class BridgeDB:
             (session_id, limit),
         ).fetchall()
 
+    # Allowed column names for update_task() — prevents typos and injection
+    _TASK_UPDATABLE_COLUMNS = frozenset({
+        "status", "pid", "result_file", "result_summary", "cost_usd",
+        "duration_ms", "num_turns", "exit_code", "error_message", "model",
+        "task_type", "parent_task_id", "channel", "channel_chat_id",
+        "channel_message_id", "started_at", "completed_at", "reported", "position",
+    })
+
     def update_task(self, task_id: int, **kwargs):
+        """Update task fields by ID. Only whitelisted column names are accepted."""
+        invalid = set(kwargs) - self._TASK_UPDATABLE_COLUMNS
+        if invalid:
+            raise ValueError(f"update_task: invalid column(s): {sorted(invalid)}")
         sets = ", ".join(f"{k} = ?" for k in kwargs)
         values = list(kwargs.values()) + [task_id]
         self.conn.execute(f"UPDATE tasks SET {sets} WHERE id = ?", values)
@@ -385,7 +397,6 @@ class BridgeDB:
 
     def respond_permission(self, request_id: str, approved: bool) -> bool:
         """Respond to a permission request. Returns True if found and updated."""
-        from datetime import datetime
         response = "approved" if approved else "denied"
         cursor = self.conn.execute(
             "UPDATE permissions SET status = ?, response = ?, responded_at = ? WHERE id = ? AND status = 'pending'",
@@ -396,7 +407,6 @@ class BridgeDB:
 
     def timeout_permissions(self) -> int:
         """Auto-deny permissions that exceeded their timeout. Returns count."""
-        from datetime import datetime
         cursor = self.conn.execute(
             """UPDATE permissions SET status = 'denied', response = 'timeout',
                responded_at = ? WHERE status = 'pending'

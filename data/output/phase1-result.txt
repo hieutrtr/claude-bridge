@@ -1,0 +1,120 @@
+====================================================================
+PHASE 1 RESULT — 2026-04-03
+====================================================================
+
+STATUS: ✅ COMPLETE — All 3 P0 blocking issues fixed.
+TESTS:  405/405 PASS (no regressions)
+
+====================================================================
+IMP-01 | Channel server auto-build in setup wizard
+====================================================================
+
+Problem:
+  `channel_server/dist/server.js` không tồn tại trong fresh clone.
+  `cmd_setup()` silently skip deploy step → bridge bot không start được.
+  `_cmd_doctor()` chỉ nói "not found" không có hướng dẫn cụ thể.
+
+Fix (src/claude_bridge/cli.py):
+  cmd_setup() — Step 3/4 "Channel server":
+  - Nếu server.js chưa có + bun available + source root có package.json
+    → tự chạy `bun run build` (subprocess.run, capture_output=True)
+  - Nếu build fail → print stderr + actionable error "Run manually: cd <root> && bun run build"
+  - Nếu bun không có → print error + fallback mode="mcp" + update config
+  - Nếu không tìm thấy source (installed from PyPI wheel thiếu bundle)
+    → hướng dẫn "pip install --upgrade claude-agent-bridge"
+
+  _cmd_doctor() — Channel server check:
+  - Nếu deployed: ✓ (hiển thị path)
+  - Nếu bundled nhưng chưa deployed: ⚠ (run: bridge-cli setup)
+  - Nếu không có gì: ✗ + "Fix: cd <root> && bun install && bun run build"
+    (nếu source root có package.json → in đường dẫn cụ thể)
+
+Acceptance criteria:
+  [✓] setup tự detect thiếu server.js và chạy bun run build (nếu bun có)
+  [✓] Nếu bun không có: in error + fallback MCP mode
+  [✓] doctor: check + gợi ý build command cụ thể
+  [✓] Không có tests cho cmd_setup trực tiếp (integration-only) — 405/405 pass
+
+====================================================================
+IMP-02 | mcp dependency trong pyproject.toml
+====================================================================
+
+Problem:
+  mcp_server.py import FastMCP nhưng pyproject.toml không có dependencies.
+  `pip install -e .` không pull mcp → ModuleNotFoundError khi chọn mcp mode.
+
+Fix (pyproject.toml):
+  Thêm:
+    dependencies = [
+        "mcp>=1.0",
+    ]
+
+Verify:
+  python3 -c "from mcp.server.fastmcp import FastMCP" → OK
+  pytest tests/test_mcp_server.py → 26/26 PASS (trước đây fail với ImportError)
+
+Acceptance criteria:
+  [✓] pip install -e . → tự kéo mcp dependency
+  [✓] from mcp.server.fastmcp import FastMCP → không lỗi
+  [✓] pytest tests/test_mcp_server.py → 26 PASS
+
+====================================================================
+IMP-03 | install.sh hero install command
+====================================================================
+
+Problem:
+  Không có one-liner install. User phải tự làm 7 bước thủ công.
+
+Fix:
+  Tạo install.sh (mới hoàn toàn) và update README.md Quick Start.
+
+install.sh — logic:
+  1. Detect OS (macOS/Linux/WSL)
+  2. Check Python 3.11+ → fail with actionable message nếu thiếu
+  3. Check Claude CLI → fail nếu thiếu
+  4. Check/Install Bun → curl bun.sh/install nếu chưa có
+  5. Check tmux → warn nếu thiếu (không blocking)
+  6. Clone/update repo (git clone hoặc git pull nếu đã clone)
+  7. bun install trong channel/ (nếu node_modules chưa có)
+  8. bun run build → build server.js bundle
+  9. pipx install -e . (primary) hoặc pip install -e . (fallback)
+  10. bridge-cli doctor (health check)
+  11. Print next steps
+
+Design decisions:
+  - Idempotent: git pull nếu đã clone, skip bun install nếu node_modules có
+  - Fail-fast: set -e + rõ ràng từng bước
+  - Actionable errors: mỗi fail() in exact command để fix
+  - CLAUDE_BRIDGE_SRC env var để override install dir
+  - Colors: BLUE/GREEN/YELLOW/RED cho UX tốt hơn
+  - sh-compatible (không bash-specific)
+
+README.md Quick Start:
+  Thay 4-step block bằng:
+    curl -fsSL https://raw.githubusercontent.com/hieutrtr/claude-bridge/main/install.sh | sh
+  Giữ Manual Install section bên dưới cho ai prefer step-by-step.
+
+Acceptance criteria:
+  [✓] Script có đủ logic end-to-end không cần user input (trừ setup wizard)
+  [✓] Detect thiếu dependency + print actionable error
+  [✓] Idempotent (git pull, skip existing node_modules)
+  [✓] README Quick Start dùng curl one-liner
+  [ ] Script test trên clean Ubuntu 22.04 và macOS 14 (pending — cần CI)
+
+====================================================================
+FILES CHANGED
+====================================================================
+
+  Modified:
+    src/claude_bridge/cli.py         — IMP-01: setup wizard + doctor
+    pyproject.toml                   — IMP-02: mcp dependency
+    README.md                        — IMP-03: Quick Start curl one-liner
+    data/output/latest.txt           — status tracking
+
+  Created:
+    install.sh                       — IMP-03: hero install script
+    data/output/phase1-result.txt    — this file
+
+====================================================================
+NOT COMMITTED (per user request — review first)
+====================================================================

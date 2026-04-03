@@ -1,0 +1,180 @@
+===================================================
+BÁO CÁO HIỆN TRẠNG CLAUDE-BRIDGE
+Ngày: 2026-04-03
+===================================================
+
+A. TỔNG QUAN
+- Version: 0.2.0 (bridge-cli --version: "claude-bridge 0.2.0 See CHANGELOG.md for what's new.")
+- Tổng số Python files trong src/claude_bridge/: 21 files (không tính __pycache__, channel_server/)
+- Tổng số test files: 22 files (bao gồm __init__.py)
+- Tests: 443 passed / 443 total (37.71s, 0 failures, 0 regressions)
+- install.sh: TỒN TẠI, executable (-rwxrwxr-x, 11KB)
+- CHANGELOG.md: TỒN TẠI (4.9KB, v0.1.0 + v0.2.0 entries)
+- daemon.py: TỒN TẠI (src/claude_bridge/daemon.py)
+- .env.example: TỒN TẠI (channel/.env.example)
+- Trạng thái: Gần ready to share — các MUST FIX issues (S1, R5, S4, E6)
+  đã được fix trong fix-phase1. Còn SHOULD FIX và CAN DEFER issues chưa xử lý.
+
+
+B. CÁC PHASE ĐÃ THỰC HIỆN
+
+IMPROVEMENT PHASE 1 — Fix P0 Blocking (3 tasks, 405 tests PASS)
+  IMP-01: Setup wizard tự detect thiếu server.js và chạy `bun run build` tự động;
+          doctor cải thiện suggest build command cụ thể.
+  IMP-02: Thêm `mcp>=1.0` vào pyproject.toml — fix ModuleNotFoundError khi dùng MCP mode.
+  IMP-03: Tạo install.sh hero install script (curl one-liner); README Quick Start cải thiện.
+
+IMPROVEMENT PHASE 2 — Fix P1 Important (6 tasks, 415 tests PASS, +10 tests)
+  IMP-04: Đồng nhất version 0.2.0 toàn bộ manifests (pyproject.toml, package.json, channel/).
+  IMP-05: Stop hook dùng sys.executable thay vì hardcoded python3 — fix pipx install.
+  IMP-06: bridge start thêm config validation — lỗi rõ ràng khi chưa setup.
+  IMP-07: Commit channel/bun.lock (99 packages) — reproducible builds.
+  IMP-08: Tạo channel/.env.example — document tất cả env vars.
+  IMP-09: README Step 6 (Telegram pairing) viết lại với ASCII flow diagram, troubleshooting table.
+
+IMPROVEMENT PHASE 3 — P2 Polish + New Features (6 tasks, 434 tests PASS, +19 tests)
+  IMP-10: Tạo CHANGELOG.md (Keep a Changelog format, v0.1.0+v0.2.0).
+  IMP-11: Mở rộng bridge-cli doctor: CLAUDE_BRIDGE_HOME path, bun/claude versions,
+          stop hook check, Telegram getMe connectivity, daemon status.
+  IMP-12: Thêm mermaid sequenceDiagram vào README (end-to-end flow).
+  IMP-13: Troubleshooting guide: 6 → 15 entries; test_mcp_server.py docstring.
+  IMP-14: CLAUDE_BRIDGE_HOME env var — get_bridge_home() helper, 8 modules updated.
+  IMP-15: daemon.py mới — systemd/launchd install; bridge-cli daemon subcommand;
+          setup wizard hỏi "Install as background service?".
+
+FIX PHASE 1 — MUST FIX Security + Bugs (4 fixes, 443 tests PASS, +9 tests)
+  FIX-01: [S1 CRITICAL] Command injection channel/lib.ts — thay execSync(shell string)
+          bằng execFileSync(['bridge-cli', command, ...args]) — không có shell interpretation.
+  FIX-02: [R5 CRITICAL] db.py _migrate() thiếu "reported" column — thêm migration entry,
+          ngăn "no such column: reported" trên old DBs khi upgrade lên 0.2.0.
+  FIX-03: [S4 MEDIUM] .mcp.json chứa bot token plaintext — setup wizard tự thêm .mcp.json
+          vào .gitignore, in ⚠ WARNING.
+  FIX-04: [E6 MEDIUM] Dispatch race condition — atomic_check_and_create_task() trong db.py
+          dùng SQLite EXCLUSIVE transaction, ngăn 2 processes spawn cho cùng 1 agent.
+
+FIX PHASE 2 — SHOULD FIX Code Quality + Compatibility (6 fixes, 443 tests PASS)
+  FIX-05: [C1] install.sh — detect_linux_pkg_manager() — hints đúng cho apt/dnf/pacman/zypper.
+  FIX-06: [Q1] cli.py — extract load_config() + save_config() — xóa code duplication 8 chỗ.
+  FIX-07: [Q6] VALID_MODELS = ("sonnet", "opus", "haiku") — module-level constant.
+  FIX-08: [E2] kill_process() timeout giảm 10s → 3s (configurable).
+  FIX-09: [S3] CLAUDE_BRIDGE_HOME validation — realpath() + reject /etc, /usr, /root, /bin...
+  FIX-10: [Q8] server.ts cleanup() race — await bot.stop() đúng cách, clearTimeout trước exit.
+
+
+C. ISSUES CÒN TỒN ĐỌNG
+
+MEDIUM issues chưa được fix:
+  [S2]  install.sh: curl | bash để install Bun — không verify checksum (risk thấp thực tế).
+  [S5]  channel/lib.ts isAllowed(): empty allowlist = allow all users — nên fail closed.
+  [E3]  install.sh: không atomic — partial failure để lại broken state, không có rollback.
+  [E4]  daemon.py: systemctl --user fail trong container (Docker/LXC) với error message không helpful.
+  [E5]  doctor: Telegram API check timeout 5s, không retry — có thể false negative khi mạng chậm.
+  [E7]  db.py update_task(): dynamic SQL column names từ **kwargs, không validate whitelist.
+  [C2]  install.sh: Bun không available trên Alpine Linux / musl libc — không detect sớm.
+  [C3]  daemon.py: launchctl load deprecated trên macOS 12+ (Ventura+).
+  [C4]  PATH issues khi pipx + systemd: bridge binary có thể không trong PATH của daemon environment.
+  [C5]  pyproject.toml có mcp>=1.0 nhưng CLAUDE.md tuyên bố "stdlib only" — cần cập nhật docs.
+  [Q2]  cli.py 1700+ dòng — vi phạm single responsibility (20+ commands, config, doctor, daemon).
+  [Q3]  db.py: import datetime lặp lại trong methods (lines 339, 351) dù đã import ở top.
+  [Q4]  _build_team_prompt() hardcodes PYTHONPATH — nên check shutil.which("bridge-cli") trước.
+  [Q5]  Naming inconsistency: agent_file / agent_file_name / agent_file_path — không nhất quán.
+  [R2]  Thay đổi CLAUDE_BRIDGE_HOME sau khi có agents → workspaces/DB orphaned — chưa document.
+  [R3]  Old config.json backward compat đã phân tích — OK nhưng chưa có migration test.
+  [R4]  Channel server không tự update sau `pip upgrade` — cần rerun setup thủ công.
+
+LOW issues chưa được fix:
+  [S6]  db.py: không check write permission trước sqlite3.connect — error message khó debug.
+  [S7]  systemd service: không có log rotation (append mode có thể fill disk).
+  [C6]  WSL: tmux attach behavior không được document rõ.
+  [C7]  Python 3.10 không support (Ubuntu 22.04 LTS default) — install hint thiếu deadsnakes PPA.
+  [E8]  session.py: validate_project_dir error message trả về path chưa expand.
+  [E9]  bridge_cmd.py: CONFIG_PATH computed at import time — stale nếu env thay đổi sau import.
+  [Q7]  cmd_* functions thiếu type hints (args: argparse.Namespace).
+  [R6]  db.py _migrate(): f-string SQL với hardcoded names — safe now nhưng antipattern.
+  [R7]  bridge-cli daemon logs --lines flag: có thể chưa implement đầy đủ.
+  [R8]  channel/lib.ts: bridgeCli() gọi execSync("which bridge-cli") mỗi lần — không cache.
+
+
+D. FEATURES HIỆN CÓ
+
+CLI Commands:
+  bridge-cli create-agent <name> <project> [--purpose] [--model]
+  bridge-cli delete-agent <name>
+  bridge-cli list-agents
+  bridge-cli dispatch <agent> "<task>" [--channel] [--chat-id] [--msg-id]
+  bridge-cli kill <agent>
+  bridge-cli queue [--agent]
+  bridge-cli cancel <task-id>
+  bridge-cli cost [--agent] [--days]
+  bridge-cli status [--agent]
+  bridge-cli setup                     (wizard: channel/mcp mode, token, pairing)
+  bridge-cli setup-telegram            (config Telegram token)
+  bridge-cli doctor                    (health check: deps, config, hooks, connectivity)
+  bridge-cli daemon install|uninstall|start|stop|status|logs
+  bridge-cli create-team <name> <agents...>
+  bridge-cli team-dispatch <team> "<task>"
+  bridge-cli set-model <agent> <model>
+  bridge-cli setup-cron / remove-cron
+  bridge-cli memory <agent>
+  bridge-cli --version
+
+Channels:
+  - channel mode: Node.js/Bun server (channel/) — Telegram grammy bot + MCP tools
+  - mcp mode: Python MCP server (mcp_server.py) — native Claude Code MCP integration
+
+Capabilities:
+  - Multi-session dispatch: mỗi agent = project riêng, session_id = agent+project
+  - Worktree isolation: mỗi task chạy trong git worktree riêng biệt
+  - Stop hook tự động: on_complete.py cập nhật SQLite khi task xong
+  - Auto Memory: Claude Code auto-learn patterns, đọc qua /memory command
+  - Daemon install: systemd (Linux) / launchd (macOS) background service
+  - Telegram file receiving: hỗ trợ nhận file từ Telegram (INBOX_DIR)
+  - Permission relay: bridge bot relay permissions về Telegram
+  - Team dispatch: broadcast task đến nhiều agents
+  - CLAUDE_BRIDGE_HOME: custom data directory
+  - install.sh: one-liner curl install script
+  - CHANGELOG.md + bun.lock + .env.example + mermaid architecture diagram
+
+
+E. FEATURES CÒN THIẾU (so với vision)
+
+  - Telegram pairing wizard chưa có UI tự động trong bridge-cli
+    (hiện user phải mở Claude Code session riêng để pair)
+  - PyPI publish chưa thực hiện (pipx install claude-agent-bridge chưa public)
+  - CI/CD pipeline chưa có (install.sh chưa test trên clean Ubuntu 22.04 / macOS 14)
+  - Multi-user support chưa có — allowlist logic hiện fail open (S5)
+  - File upload từ bridge-cli → Telegram chưa có (chỉ receive)
+  - Metrics / cost tracking dashboard chưa có (cost command có nhưng basic)
+  - Plugin/extension system chưa có
+  - Web UI / dashboard chưa có
+  - Auto-update mechanism cho channel server sau pip upgrade (R4)
+  - Rate limiting / queue management nâng cao chưa có
+
+
+F. NEXT STEPS ĐỀ XUẤT
+
+1. COMMIT toàn bộ changes hiện tại (tất cả 5 phases)
+   - Tất cả 443 tests pass, không có regressions
+   - Gộp thành commit có ý nghĩa hoặc series commits theo phase
+   - Tag v0.2.0
+
+2. Fix [S5] isAllowed() fail-closed
+   - Quan trọng vì bot có thể bị spoof trước khi setup hoàn chỉnh
+   - Chỉ cần thay đổi 3-4 dòng trong channel/lib.ts
+
+3. Fix [C3] + [C4] Daemon compatibility
+   - Cập nhật launchctl load → launchctl bootstrap trên macOS 12+
+   - Thêm sys.executable fallback trong systemd unit Environment
+   - Ảnh hưởng trực tiếp đến UX của daemon feature vừa implement
+
+4. Fix [Q2] Tách cli.py thành sub-modules
+   - cli.py 1700+ dòng là technical debt lớn nhất
+   - Đề xuất: commands/setup.py, commands/agent.py, commands/task.py, commands/team.py
+   - Làm sau khi commit, trước public release
+
+5. Publish lên PyPI + Test install.sh trên clean environment
+   - `pip install -e .` hoạt động local nhưng pipx install claude-agent-bridge chưa test public
+   - Cần CI test trên Ubuntu 22.04 LTS và macOS 13/14
+   - Sau khi publish: README curl one-liner sẽ thực sự hoạt động end-to-end
+
+===================================================

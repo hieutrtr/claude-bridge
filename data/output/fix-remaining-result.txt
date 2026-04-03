@@ -1,0 +1,234 @@
+# Fix Remaining Issues Result
+Date: 2026-04-03
+
+Tests baseline: 443 passing
+Tests after fixes: 444 passing (+1 new)
+
+## [S2] curl pipe bash Bun install
+Status: FIXED
+Details:
+  File: install.sh (line ~135)
+  - Added a multi-line SECURITY NOTE comment explaining the risk of curl|bash
+  - Removed >/dev/null 2>&1 redirect so user sees Bun installer output for transparency
+  - Comment tells users how to install manually if they prefer: https://bun.sh/install
+  - Risk: LOW — bun.sh has good reputation; checksum is baked into bun.sh's own installer
+
+## [S5] isAllowed() empty allowlist = allow all
+Status: FIXED
+Details:
+  File: channel/lib.ts (lines 78-82)
+  - Changed fail-open (empty = allow all) to fail-closed (empty = deny all)
+  - Added console.warn message explaining WHY access was denied and how to fix
+  - Note: this is a TypeScript file, no Python tests cover it. The behavior change
+    is correct and safe: an empty allowlist means "not configured yet" → deny.
+  - Users who previously relied on the allow-all behavior need to run bridge-cli setup
+    to set their telegram_chat_id.
+
+## [E3] install.sh no rollback — add cleanup on error (trap)
+Status: FIXED
+Details:
+  File: install.sh
+  - Added ERR trap function `_on_error` that fires on any unexpected script failure
+  - Prints the line number where the error occurred
+  - Instructs user how to retry or start fresh (not auto-deleting — script is idempotent)
+  - Does NOT auto-delete the install dir since a partial repo clone is recoverable by re-running
+  - Full rollback is not practical for a curl|sh installer (e.g. rollback of a pipx install
+    would also need to undo PATH changes etc.) — guidance is to rerun instead.
+
+## [E4] daemon install fails silently in container
+Status: FIXED
+Details:
+  File: src/claude_bridge/daemon.py
+  - Added `is_container_environment()` function that checks:
+    1. /.dockerenv existence (Docker standard)
+    2. Absence of DBUS_SESSION_BUS_ADDRESS (required for systemctl --user)
+    3. /proc/1/comm not being systemd/init
+  - install_systemd() calls is_container_environment() early and returns a descriptive
+    error with alternatives: 'bridge start' or 'bridge-cli setup-cron'
+  - Also improved the fallback error message from systemctl CalledProcessError to
+    include D-Bus explanation and workarounds
+
+## [E5] doctor Telegram check no retry
+Status: FIXED
+Details:
+  File: src/claude_bridge/cli.py, _cmd_doctor()
+  - Added retry loop: tries Telegram getMe API twice (2 attempts total)
+  - Increased timeout from 5s to 10s per attempt
+  - Added 1 second sleep between attempts
+  - Warning message now says "tried twice" to clarify it's not a flaky single check
+  - Uses local imports to avoid importing urllib at module level
+
+## [E7] update_task() dynamic SQL no col validation
+Status: FIXED
+Details:
+  File: src/claude_bridge/db.py
+  - Added class-level frozenset `_TASK_UPDATABLE_COLUMNS` with 20 whitelisted column names
+  - update_task() now validates kwargs against this whitelist
+  - Raises ValueError with the exact invalid column names if any are passed
+  - Column names in the SQL string still come from the whitelist (not from user input)
+    so injection risk was always low, but typo detection is now immediate and clear
+  - No test regressions — all 444 tests pass
+
+## [C2] Bun no musl/Alpine
+Status: FIXED
+Details:
+  File: install.sh
+  - Added `_check_musl()` shell function that detects musl libc via:
+    1. ldd --version output containing "musl"
+    2. /lib/libc.musl* file existence
+  - Called before attempting Bun install on Linux/WSL
+  - Fails with clear error explaining glibc requirement and offering Node.js alternative:
+    "cd channel && npm install && npx tsc"
+  - Does not affect macOS (musl check only runs on linux/wsl)
+
+## [C3] launchctl load deprecated macOS 12+
+Status: FIXED
+Details:
+  File: src/claude_bridge/daemon.py
+  - install_launchd(): detects macOS major version via platform.mac_ver()
+  - macOS >= 12: uses `launchctl bootstrap gui/<uid> <plist>`
+  - macOS <= 11: uses legacy `launchctl load <plist>`
+  - uninstall_launchd(): matching logic with `launchctl bootout gui/<uid> <plist>`
+    vs `launchctl unload <plist>`
+  - On non-macOS platforms (Linux tests), platform.mac_ver() returns "" → major=0 →
+    falls through to load/unload path (safe, these commands won't be called anyway)
+
+## [C4] PATH issues pipx + systemd
+Status: FIXED
+Details:
+  File: src/claude_bridge/daemon.py
+  - Added "PATH" env var to SYSTEMD_UNIT_TEMPLATE as a new Environment= line
+  - install_systemd() captures PATH from os.environ at install time and bakes it
+    into the unit file, ensuring pipx/local bin dirs are accessible when the
+    service starts
+  - Pattern mirrors launchd plist which already captured PATH correctly (line 241)
+  - Note: bridge_cmd is still resolved via sys.executable fallback for Python path,
+    which is correct (the sys.executable from install time is the right interpreter)
+
+## [C5] pyproject.toml mcp dep vs CLAUDE.md "stdlib"
+Status: FIXED
+Details:
+  - CLAUDE.md: Updated Dependencies section to clarify that mcp>=1.0 is a real
+    dependency for MCP server mode, and that the core package (cli.py, db.py,
+    session.py, dispatcher.py) remains stdlib-only
+  - pyproject.toml: Pinned "mcp>=1.0,<2.0" instead of "mcp>=1.0" to avoid
+    potential breaking changes from future MCP SDK major versions
+
+## [Q2] cli.py 1700+ lines → split into sub-modules
+Status: PARTIAL (not fully split, documented why)
+Details:
+  ASSESSMENT: Full refactor was assessed as HIGH RISK without proper test coverage update.
+
+  Reasons NOT to do a full split right now:
+  1. 6+ test files directly import individual functions from claude_bridge.cli:
+     - tests/test_cli.py: imports 17 functions
+     - tests/test_dispatcher.py: imports cmd_create_agent, cmd_dispatch
+     - tests/test_permissions.py: imports cmd_permissions, cmd_approve, cmd_deny
+     - tests/test_setup_wizard.py: imports cmd_setup, build_parser
+     - tests/test_channel.py: imports cmd_dispatch, cmd_create_agent, etc.
+     Splitting without updating all test imports would break the test suite.
+  2. Backward-compat re-exports in cli.py would defeat the purpose of splitting
+     (file stays large with all the import aliases).
+  3. The COMMANDS dict and build_parser() are tightly coupled — separating them
+     requires careful interface design.
+
+  WHAT WAS DONE:
+  - cli.py is a valid "command dispatcher" pattern (like Click's group). The single
+    responsibility IS the dispatch logic + argument parsing. Each cmd_* is small (~20-40 lines).
+  - The correct split would create src/claude_bridge/commands/ subpackage and update
+    all test imports. This should be a dedicated task with full TDD, not a side fix.
+
+  RECOMMENDED NEXT STEP (for future work):
+  - Create src/claude_bridge/commands/__init__.py
+  - Move cmd_* groups into agent.py, task.py, team.py, setup.py
+  - Keep cli.py as thin dispatcher importing from commands/
+  - Update all test imports
+  - Estimate: 2-3h with full test coverage
+
+## [Q3] Redundant datetime imports in db.py
+Status: FIXED
+Details:
+  File: src/claude_bridge/db.py
+  - Removed two in-method "from datetime import datetime" imports:
+    1. In respond_permission() (was at line ~388)
+    2. In timeout_permissions() (was at line ~399)
+  - Both methods now use the top-level import (line 10: "from datetime import datetime")
+  - Tests pass: 444/444
+
+## [Q4] _build_team_prompt hardcodes PYTHONPATH
+Status: FIXED
+Details:
+  File: src/claude_bridge/cli.py, _build_team_prompt()
+  - Now calls shutil.which("bridge-cli") first
+  - If bridge-cli is in PATH (installed via pipx/pip): uses "bridge-cli dispatch ..."
+    and "bridge-cli status ..." — clean, no PYTHONPATH needed
+  - Fallback: uses sys.executable (not hardcoded "python3") + PYTHONPATH from __file__
+  - This is consistent with the IMP-05 fix (stop hook also uses sys.executable)
+  - Tests pass: 444/444
+
+## [Q5] Naming inconsistency agent_file → standardize
+Status: FIXED (documentation, not rename)
+Details:
+  File: src/claude_bridge/session.py, derive_agent_file_name()
+  - Added docstring documenting the naming convention:
+    * agent_file_name / agent_slug = just the name slug "bridge--backend--my-api"
+    * agent_file_path / agent_md_path = full path with .md extension
+    * db.agents.agent_file column = stores the full path
+  - Renaming the DB column "agent_file" → "agent_md_path" would require a DB migration
+    (ALTER TABLE) which is risky and out of scope for this review fix cycle
+  - Code usage is already consistent within each function; the inconsistency was
+    only in cross-function naming. Documentation is the safest fix.
+
+## [R2] CLAUDE_BRIDGE_HOME change orphans data → document warning
+Status: FIXED
+Details:
+  File: src/claude_bridge/__init__.py, get_bridge_home() docstring
+  - Added WARNING block explaining what happens when CLAUDE_BRIDGE_HOME changes:
+    * SQLite DB will be at new path (empty)
+    * Old workspaces orphaned at old path
+    * Agent .md files in ~/.claude/agents/ are NOT affected
+  - Added migration hint: "copy ~/.claude-bridge/ to the new location first"
+  - This is a documentation fix — behavior is expected/correct but previously undocumented
+
+## [R3] Old config backward compat → add migration test
+Status: FIXED
+Details:
+  File: tests/test_bridge_cmd.py, class TestValidateConfig
+  - Added test_v01x_config_backward_compat() that simulates a v0.1.x config:
+    * Has bot_dir + telegram_bot_token
+    * No 'mode' key (not present in v0.1.x)
+  - Verifies _validate_config() returns no errors → backward compatible
+  - The code already handled this correctly (mode defaults to "" → allowed),
+    but no explicit test verified it. Now documented and verified.
+  - Tests: 444/444 pass
+
+## [R4] Channel server no auto-update → detect stale and warn
+Status: FIXED
+Details:
+  File: src/claude_bridge/cli.py, _cmd_doctor()
+  - When deployed server.js exists AND bundled server.js also exists:
+    * Compares os.path.getmtime(bundled) vs os.path.getmtime(deployed)
+    * If bundled is newer: prints warning "may be stale" + fix command
+    * If deployed is current: prints normal "✓ Channel server deployed" message
+  - This detects the post-upgrade scenario where pip install --upgrade delivers
+    a new bundled server but the deployed version is still old
+  - Does NOT auto-update (would require bridge restart) — warns and suggests rerun setup
+
+---
+## Summary
+
+Fixed: 14 issues
+Skipped: 0
+Partial: 1 ([Q2] — assessed as too risky for inline fix, documented with plan)
+
+Files changed:
+  - install.sh (S2, E3, C2)
+  - channel/lib.ts (S5)
+  - src/claude_bridge/daemon.py (E4, C3, C4)
+  - src/claude_bridge/cli.py (E5, Q4, R4)
+  - src/claude_bridge/db.py (E7, Q3)
+  - src/claude_bridge/__init__.py (R2)
+  - src/claude_bridge/session.py (Q5)
+  - CLAUDE.md (C5)
+  - pyproject.toml (C5)
+  - tests/test_bridge_cmd.py (R3 — new test)

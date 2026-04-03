@@ -77,7 +77,14 @@ export function loadAllowlist(configPath: string): string[] {
 
 export function isAllowed(userId: string, accessPath: string): boolean {
   const allowed = loadAllowlist(accessPath);
-  if (allowed.length === 0) return true;
+  // Fail-closed: if allowlist is empty (config missing or no telegram_chat_id
+  // configured), deny all access. This prevents unauthorized access during
+  // setup before the bot is fully configured.
+  // To allow a user, ensure telegram_chat_id is set in config.json.
+  if (allowed.length === 0) {
+    console.warn("[claude-bridge] Access denied: allowlist is empty — run 'bridge-cli setup' to configure telegram_chat_id");
+    return false;
+  }
   return allowed.includes(userId);
 }
 

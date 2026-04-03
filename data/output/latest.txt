@@ -1,0 +1,652 @@
+====================================================================
+IMPROVEMENT PLAN — CLAUDE BRIDGE
+Dựa trên: Installation Experience Analysis (15 issues: 3 P0, 7 P1, 5 P2)
+Ngày tạo: 2026-04-03
+====================================================================
+
+TÓM TẮT TRẠNG THÁI:
+  ❌ KHÔNG SẴN SÀNG share rộng rãi (3 P0 blocking)
+  🎯 Mục tiêu: Fix P0 → fix P1 → polish P2 → ready to launch
+
+THAM CHIẾU OPENCLAW:
+  ~/projects/openclaw — personal AI assistant, multi-channel, production-grade
+  Patterns học được:
+    1. Single install command:  `npm install -g openclaw@latest`  → claude-bridge cần install.sh hoặc pipx 1-liner
+    2. `openclaw onboard --install-daemon` → wizard tự install daemon (systemd/launchd) — bridge setup nên học theo
+    3. Date-based versioning: `v2026.2.6` — clear, no ambiguity → bridge nên đồng bộ version
+    4. CHANGELOG.md với Added/Fixes sections per release — bridge chưa có
+    5. `openclaw doctor` với state dir + migration checks — bridge doctor cần mạnh hơn
+    6. PATH fallback via env var `OPENCLAW_HOME` → bridge nên hỗ trợ `CLAUDE_BRIDGE_HOME`
+
+====================================================================
+PHASE 1 — FIX P0 BLOCKING (phải xong TRƯỚC KHI chia sẻ với bất kỳ ai)
+====================================================================
+
+Thứ tự fix: IMP-01 → IMP-02 → IMP-03 (có thể song song IMP-01 + IMP-02)
+
+--------------------------------------------------------------------
+IMP-01 | P0-1 | Channel server dist KHÔNG TỒN TẠI
+--------------------------------------------------------------------
+Mô tả:
+  `channel_server/dist/server.js` không có trong repo.
+  `get_channel_server_path()` trả về path này nhưng file không tồn tại.
+  Hậu quả: `bridge-cli setup` thất bại silently, doctor báo lỗi.
+
+Approach được chọn (option B — auto-build trong setup wizard):
+  Thêm pre-check trong setup wizard: nếu server.js chưa có, tự chạy `bun run build`.
+  Nếu bun không có → thông báo rõ và dừng với error message actionable.
+
+Files cần sửa:
+  - src/claude_bridge/cli.py          (setup command → thêm pre-build check)
+  - src/claude_bridge/channel.py      (hoặc file chứa setup wizard logic)
+  - README.md                         (làm rõ bun build là bắt buộc trước setup)
+  - src/claude_bridge/__init__.py     (get_channel_server_path: thêm warning rõ hơn)
+
+Acceptance criteria:
+  [ ] `bridge-cli setup` tự detect thiếu server.js và chạy `bun run build` (nếu bun có)
+  [ ] Nếu bun không có: in error message "Run: cd channel && bun install && bun run build"
+  [ ] `bridge-cli doctor` check và gợi ý build command cụ thể (không chỉ "not found")
+  [ ] `python3 -c "from claude_bridge import get_channel_server_path; ..."` → path valid sau build
+
+Estimated effort: 2h
+Dependencies: None (first fix)
+Commit format: `IMP-01: auto-build channel server in setup wizard`
+
+--------------------------------------------------------------------
+IMP-02 | P0-2 | `mcp` dependency thiếu trong pyproject.toml
+--------------------------------------------------------------------
+Mô tả:
+  `mcp_server.py` import `from mcp.server.fastmcp import FastMCP` nhưng
+  pyproject.toml không có `[project.dependencies]`. Khi user chọn "mcp" mode,
+  Bridge Bot crash ngay: `ModuleNotFoundError: No module named 'mcp'`.
+
+Approach được chọn (option A — thêm dependency):
+  Thêm dependency `mcp>=1.0` vào pyproject.toml.
+  Đồng thời verify test_mcp_server.py chạy được.
+
+Files cần sửa:
+  - pyproject.toml                    (thêm [project.dependencies] = ["mcp>=1.0"])
+  - README.md                         (remove hoặc update note về --ignore test_mcp_server.py)
+  - tests/test_mcp_server.py          (bỏ skip nếu mcp đã có)
+
+Acceptance criteria:
+  [ ] `pip install -e .` → tự kéo mcp dependency
+  [ ] `python3 -c "from mcp.server.fastmcp import FastMCP"` → không lỗi
+  [ ] `pytest tests/test_mcp_server.py` → PASS (không skip)
+  [ ] `bridge-cli setup` → chọn "mcp" mode → bridge start → không crash
+
+Estimated effort: 1h
+Dependencies: None (có thể song song với IMP-01)
+Commit format: `IMP-02: add mcp dependency to pyproject.toml`
+
+--------------------------------------------------------------------
+IMP-03 | P0-3 | `install.sh` chưa tồn tại
+--------------------------------------------------------------------
+Mô tả:
+  Packaging spec (plan/PACKAGING_SPEC.md §11) mô tả "Hero Install Command":
+  `curl -fsSL https://raw.githubusercontent.com/.../install.sh | sh`
+  Nhưng file này chưa được viết. User mới phải đọc 7 bước manual.
+
+  Pattern học từ OpenClaw: `npm install -g openclaw@latest` — one-liner install.
+  Bridge cần equivalent: `install.sh` download + setup tự động.
+
+Files cần tạo/sửa:
+  - install.sh                        (TẠO MỚI — theo spec §11)
+  - README.md                         (Quick Start: thay 7-step bằng curl one-liner)
+
+install.sh logic (theo spec):
+  1. Detect OS (macOS/Linux/WSL)
+  2. Check dependencies: python3 ≥3.11, pip/pipx, bun (hoặc hướng dẫn install)
+  3. Check claude CLI in PATH
+  4. pipx install claude-agent-bridge (hoặc pip install -e . nếu dev mode)
+  5. cd channel && bun install && bun run build
+  6. bridge-cli setup (chạy wizard)
+  7. Print success + next steps
+
+Acceptance criteria:
+  [ ] `curl -fsSL <url> | sh` chạy end-to-end không cần user input (trừ setup wizard)
+  [ ] Script detect thiếu dependency và print actionable error (không silent fail)
+  [ ] Script idempotent: chạy lần 2 không break lần 1
+  [ ] README Quick Start section dùng curl one-liner làm bước chính
+  [ ] Script test trên clean Ubuntu 22.04 và macOS 14
+
+Estimated effort: 3h
+Dependencies: IMP-01, IMP-02 (setup phải work trước khi wrap vào install.sh)
+Commit format: `IMP-03: add install.sh hero install command`
+
+
+====================================================================
+PHASE 2 — FIX P1 IMPORTANT (trước khi release công khai)
+====================================================================
+
+Thứ tự fix: IMP-04 → IMP-05+06 (song song) → IMP-07+08 (song song) → IMP-09
+
+--------------------------------------------------------------------
+IMP-04 | P1-1 + P1-7 | Đồng nhất version + tên package
+--------------------------------------------------------------------
+Mô tả (gộp 2 issues liên quan):
+  - 3 version khác nhau: pyproject.toml=0.2.0, package.json=0.1.0, channel/package.json=1.0.0
+  - Tên package: pyproject.toml="claude-agent-bridge" vs spec="claude-bridge"
+  - Pattern OpenClaw: date-based versioning `v2026.2.6` — rõ ràng, không ambiguous
+
+Approach:
+  - Single source of truth: version trong `src/claude_bridge/__init__.py`
+  - Đồng bộ tất cả: pyproject.toml, package.json, channel/package.json đọc từ đây
+  - Quyết định tên package: chọn "claude-bridge" (theo spec) HOẶC giữ "claude-agent-bridge"
+    → Recommendation: giữ "claude-agent-bridge" (tên PyPI đã register) + alias trong docs
+
+Files cần sửa:
+  - src/claude_bridge/__init__.py     (__version__ = "0.2.0" — single source)
+  - pyproject.toml                    (dynamic version từ __init__.py)
+  - package.json (root)               (version = "0.2.0")
+  - channel/package.json              (version = "0.2.0")
+  - README.md                         (note về pipx install claude-agent-bridge)
+  - specs/specs-packaging.md          (update tên package nếu giữ claude-agent-bridge)
+
+Acceptance criteria:
+  [ ] `bridge-cli --version` in ra version khớp với __init__.py
+  [ ] Tất cả package.json files có cùng version với pyproject.toml
+  [ ] `pipx install claude-agent-bridge` (hoặc `claude-bridge`) hoạt động đúng
+  [ ] README Quick Start dùng đúng tên package
+
+Estimated effort: 1.5h
+Dependencies: None
+Commit format: `IMP-04: unify version and package name across all manifests`
+
+--------------------------------------------------------------------
+IMP-05 | P1-3 | Stop hook dùng sai Python path
+--------------------------------------------------------------------
+Mô tả:
+  `agent_md.py:install_stop_hook()` fallback dùng hardcoded `python3`
+  thay vì `sys.executable`. Nếu user install qua pipx vào isolated venv,
+  `python3` ngoài PATH không tìm thấy `claude_bridge`. Hook fail silently.
+
+Files cần sửa:
+  - src/claude_bridge/agent_md.py     (thay `python3` → `sys.executable`)
+
+Code change:
+  Cũ: f"PYTHONPATH={src_path} python3 -m claude_bridge.on_complete ..."
+  Mới: f"PYTHONPATH={src_path} {sys.executable} -m claude_bridge.on_complete ..."
+
+Acceptance criteria:
+  [ ] `agent_md.py` dùng `sys.executable` thay vì `shutil.which("python3")`
+  [ ] Test: tạo agent → đọc .claude/settings.local.json → hook dùng đúng python path
+  [ ] Hook fires correctly sau khi claude session kết thúc (integration test)
+
+Estimated effort: 30m
+Dependencies: None
+Commit format: `IMP-05: use sys.executable in stop hook to fix pipx installs`
+
+--------------------------------------------------------------------
+IMP-06 | P1-4 | `bridge start` thiếu config validation
+--------------------------------------------------------------------
+Mô tả:
+  `bridge start` cần `bot_dir` và `mode` trong config.json.
+  Nếu chưa chạy setup, error message không đủ helpful.
+  Pattern OpenClaw: `openclaw doctor` detect và suggest fix cụ thể.
+
+Files cần sửa:
+  - src/claude_bridge/bridge_cmd.py   (thêm config validation trước khi start)
+
+Logic cần thêm:
+  ```python
+  config = load_config()
+  if not config.get("bot_dir"):
+      print("❌ Bridge not configured. Run: bridge-cli setup", file=sys.stderr)
+      sys.exit(1)
+  if not os.path.isdir(config["bot_dir"]):
+      print(f"❌ bot_dir not found: {config['bot_dir']}", file=sys.stderr)
+      sys.exit(1)
+  ```
+
+Acceptance criteria:
+  [ ] `bridge start` khi chưa setup → error message rõ: "Run: bridge-cli setup"
+  [ ] `bridge start` khi bot_dir không tồn tại → error message với path cụ thể
+  [ ] `bridge start` khi config hợp lệ → chạy bình thường
+  [ ] `bridge-cli doctor` cũng check các conditions này
+
+Estimated effort: 1h
+Dependencies: None
+Commit format: `IMP-06: add config validation to bridge start command`
+
+--------------------------------------------------------------------
+IMP-07 | P1-5 | Commit `bun.lock` vào repo
+--------------------------------------------------------------------
+Mô tả:
+  `channel/package.json` không có lockfile → `bun install` pull latest versions.
+  Có thể break với upstream breaking changes. Pattern OpenClaw dùng pnpm-lock.yaml.
+
+Files cần sửa/tạo:
+  - channel/bun.lock                  (TẠO bằng `cd channel && bun install`)
+  - .gitignore                        (verify bun.lock KHÔNG bị ignore)
+
+Acceptance criteria:
+  [ ] `channel/bun.lock` tồn tại trong repo
+  [ ] `cd channel && bun install --frozen-lockfile` thành công (không update versions)
+  [ ] CI (nếu có) dùng `--frozen-lockfile`
+
+Estimated effort: 30m
+Dependencies: None
+Commit format: `IMP-07: commit bun.lock for reproducible channel builds`
+
+--------------------------------------------------------------------
+IMP-08 | P1-6 | Thêm `.env.example`
+--------------------------------------------------------------------
+Mô tả:
+  Channel server cần env vars (TELEGRAM_BOT_TOKEN, MESSAGES_DB_PATH, etc.)
+  nhưng không có .env.example. User muốn test server manually không biết cần gì.
+
+Files cần tạo:
+  - channel/.env.example              (TẠO MỚI)
+
+Nội dung .env.example:
+  ```
+  # Required
+  TELEGRAM_BOT_TOKEN=your_bot_token_here
+
+  # Optional (defaults shown)
+  MESSAGES_DB_PATH=~/.claude-bridge/messages.db
+
+  # Optional (for manual testing without bridge-cli)
+  BRIDGE_SRC_PATH=/path/to/claude-bridge/src
+  ```
+
+Acceptance criteria:
+  [ ] `channel/.env.example` tồn tại với tất cả env vars được document
+  [ ] Comment giải thích từng var: required/optional, format, default
+  [ ] README CONTRIBUTING section mention file này
+
+Estimated effort: 30m
+Dependencies: None
+Commit format: `IMP-08: add .env.example for channel server manual testing`
+
+--------------------------------------------------------------------
+IMP-09 | P1-2 | Cải thiện README Pairing Step 6
+--------------------------------------------------------------------
+Mô tả:
+  Step 6 (pair Telegram) confusing: `<code>` ở đâu ra? Đây là command trong
+  Claude Code session hay terminal? User không biết Claude Code internals.
+  Pattern OpenClaw: `openclaw onboard` wizard tự handle pairing với clear prompts.
+
+Files cần sửa:
+  - README.md                         (rewrite Step 6 với context đầy đủ)
+  - docs/ (nếu có separate docs)
+
+Nội dung cần thêm:
+  - "When you first DM your bot, it will reply with a 6-digit pairing code"
+  - "Open a separate terminal, start Claude Code interactively (not bridge-cli)"
+  - "In the Claude Code session, the Telegram channel will show a prompt"
+  - Screenshot hoặc ASCII art showing the pairing flow
+  - Common error: "Bot not responding" → check TELEGRAM_BOT_TOKEN
+
+Acceptance criteria:
+  [ ] Step 6 mô tả rõ: code từ đâu, chạy lệnh ở đâu (Claude Code session vs terminal)
+  [ ] Có note phân biệt "bridge-cli" vs "claude" CLI interactive session
+  [ ] Có ít nhất 1 screenshot hoặc ASCII flow diagram
+  [ ] Troubleshooting note cho lỗi phổ biến nhất của step này
+
+Estimated effort: 1.5h
+Dependencies: None (documentation task, có thể làm bất cứ lúc nào)
+Commit format: `IMP-09: clarify Telegram pairing step in README`
+
+
+====================================================================
+PHASE 3 — P2 POLISH + NEW FEATURES
+====================================================================
+
+--------------------------------------------------------------------
+IMP-10 | P2-1 | Thêm CHANGELOG.md
+--------------------------------------------------------------------
+Mô tả:
+  Không có CHANGELOG → user không biết gì thay đổi giữa các version.
+  Pattern OpenClaw: CHANGELOG chi tiết với Added/Fixes/Changes sections.
+  `bridge-cli --version` chỉ in số, không có release notes.
+
+Files cần tạo/sửa:
+  - CHANGELOG.md                      (TẠO MỚI)
+  - src/claude_bridge/cli.py          (--version flag → link đến CHANGELOG)
+
+Format CHANGELOG (học từ OpenClaw):
+  ```markdown
+  # Changelog
+
+  ## 0.2.0 — 2026-04-03
+  ### Added
+  - Setup wizard với channel server auto-build
+  - bridge-cli doctor command
+  - ...
+  ### Fixed
+  - Stop hook Python path với pipx installs
+  - ...
+
+  ## 0.1.0 — ...
+  ```
+
+Acceptance criteria:
+  [ ] CHANGELOG.md tồn tại với entries từ v0.1.0
+  [ ] Format: version + date + Added/Fixed/Changed sections
+  [ ] `bridge-cli --version` in version + "See CHANGELOG.md for what's new"
+
+Estimated effort: 1h
+Dependencies: IMP-04 (version phải đồng nhất trước)
+Commit format: `IMP-10: add CHANGELOG.md with history from v0.1.0`
+
+--------------------------------------------------------------------
+IMP-11 | P2-2 | Cải thiện `bridge-cli doctor` checks
+--------------------------------------------------------------------
+Mô tả:
+  Doctor hiện chỉ check file exists, không check:
+  - Stop hooks đã install trong .claude/settings.local.json
+  - Channel server thực sự executable (không chỉ tồn tại)
+  - Telegram API connectivity
+  Pattern OpenClaw: `openclaw doctor` check state dir, migration, connectivity.
+
+Files cần sửa:
+  - src/claude_bridge/cli.py          (doctor command — thêm checks)
+
+Checks cần thêm:
+  [ ] Stop hook: đọc settings.local.json → verify hook command valid
+  [ ] Channel server: try `node --version` để check node available
+  [ ] Telegram token: nếu config có token, test `getMe` API call
+  [ ] Python version: assert ≥3.11
+  [ ] claude CLI version: check và warn nếu outdated
+
+Acceptance criteria:
+  [ ] `bridge-cli doctor` check stop hook installation status
+  [ ] `bridge-cli doctor` verify Telegram token connectivity (optional, warn nếu offline)
+  [ ] `bridge-cli doctor` suggest cụ thể fix command cho mỗi failed check
+  [ ] Doctor output format: ✓/✗/⚠ với actionable message
+
+Estimated effort: 2h
+Dependencies: IMP-01 (server.js phải build được trước)
+Commit format: `IMP-11: expand doctor checks (hooks, connectivity, versions)`
+
+--------------------------------------------------------------------
+IMP-12 | P2-3 | Architecture diagram trong README
+--------------------------------------------------------------------
+Mô tả:
+  README có ASCII art nhưng khó đọc.
+  specs/MVP.md có diagram đẹp hơn nhưng user không được link đến.
+  Pattern OpenClaw: C4/mermaid diagrams trong docs, external docs site.
+
+Files cần sửa:
+  - README.md                         (thêm mermaid diagram)
+  - specs/MVP.md                      (link từ README)
+
+Mermaid diagram cần thể hiện:
+  Telegram → Channel Server (Node.js) → MCP Tools → bridge-cli
+  bridge-cli → Claude Code (agent session) → Stop Hook → bridge-cli → Telegram
+
+Acceptance criteria:
+  [ ] README có 1 mermaid diagram thể hiện end-to-end flow
+  [ ] Diagram render được trên GitHub (GitHub native mermaid support)
+  [ ] Link đến specs/MVP.md cho chi tiết kiến trúc
+
+Estimated effort: 1h
+Dependencies: None
+Commit format: `IMP-12: add mermaid architecture diagram to README`
+
+--------------------------------------------------------------------
+IMP-13 | P2-4 + P2-5 | Mở rộng Troubleshooting + fix test docs
+--------------------------------------------------------------------
+Mô tả (gộp 2 P2 issues):
+  - Troubleshooting table chỉ có 6 rows — thiếu nhiều common errors
+  - test_mcp_server.py bị ignore trong pytest nhưng không giải thích lý do
+
+Files cần sửa:
+  - README.md                         (mở rộng Troubleshooting section)
+  - tests/README.md hoặc pytest.ini   (giải thích lý do ignore)
+
+Troubleshooting cases cần thêm:
+  - "bun run build fails" → check node version, bun version
+  - "bridge start fails silently" → check logs tại ~/.claude-bridge/
+  - "How to reset everything" → delete ~/.claude-bridge/ và re-run setup
+  - "How to check if stop hook fired" → đọc ~/.claude/logs/
+  - "Bot not responding after pairing" → check token, restart channel server
+  - "Permission denied on bridge-cli" → check PATH, pipx vs pip install
+
+Acceptance criteria:
+  [ ] Troubleshooting section có ≥12 common error scenarios
+  [ ] Mỗi row: symptom → likely cause → fix command
+  [ ] test_mcp_server.py có comment giải thích khi nào chạy được
+  [ ] pytest README note: "Run full suite including mcp tests: pytest tests/ -v"
+
+Estimated effort: 1.5h
+Dependencies: None
+Commit format: `IMP-13: expand troubleshooting guide and document mcp test setup`
+
+--------------------------------------------------------------------
+IMP-14 | NEW | Support `CLAUDE_BRIDGE_HOME` env var
+--------------------------------------------------------------------
+Mô tả:
+  Pattern từ OpenClaw: `OPENCLAW_HOME` env var để override home directory.
+  Quan trọng cho: multiple users, CI testing, NixOS, non-standard HOME.
+  Hiện tại bridge hardcode `~/.claude-bridge/` trong nhiều files.
+
+Files cần sửa:
+  - src/claude_bridge/db.py           (thay hardcode path → env var)
+  - src/claude_bridge/cli.py          (thay hardcode path)
+  - src/claude_bridge/agent_md.py    (thay hardcode path)
+  - src/claude_bridge/__init__.py     (thêm `get_bridge_home()` helper)
+
+Logic:
+  ```python
+  def get_bridge_home():
+      return Path(os.environ.get("CLAUDE_BRIDGE_HOME", Path.home() / ".claude-bridge"))
+  ```
+
+Acceptance criteria:
+  [ ] `CLAUDE_BRIDGE_HOME=/tmp/test-bridge bridge-cli setup` → dùng /tmp/test-bridge/
+  [ ] Tất cả paths trong bridge đều đi qua `get_bridge_home()`
+  [ ] `bridge-cli doctor` in ra bridge home path đang dùng
+  [ ] Docs mention env var
+
+Estimated effort: 2h
+Dependencies: None (nhưng nên làm sau P0+P1)
+Commit format: `IMP-14: support CLAUDE_BRIDGE_HOME env var for custom home dir`
+
+--------------------------------------------------------------------
+IMP-15 | NEW | `bridge-cli setup` daemon install (học từ OpenClaw)
+--------------------------------------------------------------------
+Mô tả:
+  Pattern OpenClaw: `openclaw onboard --install-daemon` tự install systemd/launchd service.
+  Bridge hiện yêu cầu user tự chạy `bridge start` trong tmux.
+  Cải thiện: setup wizard hỏi "Install as system service? (y/n)"
+
+Files cần tạo/sửa:
+  - src/claude_bridge/daemon.py       (TẠO MỚI — launchd/systemd install)
+  - src/claude_bridge/cli.py          (setup wizard thêm daemon option)
+  - templates/bridge.service          (systemd unit file template)
+  - templates/bridge.plist            (launchd plist template)
+
+Acceptance criteria:
+  [ ] `bridge-cli setup` hỏi về daemon install
+  [ ] Trên Linux: tạo ~/.config/systemd/user/claude-bridge.service
+  [ ] Trên macOS: tạo ~/Library/LaunchAgents/ai.claude-bridge.plist
+  [ ] `bridge-cli daemon (start|stop|status|logs)` command
+  [ ] `bridge-cli doctor` check daemon status
+
+Estimated effort: 4h
+Dependencies: IMP-06 (config validation), IMP-14 (CLAUDE_BRIDGE_HOME)
+Commit format: `IMP-15: add systemd/launchd daemon install to setup wizard`
+
+
+====================================================================
+ROADMAP TỔNG QUAN
+====================================================================
+
+PHASE 1 (tuần này — không thể delay):
+  IMP-01 [2h]  ← bắt đầu NGAY
+  IMP-02 [1h]  ← song song với IMP-01
+  IMP-03 [3h]  ← sau khi IMP-01+02 xong
+
+PHASE 2 (trước launch):
+  IMP-04 [1.5h]  version + package name
+  IMP-05 [0.5h]  stop hook python path
+  IMP-06 [1h]    bridge start validation
+  IMP-07 [0.5h]  bun.lock
+  IMP-08 [0.5h]  .env.example
+  IMP-09 [1.5h]  README pairing docs
+
+PHASE 3 (polish — sau launch):
+  IMP-10 [1h]    CHANGELOG
+  IMP-11 [2h]    doctor checks
+  IMP-12 [1h]    architecture diagram
+  IMP-13 [1.5h]  troubleshooting + test docs
+  IMP-14 [2h]    CLAUDE_BRIDGE_HOME env var
+  IMP-15 [4h]    daemon install
+
+Total effort estimate:
+  Phase 1: ~6h
+  Phase 2: ~6h
+  Phase 3: ~11.5h (optional, prioritize by need)
+
+====================================================================
+DISPATCH CHECKLIST (mỗi task khi dispatch)
+====================================================================
+
+Trước khi dispatch IMP-XX:
+  [ ] Đọc spec đầy đủ trong section trên
+  [ ] Check dependencies đã xong chưa
+  [ ] Chạy `pytest` để có baseline
+  [ ] Branch: git checkout -b fix/IMP-XX
+
+Sau khi implement:
+  [ ] pytest → tất cả tests PASS
+  [ ] Code review checklist (.claude/rules/code-review.md)
+  [ ] Commit với format: `IMP-XX: description`
+  [ ] Update latest.txt: đánh dấu task DONE
+
+====================================================================
+STATUS TRACKING
+====================================================================
+
+PHASE 1 — P0 FIXES:
+  [✓] IMP-01 — channel server auto-build
+  [✓] IMP-02 — mcp dependency
+  [✓] IMP-03 — install.sh
+
+PHASE 2 — P1 FIXES:
+  [✓] IMP-04 — version unification
+  [✓] IMP-05 — stop hook python path
+  [✓] IMP-06 — bridge start validation
+  [✓] IMP-07 — bun.lock
+  [✓] IMP-08 — .env.example
+  [✓] IMP-09 — README pairing docs
+
+PHASE 3 — P2 + NEW FEATURES:
+  [✓] IMP-10 — CHANGELOG
+  [✓] IMP-11 — doctor checks
+  [✓] IMP-12 — architecture diagram
+  [✓] IMP-13 — troubleshooting guide
+  [✓] IMP-14 — CLAUDE_BRIDGE_HOME
+  [✓] IMP-15 — daemon install
+
+====================================================================
+PHASE 1 RESULT — 2026-04-03
+====================================================================
+
+STATUS: ✅ COMPLETE — All 3 P0 blocking issues fixed.
+
+TASKS DONE:
+  IMP-01 [✓] Channel server auto-build in setup wizard + doctor
+    Files changed: src/claude_bridge/cli.py
+    - cmd_setup(): if server.js missing → auto-run `bun run build`
+    - cmd_setup(): if bun missing → fallback to MCP mode + actionable error
+    - _cmd_doctor(): if not found → suggest exact build command with path
+
+  IMP-02 [✓] mcp dependency added to pyproject.toml
+    Files changed: pyproject.toml
+    - Added dependencies = ["mcp>=1.0"]
+    - `python3 -c "from mcp.server.fastmcp import FastMCP"` → OK
+    - pytest tests/test_mcp_server.py → 26/26 PASS
+
+  IMP-03 [✓] install.sh hero install script
+    Files created/changed: install.sh, README.md
+    - Full install.sh: detect OS, check python/claude/bun/tmux,
+      clone/update repo, bun install deps, bun run build, pip/pipx install
+    - README Quick Start: replaced 4-step manual with `curl | sh` one-liner
+
+TEST RESULTS:
+  405/405 tests pass
+  No regressions
+
+READY FOR REVIEW: Yes (not committed yet, as requested)
+====================================================================
+
+====================================================================
+PHASE 2 RESULT — 2026-04-03
+====================================================================
+
+STATUS: ✅ COMPLETE — All 6 P1 important issues fixed.
+
+TASKS DONE:
+  IMP-04 [✓] Version + package name unification
+    Files changed: pyproject.toml (dynamic version), package.json (0.2.0), channel/package.json (0.2.0)
+    Single source of truth: src/claude_bridge/__init__.py
+
+  IMP-05 [✓] Stop hook Python path fix
+    Files changed: src/claude_bridge/agent_md.py
+    generate_agent_md() + install_stop_hook(): sys.executable (was shutil.which("python3"))
+    Tests added: test_uses_sys_executable_for_python_path, test_stop_hook_uses_sys_executable
+
+  IMP-06 [✓] bridge start config validation
+    Files changed: src/claude_bridge/bridge_cmd.py
+    NEW _validate_config(): checks bot_dir, token, mode — returns list of ❌ errors
+    Tests added: TestValidateConfig (7 tests), test_missing_token
+
+  IMP-07 [✓] bun.lock committed
+    Action: cd channel && bun install → bun.lock generated (99 packages, 20KB)
+    Verified: bun install --frozen-lockfile → "no changes"
+
+  IMP-08 [✓] .env.example for channel server
+    Files created: channel/.env.example (all env vars documented: required/optional/defaults)
+    .gitignore updated: channel/.env and .env excluded
+
+  IMP-09 [✓] README Pairing Step 6 improved
+    README Step 6: full ASCII flow diagram, clear "where to type" instructions,
+    6-step walkthrough, troubleshooting table (5 scenarios)
+
+TEST RESULTS:
+  415/415 tests pass (baseline was 405 — +10 new tests)
+  No regressions
+
+READY FOR REVIEW: Yes (not committed yet, as requested)
+====================================================================
+
+====================================================================
+PHASE 3 RESULT — 2026-04-03
+====================================================================
+
+STATUS: ✅ COMPLETE — All 6 P2 polish + new feature tasks done.
+
+TASKS DONE:
+  IMP-10 [✓] CHANGELOG.md with v0.1.0 + v0.2.0 entries (Keep a Changelog format)
+    Files: CHANGELOG.md (new), cli.py (--version mentions CHANGELOG)
+
+  IMP-11 [✓] Expanded doctor checks
+    New: CLAUDE_BRIDGE_HOME path display, bun/claude versions, stop hook
+    permissions check, Telegram getMe connectivity test, daemon status
+
+  IMP-12 [✓] Architecture mermaid diagram in README
+    Added sequenceDiagram showing full You→Telegram→Bridge→Agent→Notification flow
+
+  IMP-13 [✓] Troubleshooting guide (6→15 entries) + test_mcp_server.py docstring
+    Entries: bun build, bridge start fails, reset, stop hook debug, pairing,
+    permission denied, bridge-cli not in PATH, ModuleNotFoundError, worktree error
+
+  IMP-14 [✓] CLAUDE_BRIDGE_HOME env var support
+    get_bridge_home() added to __init__.py; all 8 modules updated to use it
+    CLAUDE_BRIDGE_HOME=/tmp/test bridge-cli setup → uses /tmp/test/
+
+  IMP-15 [✓] Daemon install wizard (systemd/launchd)
+    daemon.py: full systemd + launchd support with CLAUDE_BRIDGE_HOME passthrough
+    bridge-cli daemon install|start|stop|status|logs|uninstall
+    bridge-cli setup: optional "Install as background service? [y/N]" prompt
+
+TEST RESULTS:
+  434/434 tests pass (baseline was 415 — +19 new tests)
+  No regressions
+
+READY FOR REVIEW: Yes (not committed yet, as requested)
+====================================================================
