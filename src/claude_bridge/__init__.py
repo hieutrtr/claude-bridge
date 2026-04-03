@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 # Paths that are too dangerous to use as CLAUDE_BRIDGE_HOME
 _DANGEROUS_PREFIXES = (

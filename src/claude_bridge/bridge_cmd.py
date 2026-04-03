@@ -14,7 +14,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import shutil
+import subprocess
 import sys
 
 from . import __version__
@@ -133,6 +135,69 @@ def _validate_config(config: dict | None) -> list[str]:
     return errors
 
 
+LAUNCHD_PLIST_PATH = os.path.expanduser("~/Library/LaunchAgents/ai.claude-bridge.plist")
+
+# Patterns for bridge-related processes to kill on stop/uninstall
+_KILL_PATTERNS = [
+    "bun.*server\\.ts",
+    "bun.*server\\.js",
+    "claude.*dangerously-load-development-channels",
+    r"bash -c .*(echo.*cat).*claude",
+]
+
+
+def _unload_launchd_plist() -> bool:
+    """Unload the launchd plist if loaded. Returns True if unloaded, False otherwise."""
+    if platform.system() != "Darwin":
+        return False
+    if not os.path.isfile(LAUNCHD_PLIST_PATH):
+        return False
+    try:
+        mac_ver = platform.mac_ver()[0]
+        major = int(mac_ver.split(".")[0]) if mac_ver else 0
+        if major >= 12:
+            uid = str(os.getuid())
+            subprocess.run(
+                ["launchctl", "bootout", f"gui/{uid}", LAUNCHD_PLIST_PATH],
+                capture_output=True,
+            )
+        else:
+            subprocess.run(
+                ["launchctl", "unload", LAUNCHD_PLIST_PATH],
+                capture_output=True,
+            )
+        return True
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def _kill_bridge_processes() -> None:
+    """Kill zombie bridge-related processes (bun server, claude channel, bash wrappers)."""
+    for pattern in _KILL_PATTERNS:
+        try:
+            subprocess.run(
+                ["pkill", "-f", pattern],
+                capture_output=True,
+            )
+        except (FileNotFoundError, OSError):
+            pass
+
+
+def _bridge_processes_running() -> bool:
+    """Check if any bridge-related processes are running (for daemon/foreground mode detection)."""
+    for pattern in _KILL_PATTERNS:
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", pattern],
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                return True
+        except (FileNotFoundError, OSError):
+            pass
+    return False
+
+
 def cmd_start(args) -> int:
     """Start the Bridge Bot."""
     config = _load_config()
@@ -189,33 +254,56 @@ def cmd_start(args) -> int:
 
 
 def cmd_stop(args) -> int:
-    """Stop the Bridge Bot."""
-    if not session_running():
-        print("Bridge Bot is not running.", file=sys.stderr)
-        print("  Start: bridge start", file=sys.stderr)
-        return 1
+    """Stop the Bridge Bot (tmux session, launchd daemon, and child processes)."""
+    tmux_was_running = session_running() if tmux_available() else False
+    launchd_unloaded = False
+    had_processes = _bridge_processes_running()
 
-    print("Stopping Bridge Bot...")
-    if stop_session():
+    # 1. Stop tmux session if running
+    if tmux_was_running:
+        print("Stopping Bridge Bot tmux session...")
+        if not stop_session():
+            print("Warning: Failed to stop tmux session.", file=sys.stderr)
+
+    # 2. Unload launchd plist if on macOS
+    launchd_unloaded = _unload_launchd_plist()
+    if launchd_unloaded:
+        print("Unloaded launchd daemon.")
+
+    # 3. Kill zombie bridge processes
+    _kill_bridge_processes()
+
+    if tmux_was_running or launchd_unloaded or had_processes:
         print("Bridge Bot stopped.")
         return 0
     else:
-        print("Error: Failed to stop Bridge Bot.", file=sys.stderr)
+        print("Bridge Bot is not running.", file=sys.stderr)
+        print("  Start: bridge start", file=sys.stderr)
         return 1
 
 
 def cmd_attach(args) -> int:
-    """Attach to the running Bridge Bot session."""
-    if not tmux_available():
-        print("Error: tmux is not installed.", file=sys.stderr)
-        return 1
+    """Attach to the running Bridge Bot session (tmux or log tail fallback)."""
+    # 1. If tmux session exists, attach to it
+    if tmux_available() and session_running():
+        return attach_session()
 
-    if not session_running():
-        print("Bridge Bot is not running.", file=sys.stderr)
-        print("  Start: bridge start", file=sys.stderr)
-        return 1
+    # 2. If no tmux but daemon/processes running, tail the log file
+    if _bridge_processes_running():
+        if os.path.isfile(LOG_PATH):
+            print(f"Bridge Bot running in daemon mode. Showing logs (read-only):")
+            print(f"  (Press Ctrl+C to detach)\n")
+            os.execvp("tail", ["tail", "-n50", "-f", LOG_PATH])
+            return 1  # pragma: no cover
+        else:
+            print("Bridge Bot is running in daemon mode but no log file found.", file=sys.stderr)
+            print(f"  Expected: {LOG_PATH}", file=sys.stderr)
+            return 1
 
-    return attach_session()
+    # 3. Nothing running
+    print("Bridge Bot is not running.", file=sys.stderr)
+    print("  Start: bridge start", file=sys.stderr)
+    return 1
 
 
 def cmd_logs(args) -> int:
@@ -239,10 +327,9 @@ def cmd_logs(args) -> int:
 
 def cmd_restart(args) -> int:
     """Restart the Bridge Bot (stop + start)."""
-    if session_running():
-        print("Stopping Bridge Bot...")
-        stop_session()
-        print("Stopped.")
+    tmux_running = session_running() if tmux_available() else False
+    if tmux_running or _bridge_processes_running():
+        cmd_stop(args)
 
     return cmd_start(args)
 

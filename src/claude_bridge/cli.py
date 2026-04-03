@@ -1701,6 +1701,33 @@ def _cmd_uninstall(args) -> int:
             print("Cancelled.")
             return 0
 
+    # Stop running processes first
+    from .bridge_cmd import (
+        _unload_launchd_plist,
+        _kill_bridge_processes,
+        LAUNCHD_PLIST_PATH,
+    )
+    from .tmux_session import tmux_available, session_running, stop_session
+
+    stopped_something = False
+    if tmux_available() and session_running():
+        print("  Stopping tmux session...")
+        stop_session()
+        stopped_something = True
+
+    if _unload_launchd_plist():
+        print("  ✓ Launchd daemon unloaded")
+        stopped_something = True
+
+    # Remove launchd plist file
+    if os.path.isfile(LAUNCHD_PLIST_PATH):
+        os.remove(LAUNCHD_PLIST_PATH)
+        print("  ✓ Launchd plist removed")
+
+    _kill_bridge_processes()
+    if stopped_something:
+        print("  ✓ Running processes stopped")
+
     # Remove cron
     try:
         crontab = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
