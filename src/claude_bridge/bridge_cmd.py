@@ -102,13 +102,33 @@ def _build_claude_command(config: dict) -> list[str]:
 
     if mode == "channel":
         cmd.extend([
-            "--dangerously-load-development-channels", "server:bridge",
+            "--channels", "server:bridge",
             "--dangerously-skip-permissions",
         ])
     else:
         cmd.append("--dangerously-skip-permissions")
 
     return cmd
+
+
+def _build_expect_wrapper(claude_cmd: list[str], bot_dir: str) -> list[str]:
+    """Build an expect script that auto-confirms the dev channel warning.
+
+    The TUI prompt is not stdin-based — it uses terminal key events.
+    We use expect to simulate pressing Enter on the confirmation prompt.
+    """
+    claude_str = ' '.join(claude_cmd)
+    expect_script = f'''
+set timeout -1
+spawn bash -c "cd {bot_dir} && {claude_str}"
+expect {{
+    "Enter to confirm" {{ send "\\r" }}
+    "What can I help" {{ }}
+    timeout {{ }}
+}}
+interact
+'''
+    return ["expect", "-c", expect_script]
 
 
 def _validate_config(config: dict | None) -> list[str]:
@@ -142,6 +162,7 @@ _KILL_PATTERNS = [
     "bun.*server\\.ts",
     "bun.*server\\.js",
     "claude.*dangerously-load-development-channels",
+    "claude.*--channels server:bridge",
     r"bash -c .*(echo.*cat).*claude",
 ]
 
@@ -210,16 +231,11 @@ def cmd_start(args) -> int:
     bot_dir = config["bot_dir"]
     claude_cmd = _build_claude_command(config)
 
-    # Foreground mode — run with auto-confirm for dev channel warning
+    # Foreground mode — replace current process
     if getattr(args, "foreground", False):
-        import subprocess
         os.chdir(bot_dir)
-        claude_str = ' '.join(claude_cmd)
-        # Auto-confirm warning: pipe Enter, then keep stdin open with cat
-        proc = subprocess.run(
-            ["bash", "-c", f"(echo ''; cat) | {claude_str}"],
-        )
-        return proc.returncode
+        os.execvp(claude_cmd[0], claude_cmd)
+        return 1  # pragma: no cover
 
     # Tmux mode
     if not tmux_available():
@@ -234,11 +250,9 @@ def cmd_start(args) -> int:
         print(f"  Restart: bridge restart", file=sys.stderr)
         return 1
 
-    # Build the full command: cd bot_dir && auto-confirm dev channel warning && claude ...
-    # The (echo ""; cat) pipe sends Enter to confirm the warning prompt,
-    # then cat keeps stdin open so the session stays alive.
+    # Run claude directly in tmux (tmux provides a real terminal, no TUI issues)
     claude_str = ' '.join(claude_cmd)
-    full_cmd = ["bash", "-c", f"cd {_shell_quote(bot_dir)} && (echo ''; cat) | {claude_str}"]
+    full_cmd = ["bash", "-c", f"cd {_shell_quote(bot_dir)} && {claude_str}"]
 
     if start_session(full_cmd):
         print(f"Bridge Bot started in tmux session '{TMUX_SESSION_NAME}'.")

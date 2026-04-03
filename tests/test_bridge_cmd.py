@@ -72,7 +72,7 @@ class TestBuildClaudeCommand:
         cmd = _build_claude_command({"mode": "channel", "bot_dir": "/tmp/bot"})
         assert cmd == [
             "claude",
-            "--dangerously-load-development-channels", "server:bridge",
+            "--channels", "server:bridge",
             "--dangerously-skip-permissions",
         ]
 
