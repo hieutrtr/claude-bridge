@@ -29,6 +29,89 @@ from .memory import format_memory_report
 
 VALID_MODELS = ("sonnet", "opus", "haiku")
 
+# ── CLI help grouping ─────────────────────────────────────────────────────────
+
+_COMMAND_GROUPS: list[tuple[str, list[str]]] = [
+    ("SETUP",    ["setup", "setup-telegram", "doctor"]),
+    ("AGENTS",   ["create-agent", "delete-agent", "list-agents"]),
+    ("TASKS",    ["dispatch", "status", "kill", "queue", "cancel"]),
+    ("LOOPS",    ["loop", "loop-status", "loop-cancel", "loop-list", "loop-history"]),
+    ("TEAMS",    ["create-team", "team-dispatch"]),
+    ("DAEMON",   ["daemon"]),
+    ("OTHER",    ["cost", "set-model", "memory"]),
+    ("ADVANCED", [
+        "history", "loop-approve", "loop-reject",
+        "permissions", "approve", "deny",
+        "list-teams", "delete-team", "team-status",
+        "setup-bot", "setup-cron", "remove-cron", "uninstall",
+        "on-complete", "watcher",
+    ]),
+]
+
+
+class _VersionPrint(argparse.Action):
+    """Version action that prints multi-line text verbatim (bypasses HelpFormatter wrapping)."""
+
+    def __init__(self, option_strings, dest=argparse.SUPPRESS, default=argparse.SUPPRESS,
+                 version: str = "", help: str = "show program's version number and exit") -> None:
+        super().__init__(option_strings=option_strings, dest=dest, default=default, nargs=0, help=help)
+        self.version = version
+
+    def __call__(self, parser, namespace, values, option_string=None) -> None:  # type: ignore[override]
+        print(self.version)
+        parser.exit()
+
+
+class _GroupedParser(argparse.ArgumentParser):
+    """ArgumentParser that groups subcommands by category in --help output."""
+
+    def __init__(self, *args, command_groups: list[tuple[str, list[str]]] | None = None, **kwargs) -> None:
+        self._command_groups = command_groups or []
+        super().__init__(*args, **kwargs)
+
+    def format_help(self) -> str:
+        """Format help with subcommands grouped by category."""
+        formatter = self._get_formatter()
+        formatter.add_usage(self.usage, self._actions, self._mutually_exclusive_groups)
+        if self.description:
+            formatter.add_text(self.description)
+
+        # Build map: command name → pseudo-action (carries help text + metavar)
+        choices_map: dict[str, argparse.Action] = {}
+        for action in self._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for pseudo in action._choices_actions:
+                    choices_map[pseudo.dest] = pseudo
+                break
+
+        # Emit grouped command sections
+        if choices_map and self._command_groups:
+            for group_name, cmd_names in self._command_groups:
+                group_actions = [choices_map[c] for c in cmd_names if c in choices_map]
+                if group_actions:
+                    formatter.start_section(group_name)
+                    formatter.add_arguments(group_actions)
+                    formatter.end_section()
+        else:
+            # Fallback: let argparse render the default positional/subparser section
+            for ag in self._action_groups:
+                if ag.title == "positional arguments":
+                    formatter.start_section(ag.title)
+                    formatter.add_arguments(ag._group_actions)
+                    formatter.end_section()
+
+        # Always emit options section (--help, --version)
+        for ag in self._action_groups:
+            if "option" in (ag.title or "").lower():
+                formatter.start_section(ag.title)
+                formatter.add_arguments(ag._group_actions)
+                formatter.end_section()
+
+        if self.epilog:
+            formatter.add_text(self.epilog)
+
+        return formatter.format_help()
+
 
 # ── Config helpers ────────────────────────────────────────────────────────────
 
@@ -56,9 +139,19 @@ def save_config(config: dict) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     from . import __version__
-    parser = argparse.ArgumentParser(prog="bridge-cli", description="Claude Bridge CLI")
-    parser.add_argument("--version", action="version",
-        version=f"claude-bridge {__version__}\nSee CHANGELOG.md for what's new.")
+    parser = _GroupedParser(
+        prog="bridge-cli",
+        description="Claude Bridge — Multi-agent orchestration for Claude Code",
+        formatter_class=lambda prog: argparse.HelpFormatter(prog, max_help_position=26, width=84),
+        command_groups=_COMMAND_GROUPS,
+        epilog="Run 'bridge-cli <command> --help' for detailed usage of any command.",
+    )
+    parser.add_argument("--version", action=_VersionPrint,
+        version=(
+            f"claude-bridge v{__version__}\n"
+            "Multi-agent orchestration for Claude Code\n"
+            "https://github.com/hieutrtr/claude-bridge"
+        ))
     sub = parser.add_subparsers(dest="command", required=True)
 
     # create-agent

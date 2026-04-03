@@ -1,8 +1,10 @@
 # Claude Bridge
 
-**Claude Bridge biến Claude Code thành multi-agent platform điều khiển từ Telegram.**
+🇬🇧 English: [README_en.md](README_en.md)
 
-> Use Claude Code to its fullest — dispatch agents, automate workflows, loop until done.
+**Biến Claude Code thành đội ngũ AI làm việc 24/7 — điều khiển từ Telegram, không cần mở terminal.**
+
+> Tạo nhiều agent, phân công dự án, dispatch task, theo dõi tiến độ — tất cả từ điện thoại.
 
 [![Version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/hieutrtr/claude-bridge/releases)
 [![Tests](https://img.shields.io/badge/tests-405%2B%20passing-brightgreen)](tests/)
@@ -10,121 +12,121 @@
 
 ---
 
-## Why Claude Bridge?
+## Tại sao cần Claude Bridge?
 
-Claude Code is powerful — but locked to one session on your laptop. Claude Bridge breaks that wall: create multiple agents, each owning a project, and orchestrate all of them from your phone. Dispatch tasks, watch them run, approve results, and chain loops — without touching your terminal.
+Claude Code rất mạnh — nhưng bị giam trong một session trên laptop. Claude Bridge phá vỡ giới hạn đó: tạo nhiều agent, mỗi agent phụ trách một dự án, điều phối tất cả từ điện thoại. Dispatch task, theo dõi chạy, duyệt kết quả, chạy vòng lặp tự động — không cần chạm vào terminal.
 
 ---
 
-## Key Features
+## Tính năng nổi bật
 
-| | Feature | Description |
+| | Tính năng | Mô tả |
 |---|---------|-------------|
-| 🤖 | **Multi-Agent Dispatch** | Tạo và điều khiển nhiều Claude Code agents từ Telegram |
-| 🔄 | **Goal Loop** *(NEW v0.3.0)* | Tự động loop tasks đến khi đạt mục tiêu — command, file, LLM judge, hoặc manual approve |
-| 📱 | **Telegram Control** | Dispatch, monitor, approve từ điện thoại — bất kỳ lúc nào, bất kỳ đâu |
-| 🏗️ | **Worktree Isolation** | Mỗi task chạy trong git worktree riêng, không conflict |
-| 🔌 | **MCP Native** | Tích hợp Claude Code qua Model Context Protocol — push notifications, không polling |
-| 🛡️ | **Security** | Bot token protection, user allowlist, action confirmation trước khi chạy |
-| 🐳 | **Daemon Mode** | Chạy như background service với systemd/launchd |
-| 📊 | **Cost Tracking** | Theo dõi chi phí mỗi task và mỗi loop iteration |
+| 🤖 | **Điều phối đa agent** | Tạo và quản lý nhiều Claude Code agents từ Telegram |
+| 🔄 | **Goal Loop** *(MỚI v0.3.0)* | Tự động lặp task đến khi đạt mục tiêu — command, file, LLM judge, hoặc duyệt thủ công |
+| 📱 | **Telegram Control** | Dispatch, theo dõi, phê duyệt từ điện thoại — bất kỳ lúc nào, bất kỳ đâu |
+| 🏗️ | **Worktree Isolation** | Mỗi task chạy trong git worktree riêng biệt, không xung đột |
+| 🔌 | **MCP Native** | Tích hợp Claude Code qua Model Context Protocol — push thông báo, không polling |
+| 🛡️ | **Bảo mật** | Bảo vệ bằng bot token, danh sách trắng người dùng, xác nhận trước khi chạy |
+| 🐳 | **Daemon Mode** | Chạy như dịch vụ nền với systemd/launchd |
+| 📊 | **Theo dõi chi phí** | Thống kê chi phí từng task và từng vòng lặp |
 
 ---
 
-## Quick Demo
+## Demo nhanh
 
-**Dispatch a task to an agent:**
+**Dispatch task cho agent:**
 ```
-/create backend ~/projects/my-api "API development"
-dispatch backend add pagination to /users endpoint
-# → Agent runs in isolated worktree → Telegram notifies when done ✓
-```
-
-**Loop until tests pass (Goal Loop):**
-```
-loop backend fix all failing tests until pytest passes max 5
-# → Dispatches → evaluates → retries → notifies with cost summary
+/create backend ~/projects/my-api "Phát triển API"
+dispatch backend thêm phân trang vào endpoint /users
+# → Agent chạy trong worktree riêng → Telegram thông báo khi xong ✓
 ```
 
-**Multi-agent team:**
+**Vòng lặp đến khi test pass (Goal Loop):**
+```
+loop backend sửa toàn bộ test thất bại cho đến khi pytest pass max 5
+# → Dispatch → đánh giá → thử lại → thông báo kèm tóm tắt chi phí
+```
+
+**Đội nhóm đa agent:**
 ```
 /create-team fullstack --lead backend --members frontend
-/team-dispatch fullstack "build user profile page with API and UI"
-# → backend + frontend agents coordinate, you see each result on Telegram
+/team-dispatch fullstack "xây dựng trang hồ sơ người dùng với API và UI"
+# → agent backend + frontend phối hợp, bạn xem từng kết quả trên Telegram
 ```
 
 ---
 
-## How It Works
+## Cơ chế hoạt động
 
 ```
-You (Telegram)
+Bạn (Telegram)
   │
   ▼
-Bridge Channel Server (TypeScript)     Polls Telegram via grammy
-  │                                    Pushes messages into Claude session
-  │ mcp.notification (push)            Retries if not acknowledged in 30s
+Channel Server (TypeScript)        Polls Telegram qua grammy
+  │                                Push message vào Claude session
+  │ mcp.notification (push)        Retry nếu chưa ack trong 30s
   ▼
-Claude Code session (Bridge Bot)       Messages arrive as <channel> tags
-  │                                    CLAUDE.md for intent mapping
-  │ bridge_dispatch(agent, prompt)     reply(chat_id, text) sends back
+Claude Code session (Bridge Bot)   Message đến dưới dạng thẻ <channel>
+  │                                CLAUDE.md xử lý intent
+  │ bridge_dispatch(agent, prompt) reply(chat_id, text) gửi phản hồi
   ▼
-claude --agent --worktree -p "task"    Each task = isolated Claude Code agent
+claude --agent --worktree -p "task" Mỗi task = Claude Code agent riêng biệt
   │
   ▼
-Stop hook → on_complete.py             Updates SQLite, queues notification
-                                       Channel server delivers to Telegram
+Stop hook → on_complete.py         Cập nhật SQLite, xếp hàng thông báo
+                                   Channel server giao đến Telegram
 ```
 
-## Quick Start
+## Bắt đầu nhanh
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hieutrtr/claude-bridge/main/install.sh | sh
 ```
 
-This single command: checks prerequisites, installs Bun (if needed), clones the repo, builds the channel server, and installs `bridge-cli`. Then run the setup wizard:
+Một lệnh duy nhất: kiểm tra prerequisites, cài Bun (nếu cần), clone repo, build channel server, và cài `bridge-cli`. Sau đó chạy wizard thiết lập:
 
 ```bash
 bridge-cli setup
 ```
 
-The wizard asks for your Telegram bot token, creates the bridge-bot project, deploys the channel server, and installs the watcher cron. Done in under 2 minutes.
+Wizard sẽ hỏi bot token Telegram, tạo project bridge-bot, deploy channel server, và cài watcher cron. Hoàn tất trong dưới 2 phút.
 
-> **Manual install** (if you prefer step-by-step): see [Installation](#installation) below.
+> **Cài đặt thủ công** (nếu muốn từng bước): xem [Hướng dẫn cài đặt](#hướng-dẫn-cài-đặt) bên dưới.
 
-## Prerequisites
+## Yêu cầu hệ thống
 
-| What | Why |
+| Thứ | Để làm gì |
 |------|-----|
-| Python 3.11+ | Bridge core |
-| [Bun](https://bun.sh) | Channel server runtime |
-| [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) | `claude --version` to verify |
-| Telegram account | You send commands from your phone |
+| Python 3.11+ | Core của Bridge |
+| [Bun](https://bun.sh) | Runtime channel server |
+| [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) | Chạy `claude --version` để kiểm tra |
+| Tài khoản Telegram | Bạn gửi lệnh từ điện thoại |
 
-## Installation
+## Hướng dẫn cài đặt
 
-### Step 1: Clone and install
+### Bước 1: Clone và cài đặt
 
 ```bash
 git clone https://github.com/hieutrtr/claude-bridge.git ~/projects/claude-bridge
 cd ~/projects/claude-bridge
 
-# Option A: pipx (recommended — isolated, clean)
+# Lựa chọn A: pipx (khuyến nghị — sạch sẽ, cô lập)
 brew install pipx
 pipx install -e .
 
-# Option B: pip with --break-system-packages (Homebrew Python)
+# Lựa chọn B: pip với --break-system-packages (Homebrew Python)
 pip3 install -e . --break-system-packages
 
-# Option C: venv
+# Lựa chọn C: venv
 python3 -m venv ~/.claude-bridge/venv
 ~/.claude-bridge/venv/bin/pip install -e .
-# Then use: ~/.claude-bridge/venv/bin/bridge-cli (or add to PATH)
+# Sau đó dùng: ~/.claude-bridge/venv/bin/bridge-cli (hoặc thêm vào PATH)
 ```
 
-This gives you the `bridge-cli` command.
+Lệnh `bridge-cli` sẽ có trong PATH sau bước này.
 
-### Step 2: Install Bun and build
+### Bước 2: Cài Bun và build
 
 ```bash
 curl -fsSL https://bun.sh/install | bash
@@ -132,405 +134,404 @@ exec $SHELL
 bun run build
 ```
 
-This bundles `channel/server.ts` into a single JS file included in the package.
+Lệnh này đóng gói `channel/server.ts` thành một file JS duy nhất.
 
-### Step 3: Create a Telegram bot
+### Bước 3: Tạo Telegram bot
 
-1. Open Telegram, search for [@BotFather](https://t.me/BotFather)
-2. Send `/newbot`, follow the prompts
-3. Copy the bot token
+1. Mở Telegram, tìm [@BotFather](https://t.me/BotFather)
+2. Gửi `/newbot`, làm theo hướng dẫn
+3. Sao chép bot token
 
-### Step 4: Run the setup wizard
+### Bước 4: Chạy wizard thiết lập
 
 ```bash
 bridge-cli setup
 ```
 
-The wizard:
-1. Asks for your bot token → saves to `~/.claude-bridge/config.json`
-2. Asks for bridge-bot directory → creates `CLAUDE.md` + `.mcp.json`
-3. Deploys the channel server to `~/.claude-bridge/channel/dist/`
-4. Installs the watcher cron (runs every minute)
-5. Prints the startup command
+Wizard sẽ:
+1. Hỏi bot token → lưu vào `~/.claude-bridge/config.json`
+2. Hỏi thư mục bridge-bot → tạo `CLAUDE.md` + `.mcp.json`
+3. Deploy channel server vào `~/.claude-bridge/channel/dist/`
+4. Cài watcher cron (chạy mỗi phút)
+5. In ra lệnh khởi động
 
-Or non-interactive:
+Hoặc không cần tương tác:
 ```bash
 bridge-cli setup --token "<your-token>" --bot-dir ~/projects/bridge-bot --no-prompt
 ```
 
-### Step 5: Start the Bridge Bot
+### Bước 5: Khởi động Bridge Bot
 
 ```bash
 cd ~/projects/bridge-bot
 claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions
 ```
 
-### Step 6: Pair your Telegram account
+### Bước 6: Ghép đôi tài khoản Telegram
 
-Pairing links your Telegram user ID to the Bridge Bot so only you can control it.
+Bước này liên kết Telegram user ID của bạn với Bridge Bot để chỉ bạn mới điều khiển được.
 
-**What happens:**
-1. You DM your bot on Telegram (send any message — "hello" is fine)
-2. The channel server receives the message and shows a **6-digit pairing code** inside the Claude Code session
-3. You enter the pair command **inside that Claude Code session** (not a separate terminal)
-4. Bridge restricts access to your Telegram account only
+**Quy trình:**
+1. Nhắn tin cho bot trên Telegram (bất kỳ tin gì — "hello" là ổn)
+2. Channel server nhận tin và hiện **mã 6 chữ số** trong session Claude Code
+3. Bạn nhập lệnh pair **ngay trong session Claude Code đó** (không phải terminal khác)
+4. Bridge giới hạn truy cập chỉ với tài khoản Telegram của bạn
 
-**Flow diagram:**
+**Sơ đồ luồng:**
 ```
-Your phone (Telegram)
+Điện thoại (Telegram)
   │  DM: "hello"
   ▼
-Channel Server (running in Claude Code session)
-  │  prints: "Pairing request from @yourhandle — code: 482931"
+Channel Server (đang chạy trong Claude Code session)
+  │  in ra: "Pairing request from @yourhandle — code: 482931"
   ▼
-You type in the Claude Code session:
+Bạn gõ trong Claude Code session:
   /telegram:access pair 482931
   /telegram:access policy allowlist
   │
   ▼
-Bridge responds to your Telegram: "✅ Paired. Send /help to get started."
+Bridge phản hồi trên Telegram: "✅ Đã ghép đôi. Gửi /help để bắt đầu."
 ```
 
-**Where to run the commands:**  
-The `/telegram:access` commands are typed **directly in the Claude Code interactive session** — the same terminal window where you ran:
+**Nơi chạy lệnh:**
+Các lệnh `/telegram:access` được gõ **trực tiếp trong session Claude Code tương tác** — cùng cửa sổ terminal nơi bạn đã chạy:
 ```bash
 claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions
 ```
-This is **not** `bridge-cli`, and **not** a separate terminal. It is the Claude session itself acting as the bot.
+Đây **không phải** `bridge-cli`, và **không phải** terminal khác. Chính Claude session đang đóng vai bot.
 
-**Step-by-step:**
+**Các bước chi tiết:**
 
-1. Keep the Claude Code session from Step 5 open
-2. Open Telegram and send any message to your bot (e.g. "hello")
-3. Watch the Claude Code session — within a few seconds you'll see a pairing prompt with a 6-digit code
-4. In that same Claude session, type:
+1. Giữ nguyên Claude Code session từ Bước 5
+2. Mở Telegram và nhắn tin cho bot (vd: "hello")
+3. Theo dõi Claude Code session — sau vài giây sẽ thấy mã ghép đôi 6 chữ số
+4. Trong session đó, gõ:
    ```
-   /telegram:access pair <the-6-digit-code>
+   /telegram:access pair <mã-6-chữ-số>
    ```
-5. Then restrict access to your account only:
+5. Sau đó giới hạn truy cập:
    ```
    /telegram:access policy allowlist
    ```
-6. Telegram will confirm: "✅ Paired and access restricted."
+6. Telegram xác nhận: "✅ Đã ghép đôi và hạn chế truy cập."
 
-**Troubleshooting:**
+**Xử lý sự cố:**
 
-| Problem | Likely cause | Fix |
+| Vấn đề | Nguyên nhân có thể | Cách khắc phục |
 |---------|-------------|-----|
-| Bot doesn't reply to your DM | Token wrong or channel server not running | `bridge-cli doctor` — check token and channel server status |
-| No pairing prompt appears in Claude session | Channel server didn't start | Look for errors in the Claude session output; re-run Step 5 |
-| "Invalid code" error | Code expired (30s timeout) | Send another Telegram message to get a fresh code |
-| "Permission denied" after pairing | Policy not set to allowlist | Run `/telegram:access policy allowlist` again |
-| Need to re-pair (new phone/account) | Old pairing still active | In Claude session: `/telegram:access reset` then pair again |
+| Bot không trả lời DM | Token sai hoặc channel server chưa chạy | `bridge-cli doctor` — kiểm tra token và trạng thái server |
+| Không thấy mã pair trong session | Channel server chưa khởi động | Xem lỗi trong output Claude session; chạy lại Bước 5 |
+| Lỗi "Invalid code" | Mã hết hạn (timeout 30s) | Nhắn thêm tin trên Telegram để lấy mã mới |
+| "Permission denied" sau khi pair | Chưa đặt policy allowlist | Chạy `/telegram:access policy allowlist` lại |
+| Cần ghép đôi lại (điện thoại/tài khoản mới) | Pair cũ còn hiệu lực | Trong Claude session: `/telegram:access reset` rồi pair lại |
 
-### Step 7: Verify
+### Bước 7: Kiểm tra
 
 ```bash
 bridge-cli doctor
 ```
 
-All checks should pass. Send `/help` to your bot on Telegram.
+Tất cả check phải pass. Gửi `/help` cho bot trên Telegram.
 
-## Usage
+## Cách dùng
 
-### Create an agent
+### Tạo agent
 
-From Telegram:
+Từ Telegram:
 ```
-/create backend ~/projects/my-api "API development"
-```
-
-Or natural language:
-```
-set up an agent called backend for ~/projects/my-api, it does API development
+/create backend ~/projects/my-api "Phát triển API"
 ```
 
-### Dispatch a task
-
+Hoặc ngôn ngữ tự nhiên:
 ```
-dispatch backend add pagination to /users endpoint
-```
-
-The agent works in an isolated git worktree. When done, you get a Telegram notification.
-
-### Check status
-
-```
-/status              — all running tasks
-/agents              — list all agents
-/history backend     — past tasks with cost
-/kill backend        — stop a running task
+tạo agent tên backend cho ~/projects/my-api, phụ trách phát triển API
 ```
 
-### Agent teams
+### Dispatch task
 
 ```
-/create backend ~/projects/api "API development"
+dispatch backend thêm phân trang vào endpoint /users
+```
+
+Agent làm việc trong git worktree riêng biệt. Khi xong, bạn nhận thông báo Telegram.
+
+### Kiểm tra trạng thái
+
+```
+/status              — tất cả task đang chạy
+/agents              — danh sách tất cả agents
+/history backend     — lịch sử task kèm chi phí
+/kill backend        — dừng task đang chạy
+```
+
+### Đội nhóm agents
+
+```
+/create backend ~/projects/api "Phát triển API"
 /create frontend ~/projects/web "React UI"
 /create-team fullstack --lead backend --members frontend
-/team-dispatch fullstack "build user profile page with API and UI"
+/team-dispatch fullstack "xây dựng trang hồ sơ người dùng với API và UI"
 ```
 
 ### Goal Loop
 
-Goal Loop dispatches tasks repeatedly until a done condition is met. Perfect for
-fix cycles, code generation, and anything that needs multiple attempts.
+Goal Loop dispatch task liên tục đến khi điều kiện hoàn thành được đáp ứng. Lý tưởng cho chu kỳ sửa lỗi, sinh code, và những việc cần nhiều lần thử.
 
-#### Quick start
+#### Bắt đầu nhanh
 
 ```bash
-# Fix tests — loop until pytest passes (max 5 attempts)
-bridge-cli loop backend "Fix all failing tests" \
+# Sửa test — lặp đến khi pytest pass (tối đa 5 lần)
+bridge-cli loop backend "Sửa toàn bộ test thất bại" \
     --done-when "command:pytest tests/" \
     --max 5
 
-# Generate report — loop until file exists
-bridge-cli loop vn-trader "Generate morning market brief" \
+# Tạo báo cáo — lặp đến khi file tồn tại
+bridge-cli loop vn-trader "Tạo bản tin thị trường buổi sáng" \
     --done-when "file_exists:output/morning-brief.md" \
     --max 3
 
-# Refactor — ask Claude to judge when code is ready
-bridge-cli loop backend "Refactor auth module to be production-ready" \
-    --done-when "llm_judge:Code has full test coverage, error handling, and docs" \
+# Tái cấu trúc — nhờ Claude đánh giá khi code sẵn sàng
+bridge-cli loop backend "Tái cấu trúc module auth cho production" \
+    --done-when "llm_judge:Code có test đầy đủ, xử lý lỗi và docs" \
     --max 8 --type bridge
 
-# Human-in-the-loop — pause for approval between iterations
-bridge-cli loop backend "Write API spec" \
-    --done-when "manual:check the spec before continuing" \
+# Human-in-the-loop — dừng chờ duyệt giữa các vòng lặp
+bridge-cli loop backend "Viết API spec" \
+    --done-when "manual:kiểm tra spec trước khi tiếp tục" \
     --max 5
 ```
 
-#### Done conditions
+#### Điều kiện hoàn thành
 
-| Format | Description | Example |
+| Định dạng | Mô tả | Ví dụ |
 |--------|-------------|---------|
-| `command:CMD` | Run CMD, done when exit code 0 | `command:pytest tests/` |
-| `file_exists:PATH` | Done when file exists | `file_exists:output/report.md` |
-| `file_contains:PATH:TEXT` | Done when file contains text | `file_contains:result.txt:SUCCESS` |
-| `llm_judge:RUBRIC` | Claude evaluates against rubric | `llm_judge:All tests pass and code is documented` |
-| `manual[:MSG]` | Pause for human approval each iteration | `manual:review before continuing` |
+| `command:CMD` | Chạy CMD, hoàn thành khi exit code 0 | `command:pytest tests/` |
+| `file_exists:PATH` | Hoàn thành khi file tồn tại | `file_exists:output/report.md` |
+| `file_contains:PATH:TEXT` | Hoàn thành khi file chứa text | `file_contains:result.txt:SUCCESS` |
+| `llm_judge:RUBRIC` | Claude đánh giá theo tiêu chí | `llm_judge:Tất cả test pass và code có docs` |
+| `manual[:MSG]` | Dừng chờ người duyệt sau mỗi vòng | `manual:kiểm tra trước khi tiếp tục` |
 
-#### Loop types
+#### Loại vòng lặp
 
-Bridge automatically selects the best loop type:
+Bridge tự động chọn loại vòng lặp phù hợp:
 
-- **Agent loop** — Bridge dispatches a single task, the agent retries internally.
-  Fast, no overhead. Used for `command`/`file_exists`/`file_contains` conditions
-  with `--max <= 5`.
-- **Bridge loop** — Bridge dispatches one task per iteration, evaluates, and
-  sends feedback into the next iteration. Observable, cost-tracked, notification-
-  supported. Always used for `manual`/`llm_judge` conditions or `--max > 5`.
+- **Agent loop** — Bridge dispatch một task duy nhất, agent tự retry bên trong.
+  Nhanh, không overhead. Dùng cho điều kiện `command`/`file_exists`/`file_contains`
+  với `--max <= 5`.
+- **Bridge loop** — Bridge dispatch một task mỗi vòng, đánh giá, và đưa phản hồi
+  vào vòng tiếp theo. Quan sát được, theo dõi chi phí, có thông báo.
+  Luôn dùng cho điều kiện `manual`/`llm_judge` hoặc `--max > 5`.
 
-Override with `--type bridge|agent|auto` (default: `bridge`).
+Ghi đè bằng `--type bridge|agent|auto` (mặc định: `bridge`).
 
-#### From Telegram
+#### Từ Telegram
 
-Natural language:
+Ngôn ngữ tự nhiên:
 ```
-loop backend fix tests until pytest passes
-loop vn-trader generate brief until file output/brief.md exists max 5
+loop backend sửa test cho đến khi pytest pass
+loop vn-trader tạo brief đến khi file output/brief.md tồn tại max 5
 stop loop 42
 loop status
 approve
-reject: auth tests are still failing
+reject: test auth vẫn đang fail
 ```
 
-#### Loop dashboard
+#### Dashboard loop
 
 ```bash
-bridge-cli loop-list             # all recent loops
-bridge-cli loop-list --active    # only running loops
-bridge-cli loop-list backend     # filtered by agent
-bridge-cli loop-history 42       # full iteration history for loop #42
+bridge-cli loop-list             # tất cả loop gần đây
+bridge-cli loop-list --active    # chỉ loop đang chạy
+bridge-cli loop-list backend     # lọc theo agent
+bridge-cli loop-history 42       # toàn bộ lịch sử vòng lặp #42
 bridge-cli loop-status --loop-id 42
 ```
 
-#### Loop management
+#### Quản lý loop
 
 ```bash
-bridge-cli loop-cancel 42        # cancel running loop
-bridge-cli loop-approve 42       # approve manual condition loop
-bridge-cli loop-reject 42 --feedback "tests still failing in module X"
+bridge-cli loop-cancel 42        # huỷ loop đang chạy
+bridge-cli loop-approve 42       # duyệt loop với điều kiện manual
+bridge-cli loop-reject 42 --feedback "test vẫn fail ở module X"
 ```
 
-## Restarting
+## Khởi động lại
 
 ```bash
 cd ~/projects/bridge-bot
 claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions
 ```
 
-## All Commands
+## Toàn bộ lệnh
 
-### Telegram Commands
+### Lệnh Telegram
 
-| Command | Description |
+| Lệnh | Mô tả |
 |---------|-------------|
-| `/create <name> <path> "<purpose>"` | Register a new agent |
-| `/delete <name>` | Remove an agent |
-| `/agents` | List all agents |
-| `/dispatch <agent> "<task>"` | Send a task (queues if busy) |
-| `/status [agent]` | Show running tasks |
-| `/kill <agent>` | Stop a running task |
-| `/history <agent>` | Task history with cost |
-| `/queue [agent]` | Show queued tasks |
-| `/cancel <task_id>` | Cancel a queued task |
-| `/set-model <agent> <model>` | Change model (sonnet/opus/haiku) |
-| `/cost [agent]` | Cost summary |
-| `/create-team <name> --lead <a> --members <b,c>` | Create team |
-| `/team-dispatch <team> "<task>"` | Dispatch to team |
-| `/team-status <team>` | Team progress |
+| `/create <name> <path> "<purpose>"` | Đăng ký agent mới |
+| `/delete <name>` | Xoá agent |
+| `/agents` | Liệt kê tất cả agents |
+| `/dispatch <agent> "<task>"` | Gửi task (xếp hàng nếu bận) |
+| `/status [agent]` | Hiện task đang chạy |
+| `/kill <agent>` | Dừng task đang chạy |
+| `/history <agent>` | Lịch sử task kèm chi phí |
+| `/queue [agent]` | Xem hàng đợi task |
+| `/cancel <task_id>` | Huỷ task đang xếp hàng |
+| `/set-model <agent> <model>` | Đổi model (sonnet/opus/haiku) |
+| `/cost [agent]` | Tóm tắt chi phí |
+| `/create-team <name> --lead <a> --members <b,c>` | Tạo đội nhóm |
+| `/team-dispatch <team> "<task>"` | Dispatch đến đội nhóm |
+| `/team-status <team>` | Tiến độ đội nhóm |
 
-### CLI Commands
+### Lệnh CLI
 
-| Command | Description |
+| Lệnh | Mô tả |
 |---------|-------------|
-| `bridge-cli setup` | Interactive setup wizard |
-| `bridge-cli doctor` | Check installation health |
-| `bridge-cli doctor --fix` | Auto-repair issues |
-| `bridge-cli uninstall` | Remove data, config, cron |
-| `bridge-cli setup-cron` | Install watcher cron |
-| `bridge-cli remove-cron` | Remove watcher cron |
-| `bridge-cli --version` | Print version |
+| `bridge-cli setup` | Wizard thiết lập tương tác |
+| `bridge-cli doctor` | Kiểm tra sức khoẻ cài đặt |
+| `bridge-cli doctor --fix` | Tự động sửa các vấn đề |
+| `bridge-cli uninstall` | Xoá data, config, cron |
+| `bridge-cli setup-cron` | Cài watcher cron |
+| `bridge-cli remove-cron` | Xoá watcher cron |
+| `bridge-cli --version` | In version |
 
-**Loop commands:**
+**Lệnh Loop:**
 
-| Command | Description |
+| Lệnh | Mô tả |
 |---------|-------------|
-| `bridge-cli loop <agent> <goal> --done-when <cond>` | Start a goal loop |
-| `bridge-cli loop-list [agent] [--active] [--limit N]` | List all loops (dashboard) |
-| `bridge-cli loop-history <loop-id>` | Full iteration history for a loop |
-| `bridge-cli loop-status [agent] [--loop-id ID]` | Show loop status |
-| `bridge-cli loop-cancel <loop-id>` | Cancel a running loop |
-| `bridge-cli loop-approve <loop-id>` | Approve a manual condition loop |
-| `bridge-cli loop-reject <loop-id> [--feedback TEXT]` | Reject and continue loop |
+| `bridge-cli loop <agent> <goal> --done-when <cond>` | Bắt đầu goal loop |
+| `bridge-cli loop-list [agent] [--active] [--limit N]` | Liệt kê tất cả loops (dashboard) |
+| `bridge-cli loop-history <loop-id>` | Lịch sử đầy đủ vòng lặp |
+| `bridge-cli loop-status [agent] [--loop-id ID]` | Xem trạng thái loop |
+| `bridge-cli loop-cancel <loop-id>` | Huỷ loop đang chạy |
+| `bridge-cli loop-approve <loop-id>` | Duyệt loop điều kiện manual |
+| `bridge-cli loop-reject <loop-id> [--feedback TEXT]` | Từ chối và tiếp tục loop |
 
-## Architecture
+## Kiến trúc
 
-### End-to-End Flow
+### Luồng hoạt động đầu cuối
 
 ```mermaid
 sequenceDiagram
-    participant You as You (Telegram)
+    participant You as Bạn (Telegram)
     participant CS as Channel Server<br/>(TypeScript/Bun)
     participant Bot as Bridge Bot<br/>(Claude Code session)
     participant CLI as bridge-cli
     participant Agent as Claude Code Agent<br/>(isolated worktree)
     participant DB as SQLite<br/>(~/.claude-bridge/)
 
-    You->>CS: DM: "dispatch backend add auth"
+    You->>CS: DM: "dispatch backend thêm auth"
     CS->>Bot: MCP push notification
-    Bot->>CLI: bridge_dispatch("backend", "add auth")
-    CLI->>DB: create task #42 (pending)
-    CLI->>Agent: claude --agent --session-id backend--api -p "add auth"
-    DB-->>CLI: task running (PID 1234)
-    Note over Agent: Works in git worktree<br/>Reads/writes isolated copy
+    Bot->>CLI: bridge_dispatch("backend", "thêm auth")
+    CLI->>DB: tạo task #42 (pending)
+    CLI->>Agent: claude --agent --session-id backend--api -p "thêm auth"
+    DB-->>CLI: task đang chạy (PID 1234)
+    Note over Agent: Làm việc trong git worktree<br/>Đọc/ghi bản sao riêng biệt
     Agent->>CLI: Stop hook → on_complete.py
     CLI->>DB: task #42 → done, cost=$0.12
-    CLI->>CS: queue notification
-    CS->>You: "✓ Task #42 (backend) — done in 3m 14s"
+    CLI->>CS: xếp hàng thông báo
+    CS->>You: "✓ Task #42 (backend) — xong trong 3p 14s"
 ```
 
-### Component Map
+### Bản đồ thành phần
 
 ```
 ~/.claude-bridge/
-├── config.json        Bot token, settings
+├── config.json        Bot token, cài đặt
 ├── bridge.db          SQLite: agents, tasks, teams
-├── messages.db        SQLite: message queue
-├── channel/dist/      Deployed channel server
-├── watcher.log        Cron output
-└── workspaces/        Per-agent task results
+├── messages.db        SQLite: hàng đợi tin nhắn
+├── channel/dist/      Channel server đã deploy
+├── watcher.log        Output của cron
+└── workspaces/        Kết quả task theo agent
 
 ~/projects/bridge-bot/
-├── CLAUDE.md          Bridge Bot routing rules
-└── .mcp.json          Channel server config
+├── CLAUDE.md          Quy tắc routing của Bridge Bot
+└── .mcp.json          Cấu hình channel server
 
 ~/.claude/agents/
-└── bridge--*.md       Agent definitions
+└── bridge--*.md       Định nghĩa agents
 ```
 
-For detailed architecture documentation see [specs/MVP.md](specs/MVP.md).
+Xem tài liệu kiến trúc chi tiết tại [specs/MVP.md](specs/MVP.md).
 
-### Key Details
+### Chi tiết kỹ thuật
 
-| What | Detail |
+| Thứ | Chi tiết |
 |------|--------|
-| Channel server | TypeScript/Bun, push via `notifications/claude/channel` |
-| Message delivery | Push + 30s retry (5 retries max) |
-| Notification queue | Prevents stdio interleaving during tool calls |
-| Stop hook | In project's `.claude/settings.local.json` (not frontmatter) |
-| Session UUID | Unique per task: `uuid5(session_id + task_id)` |
-| Worktree | Each task in isolated `git worktree` |
-| Queue | Auto-queue when busy, auto-dequeue on completion |
+| Channel server | TypeScript/Bun, push qua `notifications/claude/channel` |
+| Giao nhận tin | Push + retry 30s (tối đa 5 lần) |
+| Hàng đợi thông báo | Ngăn stdio interleaving khi gọi tool |
+| Stop hook | Trong `.claude/settings.local.json` của project (không phải frontmatter) |
+| Session UUID | Unique mỗi task: `uuid5(session_id + task_id)` |
+| Worktree | Mỗi task trong `git worktree` riêng biệt |
+| Hàng đợi | Tự động xếp hàng khi bận, tự dequeue khi xong |
 
-## Run from Source (without pipx)
+## Chạy từ source (không cần pipx)
 
-If you don't want to install the package, run directly from the repo:
+Nếu không muốn cài package, chạy trực tiếp từ repo:
 
 ```bash
 git clone https://github.com/hieutrtr/claude-bridge.git ~/projects/claude-bridge
 cd ~/projects/claude-bridge
 
-# Install channel dependencies
+# Cài dependencies cho channel
 cd channel && bun install && cd ..
 
-# Run any CLI command with PYTHONPATH
+# Chạy bất kỳ lệnh CLI nào với PYTHONPATH
 PYTHONPATH=src python3 -m claude_bridge.cli setup
 PYTHONPATH=src python3 -m claude_bridge.cli list-agents
 PYTHONPATH=src python3 -m claude_bridge.cli dispatch backend "fix bug"
 
-# Or create an alias
+# Hoặc tạo alias
 alias bridge-cli="PYTHONPATH=$(pwd)/src python3 -m claude_bridge.cli"
 bridge-cli setup
 ```
 
-The `.mcp.json` generated by setup will point to `channel/server.ts` (source) instead of the bundled `server.js`.
+`.mcp.json` được tạo bởi setup sẽ trỏ tới `channel/server.ts` (source) thay vì bundle `server.js`.
 
-## Development
+## Phát triển
 
 ```bash
-# Install for development
-pip3 install -e . --break-system-packages   # or: pipx install -e .
+# Cài cho phát triển
+pip3 install -e . --break-system-packages   # hoặc: pipx install -e .
 
-# Python tests (405+ tests — including MCP tests)
+# Python tests (405+ test — bao gồm MCP tests)
 python3 -m pytest tests/ -v
 
-# TypeScript tests (43 tests)
+# TypeScript tests (43 test)
 cd channel && bun test
 
 # Build channel server bundle
 bun run build
 
-# Run any CLI command
+# Chạy bất kỳ lệnh CLI nào
 bridge-cli <command>
 ```
 
-## Troubleshooting
+## Xử lý sự cố
 
-### Quick diagnostics
+### Chẩn đoán nhanh
 
 ```bash
-bridge-cli doctor        # check all components
-bridge-cli doctor --fix  # auto-repair what can be fixed
+bridge-cli doctor        # kiểm tra tất cả thành phần
+bridge-cli doctor --fix  # tự sửa những gì có thể
 ```
 
-### Common problems
+### Các vấn đề thường gặp
 
-| Symptom | Likely cause | Fix |
+| Triệu chứng | Nguyên nhân có thể | Cách khắc phục |
 |---------|-------------|-----|
-| Bot doesn't respond to Telegram DMs | Token wrong or channel server not running | `bridge-cli doctor` — check token and server; kill zombie: `ps aux \| grep "bun.*server"` |
-| Stop hook not firing | Python path wrong (pipx install) | `bridge-cli doctor --fix` or re-run `bridge-cli setup` |
-| Task stuck as "running" | Stop hook never fired (crash/reboot) | Watcher cron auto-fixes within 1 minute; or run `bridge-cli watcher` manually |
-| Multiple bots conflict | Old bot session still polling same token | Kill old: `ps aux \| grep claude`, then `bridge start` |
-| Double notifications | Reporting bug (fixed in 0.2.0) | Upgrade: `pip install -U claude-agent-bridge` |
-| `bun run build` fails | Node/bun version mismatch | Check: `bun --version` (need ≥1.0); reinstall: `curl -fsSL https://bun.sh/install \| bash` |
-| `bridge start` fails silently | Config missing or bot_dir wrong | Check logs: `bridge logs`; re-run `bridge-cli setup` |
-| How to reset everything | Corrupted state or migration needed | `bridge-cli uninstall --force` then `bridge-cli setup` from scratch |
-| How to check if stop hook fired | Debug a missing completion notification | Check `~/.claude/logs/` or add `echo "hook fired"` to hook command |
-| Bot not responding after pairing | Policy not set to allowlist | In Claude session: `/telegram:access policy allowlist` |
-| Permission denied on `bridge-cli` | PATH issue with pipx/pip install | `pipx ensurepath` then restart shell; or use `~/.local/bin/bridge-cli` |
-| `bridge-cli` not found after install | pipx not in PATH | `export PATH="$HOME/.local/bin:$PATH"` — add to `~/.bashrc` or `~/.zshrc` |
-| `ModuleNotFoundError: mcp` | Old install missing dependency | `pip install -U "claude-agent-bridge[mcp]"` or `pip install mcp>=1.0` |
-| Agent tasks fail immediately | Claude CLI not in PATH | `which claude` — if missing, reinstall Claude Code; `bridge-cli doctor` shows exact error |
-| Worktree error: already exists | Previous task crashed mid-run | `git worktree prune` in the project directory |
+| Bot không phản hồi DM Telegram | Token sai hoặc channel server chưa chạy | `bridge-cli doctor` — kiểm tra token và server; diệt zombie: `ps aux \| grep "bun.*server"` |
+| Stop hook không kích hoạt | Python path sai (pipx install) | `bridge-cli doctor --fix` hoặc chạy lại `bridge-cli setup` |
+| Task bị kẹt ở trạng thái "running" | Stop hook không bao giờ chạy (crash/reboot) | Watcher cron tự sửa trong vòng 1 phút; hoặc chạy `bridge-cli watcher` thủ công |
+| Nhiều bot xung đột | Session bot cũ vẫn đang poll cùng token | Diệt cái cũ: `ps aux \| grep claude`, rồi `bridge start` |
+| Thông báo kép | Bug reporting (đã sửa ở 0.2.0) | Nâng cấp: `pip install -U claude-agent-bridge` |
+| `bun run build` thất bại | Phiên bản Node/bun không khớp | Kiểm tra: `bun --version` (cần ≥1.0); cài lại: `curl -fsSL https://bun.sh/install \| bash` |
+| `bridge start` thất bại im lặng | Config thiếu hoặc bot_dir sai | Xem logs: `bridge logs`; chạy lại `bridge-cli setup` |
+| Reset toàn bộ | State bị corrupt hoặc cần migration | `bridge-cli uninstall --force` rồi `bridge-cli setup` từ đầu |
+| Stop hook không kích hoạt | Debug thông báo hoàn thành bị mất | Kiểm tra `~/.claude/logs/` hoặc thêm `echo "hook fired"` vào hook command |
+| Bot không phản hồi sau pair | Policy chưa đặt thành allowlist | Trong Claude session: `/telegram:access policy allowlist` |
+| Permission denied trên `bridge-cli` | Vấn đề PATH với pipx/pip install | `pipx ensurepath` rồi restart shell; hoặc dùng `~/.local/bin/bridge-cli` |
+| `bridge-cli` không tìm thấy sau install | pipx không trong PATH | `export PATH="$HOME/.local/bin:$PATH"` — thêm vào `~/.bashrc` hoặc `~/.zshrc` |
+| `ModuleNotFoundError: mcp` | Bản cài cũ thiếu dependency | `pip install -U "claude-agent-bridge[mcp]"` hoặc `pip install mcp>=1.0` |
+| Agent task thất bại ngay lập tức | Claude CLI không trong PATH | `which claude` — nếu thiếu, cài lại Claude Code; `bridge-cli doctor` hiện lỗi chính xác |
+| Lỗi worktree: đã tồn tại | Task trước crash giữa chừng | `git worktree prune` trong thư mục project |
