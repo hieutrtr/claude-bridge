@@ -6,6 +6,95 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.3.0] — 2026-04-03
+
+### Added
+
+**Goal Loop — complete hybrid orchestration for autonomous agent loops**
+
+The Goal Loop feature lets Bridge automatically dispatch tasks in a loop until
+a done condition is met, with full observability, cost tracking, and Telegram
+integration.
+
+- **`bridge-cli loop <AGENT> <GOAL> --done-when <COND>`** — start a goal loop.
+  Done conditions: `command:CMD`, `file_exists:PATH`, `file_contains:PATH:PAT`,
+  `llm_judge:RUBRIC`, `manual:MSG`. Options: `--max N`, `--max-cost N.NN`,
+  `--type bridge|agent|auto`.
+
+- **`bridge-cli loop-list [AGENT] [--limit N] [--active]`** — list all active
+  and recent loops with status, progress, and cost.
+
+- **`bridge-cli loop-history <LOOP_ID>`** — show full iteration history with
+  result summaries, done check results, cost, and duration per iteration.
+
+- **`bridge-cli loop-status [--loop-id ID] [AGENT]`** — show current loop
+  status with recent iterations.
+
+- **`bridge-cli loop-cancel <LOOP_ID>`** — cancel a running loop (current task
+  completes but no further iterations are dispatched).
+
+- **`bridge-cli loop-approve <LOOP_ID>`** — approve a loop waiting for manual
+  done condition — marks it as done.
+
+- **`bridge-cli loop-reject <LOOP_ID> [--feedback TEXT]`** — reject a manual
+  approval and continue to the next iteration.
+
+- **Hybrid orchestrator** — `decide_loop_type(goal, done_when, user_preference,
+  max_iterations)` selects bridge vs agent loop automatically:
+  - `command`/`file_exists`/`file_contains` + `max_iterations <= 5` → agent loop
+    (agent retries internally, no Bridge overhead between attempts)
+  - `manual`/`llm_judge` or `max_iterations > 5` → bridge loop (observable,
+    cost-tracked, notification-supported)
+  - Explicit `--type bridge|agent` always overrides the heuristic.
+
+- **Telegram loop notifications** (`telegram_loop.py`):
+  - `format_loop_progress()` — batched iteration update messages
+  - `format_loop_done()` — completion/failure notifications with cost + duration
+  - `format_loop_approval_request()` — manual condition approval prompts
+  - `format_loop_started()` — loop start confirmations
+  - `parse_approval_reply()` — parse "approve" / "reject: feedback" / "/approve-loop 42"
+  - `parse_loop_command()` — NLP parser: "loop backend fix tests until pytest passes"
+
+- **MCP tools** for Bridge Bot:
+  - `bridge_loop_list` — list loops with status dashboard
+  - `bridge_loop_history` — full iteration history for a loop
+  - `bridge_loop_notify(loop_id, chat_id)` — send formatted Telegram notification
+    about current loop state
+  - `bridge_parse_loop_command(text)` — parse natural language loop commands
+    and approval replies from Telegram
+
+- **LLM judge done condition** (`llm_judge:RUBRIC`) — calls `claude --print`
+  to evaluate whether the goal is met against a rubric. Falls back gracefully
+  if claude CLI is unavailable.
+
+- **Manual done condition** (`manual:MSG`) — loop pauses after each iteration
+  and waits for `loop-approve` or `loop-reject` before continuing.
+
+- **Enhanced feedback generation** — parses test failures, stack traces from
+  iteration results and injects structured context into the next iteration prompt.
+
+- **Agent loop branching** — for simple conditions, Bridge injects internal loop
+  instructions into a single task prompt; the agent retries internally and
+  reports via `AGENT_LOOP_RESULT` JSON marker.
+
+- **Cost limit enforcement** (`--max-cost N.NN`) — stops loop when total cost
+  exceeds the limit; warns at 80% of limit.
+
+### Changed
+
+- **DB schema** — `loops` and `loop_iterations` tables added via additive migration
+  (`CREATE IF NOT EXISTS` + `ALTER TABLE` for new columns); v0.2 databases upgrade
+  automatically on first run without data loss.
+
+- **`on_complete.py`** — Stop hook now checks whether the completed task belongs to
+  a loop; if so, it delegates to the loop orchestrator (evaluate done condition,
+  dispatch next iteration or terminate) instead of the normal queue path.
+
+- **Version** — bumped from `0.2.0` to `0.3.0` across `pyproject.toml`,
+  `src/claude_bridge/__init__.py`, and `channel/package.json`.
+
+---
+
 ## [0.2.0] — 2026-04-03
 
 ### Added

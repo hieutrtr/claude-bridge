@@ -234,3 +234,350 @@ def tool_reply(msg_db: MessageDB, chat_id: str, text: str, reply_to_message_id: 
     """Queue a reply for delivery via Telegram."""
     mid = msg_db.create_outbound("telegram", chat_id, text, reply_to_message_id=reply_to_message_id, source="bot")
     return json.dumps({"status": "queued", "outbound_id": mid})
+
+
+# --- Loop tool implementations ---
+
+def tool_loop(
+    db: BridgeDB,
+    agent: str,
+    goal: str,
+    done_when: str,
+    max_iterations: int = 10,
+    loop_type: str = "bridge",
+    max_cost_usd: float | None = None,
+) -> str:
+    """Start a goal loop for an agent."""
+    from .loop_orchestrator import start_loop
+
+    agent_record = db.get_agent(agent)
+    if not agent_record:
+        return json.dumps({"error": f"Agent '{agent}' not found"})
+
+    try:
+        loop_id = start_loop(
+            db=db,
+            agent=agent,
+            project=agent_record["project_dir"],
+            goal=goal,
+            done_when=done_when,
+            max_iterations=max_iterations,
+            loop_type=loop_type,
+            max_cost_usd=max_cost_usd,
+        )
+    except (ValueError, RuntimeError) as e:
+        return json.dumps({"error": str(e)})
+
+    return json.dumps({
+        "loop_id": loop_id,
+        "agent": agent,
+        "goal": goal,
+        "done_when": done_when,
+        "max_iterations": max_iterations,
+        "loop_type": loop_type,
+        "max_cost_usd": max_cost_usd,
+        "status": "running",
+    })
+
+
+def tool_loop_status(
+    db: BridgeDB,
+    loop_id: str | None = None,
+    agent: str | None = None,
+) -> str:
+    """Get loop status."""
+    from .loop_orchestrator import get_loop_status
+
+    if loop_id:
+        loop = get_loop_status(db, loop_id)
+        if not loop:
+            return json.dumps({"error": f"Loop '{loop_id}' not found"})
+        loops = [loop]
+    else:
+        loops_raw = db.list_loops(agent=agent, limit=5)
+        if not loops_raw:
+            return json.dumps({"loops": []})
+        loops = []
+        for l in loops_raw[:1]:
+            full = get_loop_status(db, l["loop_id"])
+            if full:
+                loops.append(full)
+
+    # Serialize: iterations may contain non-JSON-native types
+    result = []
+    for loop in loops:
+        entry = dict(loop)
+        # Truncate long fields for readability
+        if "goal" in entry and len(entry["goal"]) > 200:
+            entry["goal"] = entry["goal"][:200] + "...[truncated]"
+        iterations = entry.get("iterations", [])
+        entry["iterations"] = [
+            {
+                "iteration_num": it["iteration_num"],
+                "status": it["status"],
+                "done_check_passed": bool(it.get("done_check_passed")),
+                "cost_usd": it.get("cost_usd", 0),
+                "result_summary": (it.get("result_summary") or "")[:200],
+            }
+            for it in iterations
+        ]
+        result.append(entry)
+
+    return json.dumps({"loops": result})
+
+
+def tool_loop_cancel(db: BridgeDB, loop_id: str) -> str:
+    """Cancel a running loop."""
+    from .loop_orchestrator import cancel_loop
+
+    cancelled = cancel_loop(db, loop_id)
+    if cancelled:
+        return json.dumps({"status": "cancelled", "loop_id": loop_id})
+
+    loop = db.get_loop(loop_id)
+    if not loop:
+        return json.dumps({"error": f"Loop '{loop_id}' not found"})
+    return json.dumps({
+        "error": f"Loop is not running (status: {loop['status']})",
+        "loop_id": loop_id,
+    })
+
+
+def tool_loop_approve(db: BridgeDB, loop_id: str) -> str:
+    """Approve a loop waiting for manual done condition — marks it as done."""
+    from .loop_orchestrator import approve_loop
+
+    approved = approve_loop(db, loop_id)
+    if approved:
+        return json.dumps({"status": "done", "loop_id": loop_id, "finish_reason": "manual_approved"})
+
+    loop = db.get_loop(loop_id)
+    if not loop:
+        return json.dumps({"error": f"Loop '{loop_id}' not found"})
+    if loop["status"] != "running":
+        return json.dumps({"error": f"Loop is not running (status: {loop['status']})", "loop_id": loop_id})
+    return json.dumps({"error": f"Loop '{loop_id}' is not waiting for approval", "loop_id": loop_id})
+
+
+def tool_loop_reject(db: BridgeDB, loop_id: str, feedback: str = "") -> str:
+    """Reject a loop approval — continue to next iteration with optional feedback."""
+    from .loop_orchestrator import reject_loop
+
+    rejected = reject_loop(db, loop_id, feedback=feedback)
+    if rejected:
+        return json.dumps({"status": "running", "loop_id": loop_id, "action": "next_iteration_dispatched"})
+
+    loop = db.get_loop(loop_id)
+    if not loop:
+        return json.dumps({"error": f"Loop '{loop_id}' not found"})
+    if loop["status"] != "running":
+        return json.dumps({"error": f"Loop is not running (status: {loop['status']})", "loop_id": loop_id})
+    return json.dumps({"error": f"Loop '{loop_id}' is not waiting for approval", "loop_id": loop_id})
+
+
+def tool_loop_list(
+    db: BridgeDB,
+    agent: str | None = None,
+    limit: int = 10,
+    active_only: bool = False,
+) -> str:
+    """List goal loops with their status and progress."""
+    from .loop_orchestrator import format_loop_list
+
+    status_filter = "running" if active_only else None
+    loops_raw = db.list_loops(agent=agent, limit=limit, status=status_filter)
+
+    formatted = format_loop_list(loops_raw)
+    result = []
+    for loop in loops_raw:
+        result.append({
+            "loop_id": loop.get("loop_id"),
+            "agent": loop.get("agent"),
+            "status": loop.get("status"),
+            "goal": (loop.get("goal") or "")[:100],
+            "current_iteration": loop.get("current_iteration", 0),
+            "max_iterations": loop.get("max_iterations"),
+            "total_cost_usd": loop.get("total_cost_usd", 0),
+            "started_at": loop.get("started_at"),
+        })
+    return json.dumps({"loops": result, "formatted": formatted})
+
+
+def tool_loop_history(db: BridgeDB, loop_id: str) -> str:
+    """Get full iteration history for a loop."""
+    from .loop_orchestrator import get_loop_status, format_loop_history
+
+    loop = get_loop_status(db, loop_id)
+    if not loop:
+        return json.dumps({"error": f"Loop '{loop_id}' not found"})
+
+    formatted = format_loop_history(loop)
+    iterations = [
+        {
+            "iteration_num": it.get("iteration_num"),
+            "status": it.get("status"),
+            "done_check_passed": bool(it.get("done_check_passed")),
+            "cost_usd": it.get("cost_usd", 0),
+            "duration_ms": it.get("duration_ms"),
+            "result_summary": (it.get("result_summary") or "")[:200],
+            "created_at": it.get("created_at"),
+            "finished_at": it.get("finished_at"),
+        }
+        for it in loop.get("iterations", [])
+    ]
+    return json.dumps({
+        "loop_id": loop_id,
+        "agent": loop.get("agent"),
+        "status": loop.get("status"),
+        "goal": loop.get("goal"),
+        "total_cost_usd": loop.get("total_cost_usd", 0),
+        "finish_reason": loop.get("finish_reason"),
+        "iterations": iterations,
+        "formatted": formatted,
+    })
+
+
+def tool_loop_notify(
+    db: BridgeDB,
+    msg_db,
+    loop_id: str,
+    chat_id: str,
+) -> str:
+    """Send a Telegram notification about the current loop status.
+
+    Formats the current loop state as a human-readable message and queues
+    it for delivery via the bridge reply tool.
+
+    Args:
+        db: BridgeDB instance.
+        msg_db: MessageDB instance for outbound messages.
+        loop_id: Loop to report on.
+        chat_id: Telegram chat_id to send to.
+    """
+    from .loop_orchestrator import get_loop_status
+    from .telegram_loop import (
+        format_loop_done,
+        format_loop_started,
+        format_loop_progress,
+        format_loop_approval_request,
+    )
+
+    loop = get_loop_status(db, loop_id)
+    if not loop:
+        return json.dumps({"error": f"Loop '{loop_id}' not found"})
+
+    status = loop.get("status", "unknown")
+    agent = loop.get("agent", "?")
+    goal = loop.get("goal", "")
+    current = loop.get("current_iteration", 0)
+    max_iter = loop.get("max_iterations", 10)
+    cost = loop.get("total_cost_usd") or 0.0
+    finish_reason = loop.get("finish_reason") or ""
+    pending_approval = bool(loop.get("pending_approval"))
+    done_when = loop.get("done_when", "")
+    iterations = loop.get("iterations", [])
+
+    # Get last iteration summary
+    last_summary = ""
+    if iterations:
+        last_it = iterations[-1]
+        last_summary = (last_it.get("result_summary") or "")[:300]
+
+    if pending_approval:
+        text = format_loop_approval_request(
+            loop_id=loop_id,
+            agent=agent,
+            goal=goal,
+            iteration_num=current,
+            result_summary=last_summary,
+        )
+    elif status in ("done", "failed", "cancelled", "max_reached"):
+        # Compute duration_ms from started_at and finished_at
+        duration_ms = None
+        started_at = loop.get("started_at")
+        finished_at = loop.get("finished_at")
+        if started_at and finished_at:
+            try:
+                from datetime import datetime as _dt
+                fmt = "%Y-%m-%dT%H:%M:%S.%f"
+                t_start = _dt.fromisoformat(started_at)
+                t_end = _dt.fromisoformat(finished_at)
+                duration_ms = int((t_end - t_start).total_seconds() * 1000)
+            except Exception:
+                pass
+
+        text = format_loop_done(
+            loop_id=loop_id,
+            agent=agent,
+            goal=goal,
+            iterations_completed=current,
+            total_cost_usd=cost,
+            duration_ms=duration_ms,
+            finish_reason=finish_reason,
+        )
+    elif status == "running" and current > 0:
+        last_done = False
+        if iterations:
+            last_done = bool(iterations[-1].get("done_check_passed"))
+        text = format_loop_progress(
+            loop_id=loop_id,
+            agent=agent,
+            goal=goal,
+            iteration_num=current,
+            max_iterations=max_iter,
+            result_summary=last_summary,
+            done=last_done,
+            cost_usd=cost,
+        )
+    else:
+        # Just started
+        loop_type = loop.get("loop_type", "bridge")
+        text = format_loop_started(
+            loop_id=loop_id,
+            agent=agent,
+            goal=goal,
+            done_when=done_when,
+            max_iterations=max_iter,
+            loop_type=loop_type,
+        )
+
+    # Queue outbound message
+    mid = msg_db.create_outbound("telegram", chat_id, text, source="loop")
+    return json.dumps({"status": "queued", "outbound_id": mid, "message": text})
+
+
+def tool_parse_loop_command(text: str) -> str:
+    """Parse a natural language loop command from Telegram.
+
+    Translates phrases like "loop backend fix tests until pytest passes"
+    into a structured LoopCommand for the bridge bot to execute.
+
+    Args:
+        text: Raw Telegram message text from user.
+
+    Returns:
+        JSON with parsed command fields.
+    """
+    from .telegram_loop import parse_loop_command, parse_approval_reply
+
+    # Check if it's an approval reply first
+    approval = parse_approval_reply(text)
+    if approval.action != "unknown":
+        return json.dumps({
+            "type": "approval",
+            "action": approval.action,
+            "feedback": approval.feedback,
+            "loop_id": approval.loop_id,
+        })
+
+    # Try loop command
+    cmd = parse_loop_command(text)
+    return json.dumps({
+        "type": "loop_command",
+        "command": cmd.command,
+        "agent": cmd.agent,
+        "goal": cmd.goal,
+        "done_when": cmd.done_when,
+        "loop_id": cmd.loop_id,
+        "max_iterations": cmd.max_iterations,
+    })

@@ -177,6 +177,50 @@ def build_parser() -> argparse.ArgumentParser:
     # remove-cron
     sub.add_parser("remove-cron", help="Remove watcher cron job")
 
+    # loop
+    p = sub.add_parser("loop", help="Start a goal loop for an agent")
+    p.add_argument("name", help="Agent name")
+    p.add_argument("goal", help="Goal description")
+    p.add_argument("--done-when", required=True,
+                   help="Done condition (e.g. 'command:pytest tests/' or 'file_exists:output.txt' "
+                        "or 'llm_judge:RUBRIC' or 'manual:MSG')")
+    p.add_argument("--max", type=int, default=10, dest="max_iterations",
+                   help="Maximum iterations (default: 10)")
+    p.add_argument("--max-failures", type=int, default=3, dest="max_consecutive_failures",
+                   help="Max consecutive failures before giving up (default: 3)")
+    p.add_argument("--type", default="bridge", dest="loop_type",
+                   choices=["bridge", "agent", "auto"], help="Loop type (default: bridge)")
+    p.add_argument("--max-cost", type=float, default=None, dest="max_cost_usd",
+                   help="Cost ceiling in USD (stop loop when exceeded)")
+
+    # loop-status
+    p = sub.add_parser("loop-status", help="Show goal loop status")
+    p.add_argument("--loop-id", default=None, help="Loop ID (optional, defaults to latest)")
+    p.add_argument("name", nargs="?", default=None, help="Agent name (optional, filters by agent)")
+
+    # loop-cancel
+    p = sub.add_parser("loop-cancel", help="Cancel a running goal loop")
+    p.add_argument("loop_id", help="Loop ID to cancel")
+
+    # loop-approve
+    p = sub.add_parser("loop-approve", help="Approve a loop waiting for manual done condition")
+    p.add_argument("loop_id", help="Loop ID to approve")
+
+    # loop-reject
+    p = sub.add_parser("loop-reject", help="Reject a loop approval — continue to next iteration")
+    p.add_argument("loop_id", help="Loop ID to reject")
+    p.add_argument("--feedback", default="", help="Optional feedback for the next iteration")
+
+    # loop-list
+    p = sub.add_parser("loop-list", help="List all active and recent goal loops")
+    p.add_argument("name", nargs="?", default=None, help="Agent name (optional, filters by agent)")
+    p.add_argument("--limit", type=int, default=10, help="Maximum number of loops to show (default: 10)")
+    p.add_argument("--active", action="store_true", help="Show only active (running) loops")
+
+    # loop-history
+    p = sub.add_parser("loop-history", help="Show full iteration history for a loop")
+    p.add_argument("loop_id", help="Loop ID to inspect")
+
     # on-complete (called by Stop hook)
     p = sub.add_parser("on-complete", help="Stop hook handler (called by Claude Code)")
     p.add_argument("--session-id", required=True, help="Session ID")
@@ -1681,6 +1725,198 @@ def _cmd_daemon(args) -> int:
     return 0
 
 
+def cmd_loop(db: BridgeDB, args):
+    """Start a goal loop for an agent."""
+    agent = db.get_agent(args.name)
+    if not agent:
+        print(f"Error: Agent '{args.name}' not found.", file=sys.stderr)
+        return 1
+
+    from .loop_orchestrator import start_loop
+    from .loop_evaluator import validate_done_condition
+
+    # Validate done_when before starting
+    valid, err = validate_done_condition(args.done_when)
+    if not valid:
+        print(f"Error: Invalid --done-when condition: {err}", file=sys.stderr)
+        return 1
+
+    max_cost_usd = getattr(args, "max_cost_usd", None)
+
+    try:
+        loop_id = start_loop(
+            db=db,
+            agent=args.name,
+            project=agent["project_dir"],
+            goal=args.goal,
+            done_when=args.done_when,
+            max_iterations=args.max_iterations,
+            max_consecutive_failures=args.max_consecutive_failures,
+            loop_type=args.loop_type,
+            max_cost_usd=max_cost_usd,
+        )
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    print(f"Loop started: {loop_id}")
+    print(f"  Agent: {args.name}")
+    print(f"  Goal: {args.goal}")
+    print(f"  Done when: {args.done_when}")
+    print(f"  Max iterations: {args.max_iterations}")
+    print(f"  Type: {args.loop_type}")
+    if max_cost_usd is not None:
+        print(f"  Cost limit: ${max_cost_usd:.2f}")
+    return 0
+
+
+def cmd_loop_status(db: BridgeDB, args):
+    """Show goal loop status."""
+    from .loop_orchestrator import get_loop_status
+
+    loop_id = getattr(args, "loop_id", None)
+    agent_name = getattr(args, "name", None)
+
+    if loop_id:
+        result = get_loop_status(db, loop_id)
+        if not result:
+            print(f"Error: Loop '{loop_id}' not found.", file=sys.stderr)
+            return 1
+        loops = [result]
+    else:
+        # Show latest loops (optionally filtered by agent)
+        loops_raw = db.list_loops(agent=agent_name, limit=5)
+        if not loops_raw:
+            if agent_name:
+                print(f"No loops found for agent '{agent_name}'.")
+            else:
+                print("No loops found.")
+            return 0
+        # Get full status for the first one
+        loops = []
+        for l in loops_raw[:1]:
+            full = get_loop_status(db, l["loop_id"])
+            if full:
+                loops.append(full)
+
+    for loop in loops:
+        print(f"Loop: {loop['loop_id']}")
+        print(f"  Agent:     {loop['agent']}")
+        print(f"  Status:    {loop['status']}")
+        print(f"  Iteration: {loop['current_iteration']}/{loop['max_iterations']}")
+        print(f"  Cost:      ${loop.get('total_cost_usd', 0):.3f}")
+        goal_short = loop["goal"][:80] if len(loop["goal"]) > 80 else loop["goal"]
+        print(f"  Goal:      {goal_short}")
+        print(f"  Done when: {loop['done_when']}")
+        if loop.get("finish_reason"):
+            print(f"  Reason:    {loop['finish_reason']}")
+        iterations = loop.get("iterations", [])
+        if iterations:
+            print(f"  Iterations ({len(iterations)}):")
+            for it in iterations[-5:]:
+                passed = "PASS" if it.get("done_check_passed") else "fail"
+                summary = (it.get("result_summary") or "")[:60]
+                print(f"    [{it['iteration_num']}] {it['status']:<8} done={passed}  {summary}")
+    return 0
+
+
+def cmd_loop_cancel(db: BridgeDB, args):
+    """Cancel a running goal loop."""
+    from .loop_orchestrator import cancel_loop
+
+    cancelled = cancel_loop(db, args.loop_id)
+    if cancelled:
+        print(f"Loop '{args.loop_id}' cancelled.")
+        return 0
+    else:
+        # Check if it exists at all
+        loop = db.get_loop(args.loop_id)
+        if loop is None:
+            print(f"Error: Loop '{args.loop_id}' not found.", file=sys.stderr)
+            return 1
+        print(f"Error: Loop '{args.loop_id}' is not running (status: {loop['status']}).", file=sys.stderr)
+        return 1
+
+
+def cmd_loop_approve(db: BridgeDB, args):
+    """Approve a loop waiting for manual done condition."""
+    from .loop_orchestrator import approve_loop
+
+    approved = approve_loop(db, args.loop_id)
+    if approved:
+        print(f"Loop '{args.loop_id}' approved — marked as done.")
+        return 0
+    loop = db.get_loop(args.loop_id)
+    if loop is None:
+        print(f"Error: Loop '{args.loop_id}' not found.", file=sys.stderr)
+        return 1
+    if loop["status"] != "running":
+        print(f"Error: Loop '{args.loop_id}' is not running (status: {loop['status']}).", file=sys.stderr)
+        return 1
+    print(f"Error: Loop '{args.loop_id}' is not waiting for approval.", file=sys.stderr)
+    return 1
+
+
+def cmd_loop_reject(db: BridgeDB, args):
+    """Reject a loop approval — continue to next iteration with optional feedback."""
+    from .loop_orchestrator import reject_loop
+
+    feedback = getattr(args, "feedback", "") or ""
+    rejected = reject_loop(db, args.loop_id, feedback=feedback)
+    if rejected:
+        print(f"Loop '{args.loop_id}' rejected — continuing to next iteration.")
+        return 0
+    loop = db.get_loop(args.loop_id)
+    if loop is None:
+        print(f"Error: Loop '{args.loop_id}' not found.", file=sys.stderr)
+        return 1
+    if loop["status"] != "running":
+        print(f"Error: Loop '{args.loop_id}' is not running (status: {loop['status']}).", file=sys.stderr)
+        return 1
+    print(f"Error: Loop '{args.loop_id}' is not waiting for approval.", file=sys.stderr)
+    return 1
+
+
+def cmd_loop_list(db: BridgeDB, args):
+    """List all active and recent goal loops."""
+    from .loop_orchestrator import format_loop_list
+
+    agent_name = getattr(args, "name", None)
+    limit = getattr(args, "limit", 10)
+    active_only = getattr(args, "active", False)
+
+    status_filter = "running" if active_only else None
+    loops_raw = db.list_loops(agent=agent_name, limit=limit, status=status_filter)
+
+    if not loops_raw:
+        if agent_name:
+            print(f"No loops found for agent '{agent_name}'.")
+        elif active_only:
+            print("No active loops.")
+        else:
+            print("No loops found.")
+        return 0
+
+    print(format_loop_list(loops_raw))
+    return 0
+
+
+def cmd_loop_history(db: BridgeDB, args):
+    """Show full iteration history for a loop."""
+    from .loop_orchestrator import get_loop_status, format_loop_history
+
+    loop = get_loop_status(db, args.loop_id)
+    if not loop:
+        print(f"Error: Loop '{args.loop_id}' not found.", file=sys.stderr)
+        return 1
+
+    print(format_loop_history(loop))
+    return 0
+
+
 COMMANDS = {
     "create-agent": cmd_create_agent,
     "delete-agent": cmd_delete_agent,
@@ -1702,6 +1938,13 @@ COMMANDS = {
     "permissions": cmd_permissions,
     "approve": cmd_approve,
     "deny": cmd_deny,
+    "loop": cmd_loop,
+    "loop-status": cmd_loop_status,
+    "loop-cancel": cmd_loop_cancel,
+    "loop-approve": cmd_loop_approve,
+    "loop-reject": cmd_loop_reject,
+    "loop-list": cmd_loop_list,
+    "loop-history": cmd_loop_history,
     "setup": cmd_setup,
     "setup-bot": cmd_setup_bot,
     "setup-telegram": cmd_setup_telegram,

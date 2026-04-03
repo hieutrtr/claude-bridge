@@ -1,6 +1,59 @@
 # Claude Bridge
 
-Dispatch Claude Code agents from your phone via Telegram. Create agents, assign them to projects, dispatch tasks, get notified when done.
+**Claude Bridge biến Claude Code thành multi-agent platform điều khiển từ Telegram.**
+
+> Use Claude Code to its fullest — dispatch agents, automate workflows, loop until done.
+
+[![Version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/hieutrtr/claude-bridge/releases)
+[![Tests](https://img.shields.io/badge/tests-405%2B%20passing-brightgreen)](tests/)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+---
+
+## Why Claude Bridge?
+
+Claude Code is powerful — but locked to one session on your laptop. Claude Bridge breaks that wall: create multiple agents, each owning a project, and orchestrate all of them from your phone. Dispatch tasks, watch them run, approve results, and chain loops — without touching your terminal.
+
+---
+
+## Key Features
+
+| | Feature | Description |
+|---|---------|-------------|
+| 🤖 | **Multi-Agent Dispatch** | Tạo và điều khiển nhiều Claude Code agents từ Telegram |
+| 🔄 | **Goal Loop** *(NEW v0.3.0)* | Tự động loop tasks đến khi đạt mục tiêu — command, file, LLM judge, hoặc manual approve |
+| 📱 | **Telegram Control** | Dispatch, monitor, approve từ điện thoại — bất kỳ lúc nào, bất kỳ đâu |
+| 🏗️ | **Worktree Isolation** | Mỗi task chạy trong git worktree riêng, không conflict |
+| 🔌 | **MCP Native** | Tích hợp Claude Code qua Model Context Protocol — push notifications, không polling |
+| 🛡️ | **Security** | Bot token protection, user allowlist, action confirmation trước khi chạy |
+| 🐳 | **Daemon Mode** | Chạy như background service với systemd/launchd |
+| 📊 | **Cost Tracking** | Theo dõi chi phí mỗi task và mỗi loop iteration |
+
+---
+
+## Quick Demo
+
+**Dispatch a task to an agent:**
+```
+/create backend ~/projects/my-api "API development"
+dispatch backend add pagination to /users endpoint
+# → Agent runs in isolated worktree → Telegram notifies when done ✓
+```
+
+**Loop until tests pass (Goal Loop):**
+```
+loop backend fix all failing tests until pytest passes max 5
+# → Dispatches → evaluates → retries → notifies with cost summary
+```
+
+**Multi-agent team:**
+```
+/create-team fullstack --lead backend --members frontend
+/team-dispatch fullstack "build user profile page with API and UI"
+# → backend + frontend agents coordinate, you see each result on Telegram
+```
+
+---
 
 ## How It Works
 
@@ -218,6 +271,88 @@ The agent works in an isolated git worktree. When done, you get a Telegram notif
 /team-dispatch fullstack "build user profile page with API and UI"
 ```
 
+### Goal Loop
+
+Goal Loop dispatches tasks repeatedly until a done condition is met. Perfect for
+fix cycles, code generation, and anything that needs multiple attempts.
+
+#### Quick start
+
+```bash
+# Fix tests — loop until pytest passes (max 5 attempts)
+bridge-cli loop backend "Fix all failing tests" \
+    --done-when "command:pytest tests/" \
+    --max 5
+
+# Generate report — loop until file exists
+bridge-cli loop vn-trader "Generate morning market brief" \
+    --done-when "file_exists:output/morning-brief.md" \
+    --max 3
+
+# Refactor — ask Claude to judge when code is ready
+bridge-cli loop backend "Refactor auth module to be production-ready" \
+    --done-when "llm_judge:Code has full test coverage, error handling, and docs" \
+    --max 8 --type bridge
+
+# Human-in-the-loop — pause for approval between iterations
+bridge-cli loop backend "Write API spec" \
+    --done-when "manual:check the spec before continuing" \
+    --max 5
+```
+
+#### Done conditions
+
+| Format | Description | Example |
+|--------|-------------|---------|
+| `command:CMD` | Run CMD, done when exit code 0 | `command:pytest tests/` |
+| `file_exists:PATH` | Done when file exists | `file_exists:output/report.md` |
+| `file_contains:PATH:TEXT` | Done when file contains text | `file_contains:result.txt:SUCCESS` |
+| `llm_judge:RUBRIC` | Claude evaluates against rubric | `llm_judge:All tests pass and code is documented` |
+| `manual[:MSG]` | Pause for human approval each iteration | `manual:review before continuing` |
+
+#### Loop types
+
+Bridge automatically selects the best loop type:
+
+- **Agent loop** — Bridge dispatches a single task, the agent retries internally.
+  Fast, no overhead. Used for `command`/`file_exists`/`file_contains` conditions
+  with `--max <= 5`.
+- **Bridge loop** — Bridge dispatches one task per iteration, evaluates, and
+  sends feedback into the next iteration. Observable, cost-tracked, notification-
+  supported. Always used for `manual`/`llm_judge` conditions or `--max > 5`.
+
+Override with `--type bridge|agent|auto` (default: `bridge`).
+
+#### From Telegram
+
+Natural language:
+```
+loop backend fix tests until pytest passes
+loop vn-trader generate brief until file output/brief.md exists max 5
+stop loop 42
+loop status
+approve
+reject: auth tests are still failing
+```
+
+#### Loop dashboard
+
+```bash
+bridge-cli loop-list             # all recent loops
+bridge-cli loop-list --active    # only running loops
+bridge-cli loop-list backend     # filtered by agent
+bridge-cli loop-history 42       # full iteration history for loop #42
+bridge-cli loop-status --loop-id 42
+```
+
+#### Loop management
+
+```bash
+bridge-cli loop-cancel 42        # cancel running loop
+bridge-cli loop-approve 42       # approve manual condition loop
+bridge-cli loop-reject 42 --feedback "tests still failing in module X"
+```
+
 ## Restarting
 
 ```bash
@@ -257,6 +392,18 @@ claude --dangerously-load-development-channels server:bridge --dangerously-skip-
 | `bridge-cli setup-cron` | Install watcher cron |
 | `bridge-cli remove-cron` | Remove watcher cron |
 | `bridge-cli --version` | Print version |
+
+**Loop commands:**
+
+| Command | Description |
+|---------|-------------|
+| `bridge-cli loop <agent> <goal> --done-when <cond>` | Start a goal loop |
+| `bridge-cli loop-list [agent] [--active] [--limit N]` | List all loops (dashboard) |
+| `bridge-cli loop-history <loop-id>` | Full iteration history for a loop |
+| `bridge-cli loop-status [agent] [--loop-id ID]` | Show loop status |
+| `bridge-cli loop-cancel <loop-id>` | Cancel a running loop |
+| `bridge-cli loop-approve <loop-id>` | Approve a manual condition loop |
+| `bridge-cli loop-reject <loop-id> [--feedback TEXT]` | Reject and continue loop |
 
 ## Architecture
 

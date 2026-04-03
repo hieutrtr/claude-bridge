@@ -148,6 +148,23 @@ def main(db: BridgeDB | None = None, msg_db_path: str | None = None):
         if task["parent_task_id"]:
             _check_team_aggregation(db, task["parent_task_id"])
 
+        # Check if this task belongs to a loop — if so, hand off to orchestrator
+        loop = db.get_loop_by_task_id(str(task_id))
+        if loop:
+            from .loop_orchestrator import on_task_complete as loop_on_task_complete
+            result_for_loop = summary if summary else (error or "")
+            loop_on_task_complete(
+                db,
+                loop["loop_id"],
+                str(task_id),
+                result_for_loop,
+                cost,
+            )
+            # Loop orchestrator handles next dispatch — skip normal queue processing
+            db.increment_agent_tasks(args.session_id)
+            db.mark_task_reported(task_id)
+            return
+
         # Update agent and check queue
         db.increment_agent_tasks(args.session_id)
 

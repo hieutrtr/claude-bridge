@@ -97,6 +97,44 @@ CREATE TABLE IF NOT EXISTS notifications (
     sent_at TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS loops (
+    loop_id TEXT PRIMARY KEY,
+    agent TEXT NOT NULL,
+    project TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    done_when TEXT NOT NULL,
+    loop_type TEXT NOT NULL DEFAULT 'bridge',
+    status TEXT NOT NULL DEFAULT 'running',
+    max_iterations INTEGER NOT NULL DEFAULT 10,
+    max_consecutive_failures INTEGER NOT NULL DEFAULT 3,
+    current_iteration INTEGER NOT NULL DEFAULT 0,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    total_cost_usd REAL NOT NULL DEFAULT 0.0,
+    max_cost_usd REAL,
+    pending_approval INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    finish_reason TEXT,
+    current_task_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS loop_iterations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    loop_id TEXT NOT NULL,
+    iteration_num INTEGER NOT NULL,
+    task_id TEXT,
+    prompt TEXT,
+    result_summary TEXT,
+    done_check_passed INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0.0,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    status TEXT NOT NULL DEFAULT 'running'
+);
+
+CREATE INDEX IF NOT EXISTS idx_loops_status ON loops(status);
+CREATE INDEX IF NOT EXISTS idx_loops_agent ON loops(agent);
+CREATE INDEX IF NOT EXISTS idx_loop_iterations_loop ON loop_iterations(loop_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status);
 CREATE INDEX IF NOT EXISTS idx_permissions_status ON permissions(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
@@ -139,6 +177,10 @@ class BridgeDB:
         # Skip migration if tables don't exist yet (fresh DB)
         if not existing["tasks"] and not existing["agents"]:
             return
+        # loops and loop_iterations — migrate new Phase 2 columns if needed
+        for table in ("loops", "loop_iterations"):
+            cursor = self.conn.execute(f"PRAGMA table_info({table})")
+            existing[table] = {row[1] for row in cursor.fetchall()}
 
         migrations = [
             ("tasks", "position", "INTEGER"),
@@ -150,8 +192,14 @@ class BridgeDB:
             ("tasks", "channel_message_id", "TEXT"),
             ("tasks", "reported", "INTEGER DEFAULT 0"),
             ("agents", "model", "TEXT DEFAULT 'sonnet'"),
+            # Phase 2 loop columns
+            ("loops", "max_cost_usd", "REAL"),
+            ("loops", "pending_approval", "INTEGER NOT NULL DEFAULT 0"),
         ]
         for table, column, col_type in migrations:
+            # Skip if the table itself doesn't exist yet (will be created by SCHEMA)
+            if not existing.get(table):
+                continue
             if column not in existing[table]:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
@@ -566,3 +614,156 @@ class BridgeDB:
             (notification_id,),
         )
         self.conn.commit()
+
+    # --- Loop operations ---
+
+    def create_loop(
+        self,
+        agent: str,
+        project: str,
+        goal: str,
+        done_when: str,
+        loop_type: str = "bridge",
+        max_iterations: int = 10,
+        max_consecutive_failures: int = 3,
+        max_cost_usd: float | None = None,
+    ) -> str:
+        """Create a new loop record. Returns loop_id."""
+        from datetime import datetime as _dt
+        import time as _time
+        # Use nanoseconds for uniqueness even when called multiple times per second
+        ts = int(_time.time_ns() // 1_000_000)  # milliseconds since epoch
+        # Derive session_id-style key from agent+project
+        from .session import derive_session_id
+        session_id = derive_session_id(agent, project)
+        loop_id = f"{session_id}--loop--{ts}"
+        started_at = _dt.now().isoformat()
+        self.conn.execute(
+            """INSERT INTO loops
+               (loop_id, agent, project, goal, done_when, loop_type, status,
+                max_iterations, max_consecutive_failures, current_iteration,
+                consecutive_failures, total_cost_usd, max_cost_usd, started_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, 0, 0, 0.0, ?, ?)""",
+            (loop_id, agent, project, goal, done_when, loop_type,
+             max_iterations, max_consecutive_failures, max_cost_usd, started_at),
+        )
+        self.conn.commit()
+        return loop_id
+
+    def get_loop(self, loop_id: str) -> dict | None:
+        """Get a loop by ID. Returns dict or None."""
+        row = self.conn.execute(
+            "SELECT * FROM loops WHERE loop_id = ?", (loop_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_active_loop_for_agent(self, agent: str) -> dict | None:
+        """Get the active (running) loop for an agent. Returns dict or None."""
+        row = self.conn.execute(
+            "SELECT * FROM loops WHERE agent = ? AND status = 'running' LIMIT 1",
+            (agent,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    # Allowed column names for update_loop() — prevents typos and injection
+    _LOOP_UPDATABLE_COLUMNS = frozenset({
+        "status", "current_iteration", "consecutive_failures", "total_cost_usd",
+        "finished_at", "finish_reason", "current_task_id", "loop_type",
+        "max_cost_usd", "pending_approval",
+    })
+
+    def update_loop(self, loop_id: str, **kwargs) -> None:
+        """Update loop fields. Only whitelisted column names are accepted."""
+        invalid = set(kwargs) - self._LOOP_UPDATABLE_COLUMNS
+        if invalid:
+            raise ValueError(f"update_loop: invalid column(s): {sorted(invalid)}")
+        sets = ", ".join(f"{k} = ?" for k in kwargs)
+        values = list(kwargs.values()) + [loop_id]
+        self.conn.execute(f"UPDATE loops SET {sets} WHERE loop_id = ?", values)
+        self.conn.commit()
+
+    def create_loop_iteration(
+        self,
+        loop_id: str,
+        iteration_num: int,
+        prompt: str,
+    ) -> int:
+        """Create a new loop iteration record. Returns iteration id."""
+        from datetime import datetime as _dt
+        started_at = _dt.now().isoformat()
+        cursor = self.conn.execute(
+            """INSERT INTO loop_iterations
+               (loop_id, iteration_num, prompt, status, started_at)
+               VALUES (?, ?, ?, 'running', ?)""",
+            (loop_id, iteration_num, prompt, started_at),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    # Allowed column names for update_loop_iteration()
+    _LOOP_ITER_UPDATABLE_COLUMNS = frozenset({
+        "task_id", "result_summary", "done_check_passed", "cost_usd",
+        "started_at", "finished_at", "status",
+    })
+
+    def update_loop_iteration(self, iteration_id: int, **kwargs) -> None:
+        """Update loop iteration fields. Only whitelisted column names are accepted."""
+        invalid = set(kwargs) - self._LOOP_ITER_UPDATABLE_COLUMNS
+        if invalid:
+            raise ValueError(f"update_loop_iteration: invalid column(s): {sorted(invalid)}")
+        sets = ", ".join(f"{k} = ?" for k in kwargs)
+        values = list(kwargs.values()) + [iteration_id]
+        self.conn.execute(f"UPDATE loop_iterations SET {sets} WHERE id = ?", values)
+        self.conn.commit()
+
+    def get_loop_iterations(self, loop_id: str) -> list[dict]:
+        """Get all iterations for a loop, ordered by iteration_num."""
+        rows = self.conn.execute(
+            "SELECT * FROM loop_iterations WHERE loop_id = ? ORDER BY iteration_num",
+            (loop_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_last_n_iterations(self, loop_id: str, n: int) -> list[dict]:
+        """Get the last N iterations for a loop, ordered by iteration_num ascending."""
+        rows = self.conn.execute(
+            """SELECT * FROM loop_iterations WHERE loop_id = ?
+               ORDER BY iteration_num DESC LIMIT ?""",
+            (loop_id, n),
+        ).fetchall()
+        # Return in ascending order
+        return [dict(r) for r in reversed(rows)]
+
+    def get_loop_by_task_id(self, task_id: str) -> dict | None:
+        """Find the loop that owns the given current_task_id. Returns dict or None."""
+        row = self.conn.execute(
+            "SELECT * FROM loops WHERE current_task_id = ? AND status = 'running' LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_loops(
+        self,
+        agent: str | None = None,
+        limit: int = 20,
+        status: str | None = None,
+    ) -> list[dict]:
+        """List loops, optionally filtered by agent and/or status. Most recent first."""
+        conditions = []
+        params: list = []
+
+        if agent:
+            conditions.append("agent = ?")
+            params.append(agent)
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        params.append(limit)
+
+        rows = self.conn.execute(
+            f"SELECT * FROM loops {where} ORDER BY started_at DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
