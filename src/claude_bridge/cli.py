@@ -446,6 +446,13 @@ def cmd_setup(db: BridgeDB, args):
     no_prompt = getattr(args, "no_prompt", False)
     bridge_home = os.path.expanduser("~/.claude-bridge")
 
+    # Pre-flight: warn if tmux not installed (non-blocking)
+    if not shutil.which("tmux"):
+        print("⚠ tmux not found — 'bridge start' won't work without it.")
+        print("  macOS: brew install tmux")
+        print("  Linux: sudo apt install tmux")
+        print()
+
     # --- Step 1: Telegram bot token ---
     token = getattr(args, "token", None)
     existing_token = _get_bot_token()
@@ -533,6 +540,19 @@ def cmd_setup(db: BridgeDB, args):
     has_bun = shutil.which("bun") is not None
     mode = "channel" if has_bun else "mcp"
 
+    # Persist bot_dir and mode to config.json (used by `bridge start`)
+    config = {}
+    if os.path.isfile(config_path):
+        try:
+            with open(config_path) as f:
+                config = _json.load(f)
+        except (_json.JSONDecodeError, IOError):
+            pass
+    config["bot_dir"] = bot_dir
+    config["mode"] = mode
+    with open(config_path, "w") as f:
+        _json.dump(config, f, indent=2)
+
     # --- Step 2b: Deploy channel server FIRST (so .mcp.json uses stable path) ---
     bundled = get_channel_server_path()
     deployed_dir = os.path.join(bridge_home, "channel", "dist")
@@ -590,11 +610,13 @@ def cmd_setup(db: BridgeDB, args):
     print("Setup complete!")
     print()
     print("Start the Bridge Bot:")
-    print(f"  cd {bot_dir}")
-    if mode == "channel":
-        print("  claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions")
-    else:
-        print("  claude --dangerously-skip-permissions")
+    print(f"  bridge start")
+    print()
+    print("Other commands:")
+    print(f"  bridge status   — check if bot is running")
+    print(f"  bridge attach   — attach to tmux session")
+    print(f"  bridge logs -f  — follow bot logs")
+    print(f"  bridge stop     — stop the bot")
     print()
     print("Then DM your bot on Telegram to pair.")
     return 0
@@ -1242,6 +1264,28 @@ def _cmd_doctor(args) -> int:
                 print(f"    → Fixed: cron installed")
     except Exception:
         print(f"  ⚠ Cannot check crontab")
+        warnings += 1
+
+    # Tmux
+    tmux = shutil.which("tmux")
+    if tmux:
+        print(f"  ✓ tmux found at {tmux}")
+    else:
+        print(f"  ⚠ tmux not found (optional, needed for 'bridge start')")
+        print(f"    macOS: brew install tmux")
+        print(f"    Linux: sudo apt install tmux")
+        warnings += 1
+
+    # Bridge Bot session
+    from .tmux_session import session_running, get_session_pid, get_session_uptime, TMUX_SESSION_NAME
+    if tmux and session_running():
+        pid = get_session_pid()
+        uptime = get_session_uptime()
+        pid_str = f", PID {pid}" if pid else ""
+        uptime_str = f", uptime {uptime}" if uptime else ""
+        print(f"  ✓ Bridge Bot running (session '{TMUX_SESSION_NAME}'{pid_str}{uptime_str})")
+    elif tmux:
+        print(f"  ⚠ Bridge Bot not running (run: bridge start)")
         warnings += 1
 
     # Agent .md files

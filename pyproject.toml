@@ -22,6 +22,7 @@ classifiers = [
 
 [project.scripts]
 bridge-cli = "claude_bridge.cli:main"
+bridge = "claude_bridge.bridge_cmd:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
