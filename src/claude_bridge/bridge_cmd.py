@@ -102,7 +102,7 @@ def _build_claude_command(config: dict) -> list[str]:
 
     if mode == "channel":
         cmd.extend([
-            "--channels", "server:bridge",
+            "--dangerously-load-development-channels", "server:bridge",
             "--dangerously-skip-permissions",
         ])
     else:
@@ -250,11 +250,19 @@ def cmd_start(args) -> int:
         print(f"  Restart: bridge restart", file=sys.stderr)
         return 1
 
-    # Run claude directly in tmux (tmux provides a real terminal, no TUI issues)
+    # Run claude directly in tmux (tmux provides a real terminal)
     claude_str = ' '.join(claude_cmd)
     full_cmd = ["bash", "-c", f"cd {_shell_quote(bot_dir)} && {claude_str}"]
 
     if start_session(full_cmd):
+        # Auto-confirm TUI dev channel warning by sending Enter to tmux
+        import time
+        time.sleep(3)  # Wait for TUI to render
+        subprocess.run(
+            ["tmux", "send-keys", "-t", TMUX_SESSION_NAME, "Enter"],
+            capture_output=True,
+        )
+
         print(f"Bridge Bot started in tmux session '{TMUX_SESSION_NAME}'.")
         print()
         print(f"  Attach:  bridge attach")
