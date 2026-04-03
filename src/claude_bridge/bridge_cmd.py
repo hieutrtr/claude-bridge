@@ -145,11 +145,16 @@ def cmd_start(args) -> int:
     bot_dir = config["bot_dir"]
     claude_cmd = _build_claude_command(config)
 
-    # Foreground mode — replace process
+    # Foreground mode — run with auto-confirm for dev channel warning
     if getattr(args, "foreground", False):
+        import subprocess
         os.chdir(bot_dir)
-        os.execvp(claude_cmd[0], claude_cmd)
-        return 1  # pragma: no cover
+        claude_str = ' '.join(claude_cmd)
+        # Auto-confirm warning: pipe Enter, then keep stdin open with cat
+        proc = subprocess.run(
+            ["bash", "-c", f"(echo ''; cat) | {claude_str}"],
+        )
+        return proc.returncode
 
     # Tmux mode
     if not tmux_available():
@@ -164,8 +169,11 @@ def cmd_start(args) -> int:
         print(f"  Restart: bridge restart", file=sys.stderr)
         return 1
 
-    # Build the full command: cd bot_dir && claude ...
-    full_cmd = ["bash", "-c", f"cd {_shell_quote(bot_dir)} && {' '.join(claude_cmd)}"]
+    # Build the full command: cd bot_dir && auto-confirm dev channel warning && claude ...
+    # The (echo ""; cat) pipe sends Enter to confirm the warning prompt,
+    # then cat keeps stdin open so the session stays alive.
+    claude_str = ' '.join(claude_cmd)
+    full_cmd = ["bash", "-c", f"cd {_shell_quote(bot_dir)} && (echo ''; cat) | {claude_str}"]
 
     if start_session(full_cmd):
         print(f"Bridge Bot started in tmux session '{TMUX_SESSION_NAME}'.")
