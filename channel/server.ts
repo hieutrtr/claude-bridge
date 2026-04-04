@@ -213,6 +213,90 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["file_id"],
       },
     },
+    {
+      name: "bridge_loop",
+      description: "Start a goal loop for an agent. The loop dispatches tasks repeatedly until the done_when condition is met or max_iterations is reached.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          agent: { type: "string", description: "Agent name" },
+          goal: { type: "string", description: "Goal description for the loop" },
+          done_when: { type: "string", description: "Done condition: 'command:CMD', 'file_exists:PATH', 'llm_judge:RUBRIC', or 'manual:MSG'" },
+          max_iterations: { type: "number", description: "Maximum iterations (default: 10)" },
+          loop_type: { type: "string", description: "Loop type: 'bridge', 'agent', or 'auto' (default: bridge)" },
+          max_cost_usd: { type: "number", description: "Cost ceiling in USD (stop loop when exceeded, optional)" },
+        },
+        required: ["agent", "goal", "done_when"],
+      },
+    },
+    {
+      name: "bridge_loop_status",
+      description: "Get status of a goal loop, including current iteration and done condition evaluation.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          loop_id: { type: "string", description: "Loop ID (optional, defaults to latest)" },
+          agent: { type: "string", description: "Agent name (optional, filters by agent)" },
+        },
+      },
+    },
+    {
+      name: "bridge_loop_cancel",
+      description: "Cancel a running goal loop.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          loop_id: { type: "string", description: "Loop ID to cancel" },
+        },
+        required: ["loop_id"],
+      },
+    },
+    {
+      name: "bridge_loop_approve",
+      description: "Approve a loop that is waiting for manual done condition (done_when: manual:...).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          loop_id: { type: "string", description: "Loop ID to approve" },
+        },
+        required: ["loop_id"],
+      },
+    },
+    {
+      name: "bridge_loop_reject",
+      description: "Reject a loop approval and continue to the next iteration with optional feedback.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          loop_id: { type: "string", description: "Loop ID to reject" },
+          feedback: { type: "string", description: "Optional feedback for the next iteration" },
+        },
+        required: ["loop_id"],
+      },
+    },
+    {
+      name: "bridge_loop_list",
+      description: "List all goal loops, optionally filtered by agent.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          agent: { type: "string", description: "Agent name (optional, filters by agent)" },
+          limit: { type: "number", description: "Maximum number of loops to show (default: 10)" },
+          active_only: { type: "boolean", description: "Show only active (running) loops (default: false)" },
+        },
+      },
+    },
+    {
+      name: "bridge_loop_history",
+      description: "Get the full iteration history for a goal loop.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          loop_id: { type: "string", description: "Loop ID to inspect" },
+        },
+        required: ["loop_id"],
+      },
+    },
   ],
 }));
 
@@ -371,6 +455,64 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
 
         return { content: [{ type: "text", text: localPath }] };
+      }
+
+      case "bridge_loop": {
+        const { agent, goal, done_when, max_iterations, loop_type, max_cost_usd } = args as {
+          agent: string; goal: string; done_when: string;
+          max_iterations?: number; loop_type?: string; max_cost_usd?: number;
+        };
+        const cliArgs = [agent, goal, "--done-when", done_when];
+        if (max_iterations != null) cliArgs.push("--max", String(max_iterations));
+        if (loop_type) cliArgs.push("--type", loop_type);
+        if (max_cost_usd != null) cliArgs.push("--max-cost", String(max_cost_usd));
+        const output = bridgeCli(BRIDGE_SRC_PATH, "loop", cliArgs);
+        return { content: [{ type: "text", text: output }] };
+      }
+
+      case "bridge_loop_status": {
+        const { loop_id, agent } = (args ?? {}) as { loop_id?: string; agent?: string };
+        const cliArgs: string[] = [];
+        if (agent) cliArgs.push(agent);
+        if (loop_id) cliArgs.push("--loop-id", loop_id);
+        const output = bridgeCli(BRIDGE_SRC_PATH, "loop-status", cliArgs);
+        return { content: [{ type: "text", text: output }] };
+      }
+
+      case "bridge_loop_cancel": {
+        const { loop_id } = args as { loop_id: string };
+        const output = bridgeCli(BRIDGE_SRC_PATH, "loop-cancel", [loop_id]);
+        return { content: [{ type: "text", text: output }] };
+      }
+
+      case "bridge_loop_approve": {
+        const { loop_id } = args as { loop_id: string };
+        const output = bridgeCli(BRIDGE_SRC_PATH, "loop-approve", [loop_id]);
+        return { content: [{ type: "text", text: output }] };
+      }
+
+      case "bridge_loop_reject": {
+        const { loop_id, feedback } = args as { loop_id: string; feedback?: string };
+        const cliArgs = [loop_id];
+        if (feedback) cliArgs.push("--feedback", feedback);
+        const output = bridgeCli(BRIDGE_SRC_PATH, "loop-reject", cliArgs);
+        return { content: [{ type: "text", text: output }] };
+      }
+
+      case "bridge_loop_list": {
+        const { agent, limit, active_only } = (args ?? {}) as { agent?: string; limit?: number; active_only?: boolean };
+        const cliArgs: string[] = [];
+        if (agent) cliArgs.push(agent);
+        if (limit != null) cliArgs.push("--limit", String(limit));
+        if (active_only) cliArgs.push("--active");
+        const output = bridgeCli(BRIDGE_SRC_PATH, "loop-list", cliArgs);
+        return { content: [{ type: "text", text: output }] };
+      }
+
+      case "bridge_loop_history": {
+        const { loop_id } = args as { loop_id: string };
+        const output = bridgeCli(BRIDGE_SRC_PATH, "loop-history", [loop_id]);
+        return { content: [{ type: "text", text: output }] };
       }
 
       default:
