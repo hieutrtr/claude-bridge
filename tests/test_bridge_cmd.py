@@ -72,7 +72,7 @@ class TestBuildClaudeCommand:
         cmd = _build_claude_command({"mode": "channel", "bot_dir": "/tmp/bot"})
         assert cmd == [
             "claude",
-            "--channels", "server:bridge",
+            "--dangerously-load-development-channels", "server:bridge",
             "--dangerously-skip-permissions",
         ]
 
@@ -202,7 +202,9 @@ class TestCmdStart:
         with patch("claude_bridge.bridge_cmd.CONFIG_PATH", config_file), \
              patch("claude_bridge.bridge_cmd.tmux_available", return_value=True), \
              patch("claude_bridge.bridge_cmd.session_running", return_value=False), \
-             patch("claude_bridge.bridge_cmd.start_session", return_value=True):
+             patch("claude_bridge.bridge_cmd.start_session", return_value=True), \
+             patch("time.sleep"), \
+             patch("claude_bridge.bridge_cmd.subprocess.run"):
             args = Namespace(foreground=False)
             assert cmd_start(args) == 0
             out = capsys.readouterr().out
@@ -298,7 +300,9 @@ class TestCmdRestart:
              patch("claude_bridge.bridge_cmd.session_running", return_value=False), \
              patch("claude_bridge.bridge_cmd.tmux_available", return_value=True), \
              patch("claude_bridge.bridge_cmd._bridge_processes_running", return_value=False), \
-             patch("claude_bridge.bridge_cmd.start_session", return_value=True):
+             patch("claude_bridge.bridge_cmd.start_session", return_value=True), \
+             patch("time.sleep"), \
+             patch("claude_bridge.bridge_cmd.subprocess.run"):
             args = Namespace(foreground=False)
             assert cmd_restart(args) == 0
 
@@ -547,6 +551,7 @@ class TestUninstallStopsProcesses:
         with patch.object(claude_bridge, "get_bridge_home", return_value=bridge_home), \
              patch("claude_bridge.bridge_cmd.tmux_available", return_value=True), \
              patch("claude_bridge.bridge_cmd.session_running", return_value=True), \
+             patch("claude_bridge.tmux_session.tmux_available", return_value=True), \
              patch("claude_bridge.tmux_session.session_running", return_value=True), \
              patch("claude_bridge.tmux_session.stop_session", mock_stop_session), \
              patch("claude_bridge.bridge_cmd.stop_session", mock_stop_session), \
