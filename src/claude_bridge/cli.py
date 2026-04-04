@@ -1,4 +1,4 @@
-"""CLI entry point — bridge-cli.py command dispatcher."""
+"""CLI entry point — bridge-cli command dispatcher."""
 
 from __future__ import annotations
 
