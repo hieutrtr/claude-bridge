@@ -25,3 +25,6 @@ channel/.env
 
 # OS
 .DS_Store
+
+# Claude
+.mcp.json
