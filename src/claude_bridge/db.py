@@ -632,7 +632,7 @@ class BridgeDB:
         from datetime import datetime as _dt
         import time as _time
         # Use nanoseconds for uniqueness even when called multiple times per second
-        ts = int(_time.time_ns() // 1_000_000)  # milliseconds since epoch
+        ts = _time.time_ns()
         # Derive session_id-style key from agent+project
         from .session import derive_session_id
         session_id = derive_session_id(agent, project)

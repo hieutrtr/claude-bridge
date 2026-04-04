@@ -255,13 +255,18 @@ def cmd_start(args) -> int:
     full_cmd = ["bash", "-c", f"cd {_shell_quote(bot_dir)} && {claude_str}"]
 
     if start_session(full_cmd):
-        # Auto-confirm TUI dev channel warning by sending Enter to tmux
+        # Auto-confirm TUI prompts by sending Enter to tmux.
+        # Claude Code shows two sequential prompts:
+        #   1. "Yes, I trust this folder" (~2-3s after launch)
+        #   2. "I am using this for local development" (~2-3s after first confirm)
+        # Send Enter twice with delays to confirm both.
         import time
-        time.sleep(3)  # Wait for TUI to render
-        subprocess.run(
-            ["tmux", "send-keys", "-t", TMUX_SESSION_NAME, "Enter"],
-            capture_output=True,
-        )
+        for _ in range(2):
+            time.sleep(3)
+            subprocess.run(
+                ["tmux", "send-keys", "-t", TMUX_SESSION_NAME, "Enter"],
+                capture_output=True,
+            )
 
         print(f"Bridge Bot started in tmux session '{TMUX_SESSION_NAME}'.")
         print()
