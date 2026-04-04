@@ -62,6 +62,50 @@ IMPORTANT: Always call `bridge_acknowledge(tracking_id)` after processing. If yo
 
 Note: Team commands are not yet exposed as MCP tools. Guide user to run them via `bridge-cli` in terminal.
 
+### Goal Loop
+
+Goal Loop repeats tasks until a done condition is met. Use for fix cycles, code generation, or anything needing multiple attempts.
+
+| User says | Tool |
+|-----------|------|
+| `loop <agent> "<goal>" until <condition>` | `bridge_loop(agent, goal, done_when)` |
+| `loop <agent> "<goal>" until <condition> max <N>` | `bridge_loop(agent, goal, done_when, max_iterations=N)` |
+| `/loop-status [agent]` | `bridge_loop_status(agent=agent)` |
+| `/loop-cancel <loop_id>` | `bridge_loop_cancel(loop_id)` |
+| `/loop-approve <loop_id>` | `bridge_loop_approve(loop_id)` |
+| `/loop-reject <loop_id>` | `bridge_loop_reject(loop_id, feedback="...")` |
+| `/loop-list` | `bridge_loop_list()` |
+| `/loop-history <loop_id>` | `bridge_loop_history(loop_id)` |
+
+#### Done Conditions
+
+| Format | What it does | Example |
+|--------|-------------|---------|
+| `command:<CMD>` | Run CMD, success = exit 0 | `command:pytest tests/` |
+| `file_exists:<PATH>` | Check file exists | `file_exists:output/report.md` |
+| `file_contains:<PATH>:<PATTERN>` | File contains pattern | `file_contains:README.md:## API` |
+| `llm_judge:<RUBRIC>` | Claude judges if done | `llm_judge:Code has full test coverage` |
+| `manual:<MSG>` | Pause for user approval | `manual:check the spec` |
+
+#### Natural Language Loop Examples
+
+| User says | Parsed as |
+|-----------|-----------|
+| "fix tests on backend until they pass" | `bridge_loop("backend", "fix failing tests", "command:pytest tests/")` |
+| "loop backend fix bugs max 5" | `bridge_loop("backend", "fix bugs", "command:pytest", max_iterations=5)` |
+| "keep improving the docs until ready" | `bridge_loop(agent, "improve docs", "llm_judge:Docs are comprehensive and well-organized")` |
+| "generate report, I'll review each version" | `bridge_loop(agent, "generate report", "manual:review before continuing")` |
+
+#### Loop Notifications
+
+When a loop iteration completes, notify the user:
+- "🔄 Loop #ID iteration 3/10 — done check: ✗ (retrying)\\n  Cost so far: $0.120"
+- "✓ Loop #ID complete after 4 iterations — goal met\\n  Total cost: $0.180"
+- "⏸ Loop #ID waiting for approval — manual check required"
+- "✗ Loop #ID stopped — max iterations (10) reached\\n  Total cost: $0.450"
+
+Use `bridge_loop_notify(loop_id, chat_id)` to send formatted loop status to Telegram.
+
 ## Natural Language + Smart Dispatch
 
 If the message doesn't start with /, infer the intent:
@@ -69,8 +113,14 @@ If the message doesn't start with /, infer the intent:
 | Pattern | Action |
 |---------|--------|
 | "ask/tell <agent> to <task>" | `bridge_dispatch(agent, task)` |
+| "loop/repeat <agent> <goal> until <condition>" | `bridge_loop(agent, goal, done_when)` |
+| "fix tests until they pass" | `bridge_loop(agent, "fix tests", "command:pytest")` |
 | "what's running" / "status" | `bridge_status()` |
+| "loop status" / "how's the loop" | `bridge_loop_status()` |
 | "stop/kill/cancel <agent>" | `bridge_kill(agent)` |
+| "cancel loop <id>" | `bridge_loop_cancel(id)` |
+| "approve loop" / "looks good" (reply to loop msg) | `bridge_loop_approve(loop_id)` |
+| "reject loop" / "try again" (reply to loop msg) | `bridge_loop_reject(loop_id)` |
 | "show agents" / "list agents" | `bridge_agents()` |
 | "what did <agent> do" / "history" | `bridge_history(agent)` |
 | Greeting (hi, hello) | Reply with short intro + suggest `/agents` or `/help` |
