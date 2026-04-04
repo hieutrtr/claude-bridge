@@ -11,7 +11,8 @@ import sys
 from datetime import datetime
 
 from .db import BridgeDB
-from .dispatcher import pid_alive, kill_process
+from .dispatcher import pid_alive, kill_process, spawn_task, get_result_file
+from .session import derive_agent_file_name
 
 
 DEFAULT_TIMEOUT_MINUTES = 360
@@ -61,7 +62,6 @@ def watch(timeout_minutes: int = DEFAULT_TIMEOUT_MINUTES, db: BridgeDB | None = 
                         exit_code=0,
                         completed_at=datetime.now().isoformat(),
                     )
-                    db.update_agent_state(session_id, "idle")
                     db.increment_agent_tasks(session_id)
                     print(f"[watcher] Task #{task_id} ({session_id}) completed (hook missed)")
                 else:
@@ -73,9 +73,26 @@ def watch(timeout_minutes: int = DEFAULT_TIMEOUT_MINUTES, db: BridgeDB | None = 
                         exit_code=-1,
                         completed_at=datetime.now().isoformat(),
                     )
-                    db.update_agent_state(session_id, "idle")
                     db.increment_agent_tasks(session_id)
                     print(f"[watcher] Task #{task_id} ({session_id}) failed (hook missed)")
+
+                next_task = db.dequeue_next_task(session_id)
+                if next_task:
+                    agent = db.get_agent_by_session(session_id)
+                    next_task_id = next_task["id"]
+                    next_result_file = get_result_file(session_id, next_task_id)
+                    pid = spawn_task(
+                        derive_agent_file_name(session_id), session_id,
+                        agent["project_dir"], next_task["prompt"], next_task_id,
+                    )
+                    db.update_task(
+                        next_task_id,
+                        status="running", pid=pid,
+                        result_file=next_result_file,
+                        started_at=datetime.now().isoformat(),
+                    )
+                else:
+                    db.update_agent_state(session_id, "idle")
 
             elif started_at:
                 # Check timeout

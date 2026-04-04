@@ -92,7 +92,7 @@ class TelegramPoller:
 
     def __init__(self, token: str, msg_db: MessageDB):
         self.token = token
-        self.msg_db = msg_db
+        self._main_msg_db = msg_db  # kept for reference, not used in thread
         self._running = False
         self._thread: threading.Thread | None = None
 
@@ -110,12 +110,16 @@ class TelegramPoller:
 
     def _run(self):
         """Main polling loop."""
-        while self._running:
-            try:
-                self.poll_once()
-            except Exception as e:
-                print(f"[poller] error in poll cycle: {e}", file=sys.stderr)
-                time.sleep(5)
+        self.msg_db = MessageDB()  # create connection in this thread
+        try:
+            while self._running:
+                try:
+                    self.poll_once()
+                except Exception as e:
+                    print(f"[poller] error in poll cycle: {e}", file=sys.stderr)
+                    time.sleep(5)
+        finally:
+            self.msg_db.close()
 
     def poll_once(self):
         """Run one poll cycle: fetch updates + send outbound."""

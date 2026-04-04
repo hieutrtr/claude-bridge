@@ -23,13 +23,12 @@ set -e
 # repo since it may already exist from a previous run (the script is idempotent).
 # If install fails partway, the user can rerun to continue from the last good state.
 _on_error() {
-  local lineno=$1
-  printf "\033[0;31m[claude-bridge]\033[0m ✗ Install failed at line %s.\n" "$lineno" >&2
+  printf "\033[0;31m[claude-bridge]\033[0m ✗ Install failed.\n" >&2
   printf "\033[1;33m[claude-bridge]\033[0m ⚠ To retry: rerun this script.\n" >&2
   printf "\033[1;33m[claude-bridge]\033[0m ⚠ To start fresh: rm -rf %s and rerun.\n" \
     "${CLAUDE_BRIDGE_SRC:-$HOME/projects/claude-bridge}" >&2
 }
-trap '_on_error $LINENO' ERR
+trap '_on_error' EXIT
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 
@@ -315,3 +314,5 @@ case "$INSTALLED_BY" in
   pip)  echo "  To update later: cd $INSTALL_DIR && git pull && pip install -e ." ;;
 esac
 echo ""
+
+trap - EXIT

@@ -16,7 +16,7 @@ Before starting implementation, ensure the following are in place:
 | **Max subscription** | Required for Claude Code usage (Sonnet default, Opus access) |
 | **Telegram account** | For BotFather bot creation |
 | **Telegram Bot Token** | Create via @BotFather before Day 8 |
-| **Python 3.10+** | For bridge-cli.py, on-complete.py, watcher.py |
+| **Python 3.11+** | For bridge-cli, on-complete.py, watcher.py |
 | **SQLite3** | Bundled with Python, no separate install needed |
 | **Git** | For worktree isolation (native Claude Code feature) |
 | **Telegram MCP plugin** | Official Anthropic plugin, install before Day 8 |
