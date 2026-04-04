@@ -115,7 +115,7 @@ def main(db: BridgeDB | None = None, msg_db_path: str | None = None):
                 error = str(result.get("result", "Unknown error"))[:500]
             else:
                 summary = str(result.get("result", ""))[:500]
-            cost = result.get("cost_usd", 0) or 0
+            cost = result.get("total_cost_usd", 0) or 0
             duration = result.get("duration_ms", 0) or 0
             turns = result.get("num_turns", 0) or 0
         else:

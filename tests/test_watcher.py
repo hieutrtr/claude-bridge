@@ -41,7 +41,7 @@ class TestWatcherDeadPid:
         """Dead PID + successful result → task done, agent idle."""
         info = agent_with_running_task
         with open(info["result_file"], "w") as f:
-            json.dump({"is_error": False, "result": "done", "cost_usd": 0.03, "duration_ms": 60000, "num_turns": 3}, f)
+            json.dump({"is_error": False, "result": "done", "total_cost_usd": 0.03, "duration_ms": 60000, "num_turns": 3}, f)
 
         watch.__wrapped__(db) if hasattr(watch, '__wrapped__') else _run_watch(db)
 
@@ -96,7 +96,7 @@ class TestWatcherDequeue:
         """Dead PID (hook missed) + queued task → queued task dequeued to pending."""
         info = agent_with_running_task
         with open(info["result_file"], "w") as f:
-            json.dump({"is_error": False, "result": "done", "cost_usd": 0.01}, f)
+            json.dump({"is_error": False, "result": "done", "total_cost_usd": 0.01}, f)
 
         # Queue a second task
         queued_id = db.create_task("backend--api", "second task")
@@ -121,7 +121,7 @@ class TestWatcherReporting:
     def test_reports_unreported_tasks(self, mock_alive, db, agent_with_running_task, capsys):
         info = agent_with_running_task
         with open(info["result_file"], "w") as f:
-            json.dump({"is_error": False, "result": "fixed it", "cost_usd": 0.01}, f)
+            json.dump({"is_error": False, "result": "fixed it", "total_cost_usd": 0.01}, f)
 
         _run_watch(db)
 

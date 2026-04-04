@@ -438,6 +438,46 @@ def _check_cost_limit(loop: dict, new_total: float) -> tuple[bool, str]:
     return False, ""
 
 
+# ── Pending approval notification ─────────────────────────────────────────
+
+def _notify_pending_approval(db: BridgeDB, loop: dict, iteration_num: int) -> None:
+    """Send a Telegram notification when a manual loop enters pending_approval.
+
+    Looks up the chat_id from the current task's channel_chat_id.
+    If no chat_id is available, silently skips (CLI-only usage).
+    """
+    loop_id = loop["loop_id"]
+    agent = loop["agent"]
+    current_task_id = loop.get("current_task_id")
+    if not current_task_id:
+        return
+
+    task = db.get_task(int(current_task_id))
+    if not task:
+        return
+
+    chat_id = task.get("channel_chat_id")
+    if not chat_id:
+        return
+
+    message = (
+        f"⏸ Loop {loop_id} ({agent}) iteration {iteration_num} done "
+        f"— waiting for your approval.\n"
+        f"Use /loop-approve or /loop-reject to continue."
+    )
+
+    try:
+        from .message_db import MessageDB
+        msg_db = MessageDB()
+        try:
+            msg_db.create_outbound("telegram", chat_id, message, source="loop")
+        finally:
+            msg_db.close()
+    except Exception:
+        # Best-effort notification — don't break the loop flow
+        print(f"[loop] Failed to send pending_approval notification for {loop_id}", file=sys.stderr)
+
+
 # ── Dispatch ───────────────────────────────────────────────────────────────────
 
 def _dispatch_iteration(
@@ -650,11 +690,12 @@ def on_task_complete(
         )
         return
 
-    # Manual done condition: set pending_approval and wait
+    # Manual done condition: set pending_approval and notify user
     try:
         condition = parse_done_condition(loop["done_when"])
         if condition.type == "manual":
             db.update_loop(loop_id, pending_approval=1)
+            _notify_pending_approval(db, loop, current_iteration)
             return
     except ValueError:
         pass

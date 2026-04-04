@@ -157,7 +157,7 @@ class TestOnCompleteCreatesNotification:
         db.update_agent_state("backend--api", "running")
 
         with open(result_file, "w") as f:
-            json.dump({"is_error": False, "result": "Fixed the bug", "cost_usd": 0.03, "duration_ms": 60000, "num_turns": 4}, f)
+            json.dump({"is_error": False, "result": "Fixed the bug", "total_cost_usd": 0.03, "duration_ms": 60000, "num_turns": 4}, f)
 
         from claude_bridge.message_db import MessageDB
         msg_db_path = str(tmp_path / "messages.db")
@@ -181,7 +181,7 @@ class TestOnCompleteCreatesNotification:
         db.update_agent_state("backend--api", "running")
 
         with open(result_file, "w") as f:
-            json.dump({"is_error": False, "result": "done", "cost_usd": 0.01, "duration_ms": 5000, "num_turns": 1}, f)
+            json.dump({"is_error": False, "result": "done", "total_cost_usd": 0.01, "duration_ms": 5000, "num_turns": 1}, f)
 
         from claude_bridge.message_db import MessageDB
         msg_db_path = str(tmp_path / "messages.db")

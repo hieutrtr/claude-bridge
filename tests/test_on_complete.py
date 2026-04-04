@@ -33,10 +33,10 @@ def setup_running_task(db, tmp_path):
 class TestParseResultFile:
     def test_valid_json(self, tmp_path):
         f = tmp_path / "result.json"
-        f.write_text(json.dumps({"cost_usd": 0.05, "is_error": False, "result": "done"}))
+        f.write_text(json.dumps({"total_cost_usd": 0.05, "is_error": False, "result": "done"}))
         result = parse_result_file(str(f))
         assert result is not None
-        assert result["cost_usd"] == 0.05
+        assert result["total_cost_usd"] == 0.05
 
     def test_missing_file(self):
         result = parse_result_file("/nonexistent/file.json")
@@ -63,7 +63,7 @@ class TestOnCompleteIntegration:
                 "type": "result",
                 "is_error": False,
                 "result": "Added pagination to /users",
-                "cost_usd": 0.04,
+                "total_cost_usd": 0.04,
                 "duration_ms": 135000,
                 "num_turns": 5,
             }, f)
@@ -90,7 +90,7 @@ class TestOnCompleteIntegration:
                 "type": "result",
                 "is_error": True,
                 "result": "npm test failed with exit code 1",
-                "cost_usd": 0.02,
+                "total_cost_usd": 0.02,
                 "duration_ms": 45000,
                 "num_turns": 3,
             }, f)
@@ -126,7 +126,7 @@ class TestOnCompleteIntegration:
         """After task completes, next queued task should auto-dispatch."""
         info = setup_running_task
         with open(info["result_file"], "w") as f:
-            json.dump({"is_error": False, "result": "done", "cost_usd": 0.01, "duration_ms": 5000, "num_turns": 1}, f)
+            json.dump({"is_error": False, "result": "done", "total_cost_usd": 0.01, "duration_ms": 5000, "num_turns": 1}, f)
 
         # Queue a task
         t2 = db.create_task(info["session_id"], "queued task")
@@ -148,7 +148,7 @@ class TestOnCompleteIntegration:
         """No queued tasks → agent goes idle."""
         info = setup_running_task
         with open(info["result_file"], "w") as f:
-            json.dump({"is_error": False, "result": "done", "cost_usd": 0.01, "duration_ms": 5000, "num_turns": 1}, f)
+            json.dump({"is_error": False, "result": "done", "total_cost_usd": 0.01, "duration_ms": 5000, "num_turns": 1}, f)
 
         monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", info["session_id"]])
         main(db=db)
@@ -193,7 +193,7 @@ class TestTeamAggregation:
         info = self._setup_team_tasks(db, tmp_path)
 
         with open(info["result_file"], "w") as f:
-            json.dump({"is_error": False, "result": "UI built", "cost_usd": 0.03, "duration_ms": 60000, "num_turns": 4}, f)
+            json.dump({"is_error": False, "result": "UI built", "total_cost_usd": 0.03, "duration_ms": 60000, "num_turns": 4}, f)
 
         monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", "frontend--web"])
         main(db=db)
@@ -215,7 +215,7 @@ class TestTeamAggregation:
         db.update_task(sub2_id, status="running", pid=333)
 
         with open(info["result_file"], "w") as f:
-            json.dump({"is_error": False, "result": "UI built", "cost_usd": 0.03, "duration_ms": 60000, "num_turns": 4}, f)
+            json.dump({"is_error": False, "result": "UI built", "total_cost_usd": 0.03, "duration_ms": 60000, "num_turns": 4}, f)
 
         monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", "frontend--web"])
         main(db=db)
@@ -231,7 +231,7 @@ class TestTeamAggregation:
         db.update_task(info["parent_id"], cost_usd=0.05)
 
         with open(info["result_file"], "w") as f:
-            json.dump({"is_error": False, "result": "UI built", "cost_usd": 0.03, "duration_ms": 60000, "num_turns": 4}, f)
+            json.dump({"is_error": False, "result": "UI built", "total_cost_usd": 0.03, "duration_ms": 60000, "num_turns": 4}, f)
 
         monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", "frontend--web"])
         main(db=db)
@@ -244,7 +244,7 @@ class TestTeamAggregation:
         """A task with no parent_task_id should not trigger aggregation."""
         info = setup_running_task
         with open(info["result_file"], "w") as f:
-            json.dump({"is_error": False, "result": "done", "cost_usd": 0.01, "duration_ms": 5000, "num_turns": 1}, f)
+            json.dump({"is_error": False, "result": "done", "total_cost_usd": 0.01, "duration_ms": 5000, "num_turns": 1}, f)
 
         monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", info["session_id"]])
         main(db=db)
@@ -258,7 +258,7 @@ class TestTeamAggregation:
         info = self._setup_team_tasks(db, tmp_path)
 
         with open(info["result_file"], "w") as f:
-            json.dump({"is_error": True, "result": "build failed", "cost_usd": 0.02, "duration_ms": 30000, "num_turns": 2}, f)
+            json.dump({"is_error": True, "result": "build failed", "total_cost_usd": 0.02, "duration_ms": 30000, "num_turns": 2}, f)
 
         monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", "frontend--web"])
         main(db=db)

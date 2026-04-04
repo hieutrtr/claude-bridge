@@ -31,7 +31,7 @@ class TestNewProject:
     def test_calls_claude_with_scan_prompt(self, mock_run, project_dir):
         mock_run.return_value = MagicMock(
             returncode=0,
-            stdout=json.dumps({"cost_usd": 0.05, "is_error": False}),
+            stdout=json.dumps({"total_cost_usd": 0.05, "is_error": False}),
             stderr="",
         )
 
@@ -52,7 +52,7 @@ class TestNewProject:
     def test_uses_correct_flags(self, mock_run, project_dir):
         mock_run.return_value = MagicMock(
             returncode=0,
-            stdout=json.dumps({"cost_usd": 0.03}),
+            stdout=json.dumps({"total_cost_usd": 0.03}),
             stderr="",
         )
 
@@ -76,7 +76,7 @@ class TestNewProject:
     def test_returns_success_with_cost(self, mock_run, project_dir):
         mock_run.return_value = MagicMock(
             returncode=0,
-            stdout=json.dumps({"cost_usd": 0.05}),
+            stdout=json.dumps({"total_cost_usd": 0.05}),
             stderr="",
         )
 
@@ -107,7 +107,7 @@ class TestExistingClaudeMd:
     def test_uses_append_prompt(self, mock_run, project_dir_with_claude_md):
         mock_run.return_value = MagicMock(
             returncode=0,
-            stdout=json.dumps({"cost_usd": 0.02}),
+            stdout=json.dumps({"total_cost_usd": 0.02}),
             stderr="",
         )
 
@@ -124,7 +124,7 @@ class TestExistingClaudeMd:
     def test_returns_updated_message(self, mock_run, project_dir_with_claude_md):
         mock_run.return_value = MagicMock(
             returncode=0,
-            stdout=json.dumps({"cost_usd": 0.01}),
+            stdout=json.dumps({"total_cost_usd": 0.01}),
             stderr="",
         )
 

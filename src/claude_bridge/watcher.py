@@ -56,7 +56,7 @@ def watch(timeout_minutes: int = DEFAULT_TIMEOUT_MINUTES, db: BridgeDB | None = 
                         task_id,
                         status="done",
                         result_summary=str(result.get("result", ""))[:500],
-                        cost_usd=result.get("cost_usd", 0),
+                        cost_usd=result.get("total_cost_usd", 0),
                         duration_ms=result.get("duration_ms", 0),
                         num_turns=result.get("num_turns", 0),
                         exit_code=0,

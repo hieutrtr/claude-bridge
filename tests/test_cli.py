@@ -1010,7 +1010,7 @@ class TestTeamEndToEnd:
             json.dump({
                 "is_error": False,
                 "result": "Built profile UI with avatar and bio sections",
-                "cost_usd": 0.06,
+                "total_cost_usd": 0.06,
                 "duration_ms": 180000,
                 "num_turns": 8,
             }, f)
@@ -1073,7 +1073,7 @@ class TestTeamEndToEnd:
 
         # Sub1 succeeds
         with open(sub1_file, "w") as f:
-            json.dump({"is_error": False, "result": "Charts done", "cost_usd": 0.04, "duration_ms": 60000, "num_turns": 3}, f)
+            json.dump({"is_error": False, "result": "Charts done", "total_cost_usd": 0.04, "duration_ms": 60000, "num_turns": 3}, f)
         monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", frontend["session_id"]])
         on_complete_main(db=db)
 
@@ -1082,7 +1082,7 @@ class TestTeamEndToEnd:
 
         # Sub2 fails
         with open(sub2_file, "w") as f:
-            json.dump({"is_error": True, "result": "DB connection failed", "cost_usd": 0.02, "duration_ms": 30000, "num_turns": 2}, f)
+            json.dump({"is_error": True, "result": "DB connection failed", "total_cost_usd": 0.02, "duration_ms": 30000, "num_turns": 2}, f)
         monkeypatch.setattr(sys, "argv", ["on-complete", "--session-id", devops["session_id"]])
         on_complete_main(db=db)
 

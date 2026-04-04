@@ -85,7 +85,7 @@ def init_claude_md(
                 return {
                     "success": True,
                     "message": "CLAUDE.md initialized" if not has_existing else "CLAUDE.md updated",
-                    "cost_usd": output.get("cost_usd", 0),
+                    "cost_usd": output.get("total_cost_usd", 0),
                 }
             except json.JSONDecodeError:
                 return {"success": True, "message": "CLAUDE.md initialized (no JSON output)"}
