@@ -89,6 +89,26 @@ class TestWatcherTimeout:
         mock_kill.assert_called_once_with(88888)
 
 
+class TestWatcherDequeue:
+    @patch("claude_bridge.watcher.spawn_task", return_value=12345)
+    @patch("claude_bridge.watcher.pid_alive", return_value=False)
+    def test_dequeues_next_task_after_hook_missed(self, mock_alive, mock_spawn, db, agent_with_running_task, tmp_path):
+        """Dead PID (hook missed) + queued task → queued task dequeued to pending."""
+        info = agent_with_running_task
+        with open(info["result_file"], "w") as f:
+            json.dump({"is_error": False, "result": "done", "cost_usd": 0.01}, f)
+
+        # Queue a second task
+        queued_id = db.create_task("backend--api", "second task")
+        db.update_task(queued_id, status="queued", position=1)
+
+        _run_watch(db)
+
+        queued_task = db.get_task(queued_id)
+        assert queued_task["status"] == "running"
+        mock_spawn.assert_called_once()
+
+
 class TestWatcherNoOp:
     def test_no_running_tasks(self, db):
         """No running tasks → exits silently."""
