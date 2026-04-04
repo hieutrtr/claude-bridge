@@ -28,3 +28,7 @@ channel/.env
 
 # Claude
 .mcp.json
+
+# Pytest
+.pytest_cache/
+
