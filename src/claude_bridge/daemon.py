@@ -22,8 +22,30 @@ import sys
 from pathlib import Path
 
 
-SYSTEMD_SERVICE_NAME = "claude-bridge"
-LAUNCHD_LABEL = "ai.claude-bridge"
+_DEFAULT_BRIDGE_HOME = "~/.claude-bridge"
+
+
+def get_service_name(bridge_home: str | None = None) -> str:
+    """Derive service name from CLAUDE_BRIDGE_HOME basename.
+
+    ~/.claude-bridge       → claude-bridge   (default, backward compatible)
+    ~/.claude-bridge-alice → claude-bridge-alice
+    ~/.claude-bridge-bob   → claude-bridge-bob
+    """
+    home = bridge_home or os.environ.get("CLAUDE_BRIDGE_HOME") or _DEFAULT_BRIDGE_HOME
+    basename = Path(os.path.expanduser(str(home))).name
+    # Strip leading dot: ".claude-bridge" → "claude-bridge"
+    name = basename.lstrip(".")
+    return name if name else "claude-bridge"
+
+
+def get_launchd_label(bridge_home: str | None = None) -> str:
+    """Derive launchd label from CLAUDE_BRIDGE_HOME.
+
+    ~/.claude-bridge       → ai.claude-bridge   (default, backward compatible)
+    ~/.claude-bridge-alice → ai.claude-bridge-alice
+    """
+    return f"ai.{get_service_name(bridge_home)}"
 
 
 # ---------------------------------------------------------------------------
@@ -95,9 +117,10 @@ WantedBy=default.target
 """
 
 
-def _systemd_unit_path() -> Path:
-    """~/.config/systemd/user/claude-bridge.service"""
-    return Path.home() / ".config" / "systemd" / "user" / f"{SYSTEMD_SERVICE_NAME}.service"
+def _systemd_unit_path(bridge_home: str | None = None) -> Path:
+    """~/.config/systemd/user/{service_name}.service"""
+    name = get_service_name(bridge_home)
+    return Path.home() / ".config" / "systemd" / "user" / f"{name}.service"
 
 
 def install_systemd(bot_dir: str, bridge_home: str, log_path: str) -> tuple[bool, str]:
@@ -110,7 +133,7 @@ def install_systemd(bot_dir: str, bridge_home: str, log_path: str) -> tuple[bool
             "Alternatives: use 'bridge start' in a persistent shell, or add a cron job with 'bridge-cli setup-cron'."
         )
 
-    unit_path = _systemd_unit_path()
+    unit_path = _systemd_unit_path(bridge_home)
     unit_path.parent.mkdir(parents=True, exist_ok=True)
 
     bridge_cmd = _get_bridge_cmd()
@@ -125,6 +148,7 @@ def install_systemd(bot_dir: str, bridge_home: str, log_path: str) -> tuple[bool
     )
     unit_path.write_text(content)
 
+    service_name = get_service_name(bridge_home)
     # Reload systemd and enable
     try:
         subprocess.run(
@@ -132,7 +156,7 @@ def install_systemd(bot_dir: str, bridge_home: str, log_path: str) -> tuple[bool
             capture_output=True, check=True,
         )
         subprocess.run(
-            ["systemctl", "--user", "enable", SYSTEMD_SERVICE_NAME],
+            ["systemctl", "--user", "enable", service_name],
             capture_output=True, check=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
@@ -148,14 +172,15 @@ def install_systemd(bot_dir: str, bridge_home: str, log_path: str) -> tuple[bool
 
 def uninstall_systemd() -> tuple[bool, str]:
     """Remove the systemd user service. Returns (success, message)."""
+    service_name = get_service_name()
     unit_path = _systemd_unit_path()
     try:
         subprocess.run(
-            ["systemctl", "--user", "stop", SYSTEMD_SERVICE_NAME],
+            ["systemctl", "--user", "stop", service_name],
             capture_output=True,
         )
         subprocess.run(
-            ["systemctl", "--user", "disable", SYSTEMD_SERVICE_NAME],
+            ["systemctl", "--user", "disable", service_name],
             capture_output=True,
         )
     except FileNotFoundError:
@@ -175,7 +200,7 @@ def start_systemd() -> tuple[bool, str]:
     """Start the systemd service."""
     try:
         r = subprocess.run(
-            ["systemctl", "--user", "start", SYSTEMD_SERVICE_NAME],
+            ["systemctl", "--user", "start", get_service_name()],
             capture_output=True, text=True,
         )
         if r.returncode == 0:
@@ -189,7 +214,7 @@ def stop_systemd() -> tuple[bool, str]:
     """Stop the systemd service."""
     try:
         r = subprocess.run(
-            ["systemctl", "--user", "stop", SYSTEMD_SERVICE_NAME],
+            ["systemctl", "--user", "stop", get_service_name()],
             capture_output=True, text=True,
         )
         if r.returncode == 0:
@@ -201,14 +226,15 @@ def stop_systemd() -> tuple[bool, str]:
 
 def status_systemd() -> str:
     """Get systemd service status as a string."""
+    service_name = get_service_name()
     try:
         r = subprocess.run(
-            ["systemctl", "--user", "is-active", SYSTEMD_SERVICE_NAME],
+            ["systemctl", "--user", "is-active", service_name],
             capture_output=True, text=True,
         )
         active = r.stdout.strip()  # 'active', 'inactive', 'failed', etc.
         r2 = subprocess.run(
-            ["systemctl", "--user", "is-enabled", SYSTEMD_SERVICE_NAME],
+            ["systemctl", "--user", "is-enabled", service_name],
             capture_output=True, text=True,
         )
         enabled = r2.stdout.strip()  # 'enabled', 'disabled', etc.
@@ -258,14 +284,15 @@ LAUNCHD_PLIST_TEMPLATE = """\
 """
 
 
-def _launchd_plist_path() -> Path:
-    """~/Library/LaunchAgents/ai.claude-bridge.plist"""
-    return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+def _launchd_plist_path(bridge_home: str | None = None) -> Path:
+    """~/Library/LaunchAgents/{label}.plist"""
+    label = get_launchd_label(bridge_home)
+    return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
 
 
 def install_launchd(bot_dir: str, bridge_home: str, log_path: str) -> tuple[bool, str]:
     """Install the launchd agent plist. Returns (success, message)."""
-    plist_path = _launchd_plist_path()
+    plist_path = _launchd_plist_path(bridge_home)
     plist_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Build ProgramArguments XML entries
@@ -277,9 +304,10 @@ def install_launchd(bot_dir: str, bridge_home: str, log_path: str) -> tuple[bool
 
     program_args = "\n        ".join(f"<string>{a}</string>" for a in args)
     path_env = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    label = get_launchd_label(bridge_home)
 
     content = LAUNCHD_PLIST_TEMPLATE.format(
-        label=LAUNCHD_LABEL,
+        label=label,
         program_args=program_args,
         bridge_home=bridge_home,
         path=path_env,
@@ -342,7 +370,7 @@ def start_launchd() -> tuple[bool, str]:
     """Start the launchd agent."""
     try:
         r = subprocess.run(
-            ["launchctl", "start", LAUNCHD_LABEL],
+            ["launchctl", "start", get_launchd_label()],
             capture_output=True, text=True,
         )
         if r.returncode == 0:
@@ -356,7 +384,7 @@ def stop_launchd() -> tuple[bool, str]:
     """Stop the launchd agent."""
     try:
         r = subprocess.run(
-            ["launchctl", "stop", LAUNCHD_LABEL],
+            ["launchctl", "stop", get_launchd_label()],
             capture_output=True, text=True,
         )
         if r.returncode == 0:
@@ -368,9 +396,10 @@ def stop_launchd() -> tuple[bool, str]:
 
 def status_launchd() -> str:
     """Get launchd agent status as a string."""
+    label = get_launchd_label()
     try:
         r = subprocess.run(
-            ["launchctl", "list", LAUNCHD_LABEL],
+            ["launchctl", "list", label],
             capture_output=True, text=True,
         )
         if r.returncode == 0:

@@ -10,8 +10,8 @@ import pytest
 
 from claude_bridge.daemon import (
     get_platform,
-    SYSTEMD_SERVICE_NAME,
-    LAUNCHD_LABEL,
+    get_service_name,
+    get_launchd_label,
     SYSTEMD_UNIT_TEMPLATE,
     LAUNCHD_PLIST_TEMPLATE,
     install_daemon,
@@ -20,6 +20,9 @@ from claude_bridge.daemon import (
     get_daemon_file_path,
     get_daemon_status,
 )
+
+SYSTEMD_SERVICE_NAME = get_service_name("~/.claude-bridge")
+LAUNCHD_LABEL = get_launchd_label("~/.claude-bridge")
 
 
 class TestGetPlatform:
@@ -86,16 +89,18 @@ class TestLaunchdInstall:
     def test_creates_plist_file(self, tmp_path):
         """install_launchd() creates the plist at the correct path."""
         from claude_bridge.daemon import install_launchd
+        bridge_home = str(tmp_path / "bridge")
+        expected_label = get_launchd_label(bridge_home)
         plist_dir = tmp_path / "Library" / "LaunchAgents"
         plist_dir.mkdir(parents=True)
-        plist_path = plist_dir / f"{LAUNCHD_LABEL}.plist"
+        plist_path = plist_dir / f"{expected_label}.plist"
 
         with patch("claude_bridge.daemon._launchd_plist_path", return_value=plist_path), \
              patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             ok, msg = install_launchd(
                 bot_dir=str(tmp_path / "bot"),
-                bridge_home=str(tmp_path / "bridge"),
+                bridge_home=bridge_home,
                 log_path=str(tmp_path / "bridge.log"),
             )
 
@@ -103,15 +108,15 @@ class TestLaunchdInstall:
         assert plist_path.exists()
         content = plist_path.read_text()
         assert "<?xml" in content
-        assert LAUNCHD_LABEL in content
+        assert expected_label in content
 
     def test_plist_contains_bridge_home(self, tmp_path):
         """launchd plist includes CLAUDE_BRIDGE_HOME env var."""
         from claude_bridge.daemon import install_launchd
         plist_dir = tmp_path / "Library" / "LaunchAgents"
         plist_dir.mkdir(parents=True)
-        plist_path = plist_dir / f"{LAUNCHD_LABEL}.plist"
         custom_home = str(tmp_path / "custom-bridge")
+        plist_path = plist_dir / f"{get_launchd_label(custom_home)}.plist"
 
         with patch("claude_bridge.daemon._launchd_plist_path", return_value=plist_path), \
              patch("subprocess.run") as mock_run:
