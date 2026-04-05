@@ -6,7 +6,7 @@
 
 > Spawn multiple agents, assign projects, dispatch tasks, track progress — all from your phone.
 
-[![Version](https://img.shields.io/badge/version-0.3.5-blue)](https://github.com/hieutrtr/claude-bridge/releases)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/hieutrtr/claude-bridge/releases)
 [![Tests](https://img.shields.io/badge/tests-405%2B%20passing-brightgreen)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -232,6 +232,60 @@ bridge-cli doctor
 ```
 
 All checks should pass. Send `/help` to your bot on Telegram.
+
+## Multi-User Setup
+
+Claude Bridge currently supports **one user per instance**. Each instance has its own Telegram bot, database, and configuration directory.
+
+To support multiple users, run separate instances with isolated environments:
+
+### Requirements per instance
+
+| What | Why |
+|------|-----|
+| Separate `CLAUDE_BRIDGE_HOME` | Isolates both SQLite databases (`bridge.db`, `messages.db`) and `config.json` |
+| Separate Telegram bot token | Eliminates the Telegram poller offset race — both pollers would otherwise duplicate every message |
+| Separate agent names or project paths | Prevents agent `.md` file collision and workspace path collision under `~/.claude/agents/` |
+| Only one watcher cron per `CLAUDE_BRIDGE_HOME` | Prevents double task completion and duplicate Telegram notifications |
+
+### Setup example
+
+```bash
+# Create a bot for each user via @BotFather, then:
+
+# User Alice
+CLAUDE_BRIDGE_HOME=~/.claude-bridge-alice \
+  bridge-cli setup --token "token-alice" --bot-dir ~/projects/bridge-bot-alice --no-prompt
+
+# User Bob
+CLAUDE_BRIDGE_HOME=~/.claude-bridge-bob \
+  bridge-cli setup --token "token-bob" --bot-dir ~/projects/bridge-bot-bob --no-prompt
+```
+
+Start each instance in a separate terminal (or systemd unit / tmux window):
+
+```bash
+# Instance for Alice
+CLAUDE_BRIDGE_HOME=~/.claude-bridge-alice \
+  claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions
+
+# Instance for Bob
+CLAUDE_BRIDGE_HOME=~/.claude-bridge-bob \
+  claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions
+```
+
+### What is still shared between instances
+
+Even with separate `CLAUDE_BRIDGE_HOME`, the following remain shared:
+
+- **Stop hook routing** — if two instances register agents in the **same project directory**, the second `bridge-cli setup` overwrites the Stop hook in `.claude/settings.local.json`. Use separate project paths to avoid this.
+- **Agent `.md` files** — stored under `~/.claude/agents/bridge--{agent}--{project}.md`. Collision occurs if two instances use the same agent name and the same project directory basename. Use distinct agent names or project paths.
+
+### Single-bot multi-user support (future)
+
+Sharing a **single Telegram bot** between multiple users requires Phase 2 (not yet implemented). v0.4.0 added `chat_id` / `user_id` propagation through the dispatch chain — the routing infrastructure is in place, but per-user agent isolation and access control for a shared bot are not implemented yet.
+
+---
 
 ## Usage
 

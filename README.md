@@ -6,7 +6,7 @@
 
 > Tạo nhiều agent, phân công dự án, dispatch task, theo dõi tiến độ — tất cả từ điện thoại.
 
-[![Version](https://img.shields.io/badge/version-0.3.5-blue)](https://github.com/hieutrtr/claude-bridge/releases)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/hieutrtr/claude-bridge/releases)
 [![Tests](https://img.shields.io/badge/tests-405%2B%20passing-brightgreen)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -232,6 +232,60 @@ bridge-cli doctor
 ```
 
 Tất cả check phải pass. Gửi `/help` cho bot trên Telegram.
+
+## Thiết lập đa người dùng (Multi-User Setup)
+
+Claude Bridge hiện tại hỗ trợ **một người dùng mỗi instance**. Mỗi instance có Telegram bot, database và thư mục cấu hình riêng biệt.
+
+Để hỗ trợ nhiều người dùng, chạy các instance riêng biệt với môi trường được cô lập:
+
+### Yêu cầu cho mỗi instance
+
+| Thứ | Lý do |
+|------|-----|
+| `CLAUDE_BRIDGE_HOME` riêng biệt | Cô lập cả hai SQLite database (`bridge.db`, `messages.db`) và `config.json` |
+| Telegram bot token riêng biệt | Tránh Telegram poller offset race — nếu dùng chung, cả hai poller sẽ nhân đôi mỗi tin nhắn |
+| Agent name hoặc project path riêng biệt | Tránh collision file agent `.md` và workspace path dưới `~/.claude/agents/` |
+| Chỉ một watcher cron mỗi `CLAUDE_BRIDGE_HOME` | Tránh hoàn thành task kép và gửi thông báo Telegram trùng lặp |
+
+### Ví dụ thiết lập
+
+```bash
+# Tạo bot cho mỗi người dùng qua @BotFather, sau đó:
+
+# User Alice
+CLAUDE_BRIDGE_HOME=~/.claude-bridge-alice \
+  bridge-cli setup --token "token-alice" --bot-dir ~/projects/bridge-bot-alice --no-prompt
+
+# User Bob
+CLAUDE_BRIDGE_HOME=~/.claude-bridge-bob \
+  bridge-cli setup --token "token-bob" --bot-dir ~/projects/bridge-bot-bob --no-prompt
+```
+
+Khởi động mỗi instance trong terminal riêng biệt (hoặc systemd unit / cửa sổ tmux):
+
+```bash
+# Instance cho Alice
+CLAUDE_BRIDGE_HOME=~/.claude-bridge-alice \
+  claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions
+
+# Instance cho Bob
+CLAUDE_BRIDGE_HOME=~/.claude-bridge-bob \
+  claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions
+```
+
+### Những gì vẫn dùng chung giữa các instance
+
+Dù có `CLAUDE_BRIDGE_HOME` riêng biệt, những thứ sau vẫn dùng chung:
+
+- **Stop hook routing** — nếu hai instance đăng ký agent trong **cùng một thư mục project**, lần `bridge-cli setup` thứ hai sẽ ghi đè Stop hook trong `.claude/settings.local.json`. Dùng project path riêng biệt để tránh.
+- **File agent `.md`** — lưu tại `~/.claude/agents/bridge--{agent}--{project}.md`. Collision xảy ra nếu hai instance dùng cùng agent name và cùng project directory basename. Dùng agent name hoặc project path khác nhau.
+
+### Hỗ trợ đa người dùng trên một bot (tương lai)
+
+Dùng chung **một Telegram bot** cho nhiều người dùng cần Phase 2 (chưa triển khai). v0.4.0 đã thêm `chat_id` / `user_id` vào toàn bộ dispatch chain — infrastructure routing đã có, nhưng per-user agent isolation và access control cho shared bot chưa được implement.
+
+---
 
 ## Cách dùng
 

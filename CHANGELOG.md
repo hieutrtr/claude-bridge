@@ -6,6 +6,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.4.0] — 2026-04-05
+
+### Added
+
+**Multi-user routing infrastructure — `chat_id` / `user_id` propagation**
+
+Groundwork for future single-bot multi-user support. All dispatch paths now carry
+the originating Telegram `chat_id` and `user_id` so that task completions and
+notifications can be routed back to the correct user.
+
+- **`chat_id` / `user_id` through dispatch chain** — `dispatcher.py`, `on_complete.py`,
+  and the MCP `bridge_dispatch` tool now accept and propagate `chat_id` / `user_id`
+  as first-class fields stored in the `tasks` table.
+- **DB schema** — `tasks` table gains `chat_id` and `user_id` columns (additive
+  migration; existing databases upgrade automatically on first run).
+- **Multi-user documentation** — `README.md` and `README_en.md` now document the
+  safe multi-user setup pattern (separate `CLAUDE_BRIDGE_HOME` + separate bot token
+  per user) with setup examples and known limitations.
+
+### Notes
+
+- Single-bot multi-user support (shared bot token, per-user routing and access
+  control) is not yet implemented. Use separate instances as documented in the
+  new Multi-User Setup section.
+- This release does not change the single-user UX; existing setups continue to
+  work without changes.
+
+---
+
 ## [0.3.0] — 2026-04-03
 
 ### Added
