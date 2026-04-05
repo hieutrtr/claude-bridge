@@ -266,3 +266,91 @@ class TestToolGetNotifications:
     def test_no_unreported(self, env):
         result = json.loads(tool_get_notifications(env["db"]))
         assert result["notifications"] == []
+
+
+class TestToolDispatchMultiUser:
+    """Tests for multi-user chat_id/user_id propagation in tool_dispatch."""
+
+    @patch("claude_bridge.mcp_tools.spawn_task", return_value=99999)
+    def test_dispatch_with_chat_id_sets_channel_telegram(self, mock_spawn, env):
+        """When chat_id is provided, channel must be 'telegram' (not default)."""
+        db = env["db"]
+        with patch("claude_bridge.mcp_tools.init_claude_md", return_value={"success": True, "message": "ok"}):
+            tool_create_agent(db, "backend", str(env["project"]), "API dev")
+
+        result = json.loads(tool_dispatch(db, "backend", "fix bug", chat_id="111222333"))
+        assert result["status"] == "running"
+
+        task = db.get_task(result["task_id"])
+        assert task["channel"] == "telegram"
+        assert task["channel_chat_id"] == "111222333"
+
+    @patch("claude_bridge.mcp_tools.spawn_task", return_value=99999)
+    def test_dispatch_with_user_id_stored_on_task(self, mock_spawn, env):
+        """When user_id is provided, it must be stored on the task."""
+        db = env["db"]
+        with patch("claude_bridge.mcp_tools.init_claude_md", return_value={"success": True, "message": "ok"}):
+            tool_create_agent(db, "backend", str(env["project"]), "API dev")
+
+        result = json.loads(
+            tool_dispatch(db, "backend", "fix bug", chat_id="111222333", user_id="456789")
+        )
+        task = db.get_task(result["task_id"])
+        assert task["user_id"] == "456789"
+        assert task["channel_chat_id"] == "111222333"
+
+    @patch("claude_bridge.mcp_tools.spawn_task", return_value=99999)
+    def test_dispatch_without_chat_id_uses_default_channel(self, mock_spawn, env):
+        """When chat_id is None, fallback to get_default_channel() (backward-compat)."""
+        db = env["db"]
+        with patch("claude_bridge.mcp_tools.init_claude_md", return_value={"success": True, "message": "ok"}):
+            tool_create_agent(db, "backend", str(env["project"]), "API dev")
+
+        with patch("claude_bridge.notify.get_default_channel", return_value=("cli", None)):
+            result = json.loads(tool_dispatch(db, "backend", "fix bug"))
+
+        task = db.get_task(result["task_id"])
+        assert task["channel"] == "cli"
+        assert task["channel_chat_id"] is None
+
+    @patch("claude_bridge.mcp_tools.spawn_task", return_value=99999)
+    def test_queued_task_preserves_chat_id_and_user_id(self, mock_spawn, env):
+        """Queued tasks also store chat_id and user_id from the originating user."""
+        db = env["db"]
+        with patch("claude_bridge.mcp_tools.init_claude_md", return_value={"success": True, "message": "ok"}):
+            tool_create_agent(db, "backend", str(env["project"]), "API dev")
+
+        # First task: dispatch Alice's task (runs)
+        tool_dispatch(db, "backend", "alice task", chat_id="111", user_id="AAA")
+
+        # Second task: Bob's task gets queued (agent is busy)
+        result = json.loads(
+            tool_dispatch(db, "backend", "bob task", chat_id="222", user_id="BBB")
+        )
+        assert result["status"] == "queued"
+
+        task = db.get_task(result["task_id"])
+        assert task["channel_chat_id"] == "222"
+        assert task["user_id"] == "BBB"
+
+    @patch("claude_bridge.mcp_tools.spawn_task", return_value=99999)
+    def test_two_users_have_separate_chat_ids(self, mock_spawn, env):
+        """Alice and Bob tasks get their own channel_chat_id — no mixing."""
+        db = env["db"]
+        project2 = env["home"] / "project2"
+        project2.mkdir()
+        (project2 / ".git").mkdir()
+
+        with patch("claude_bridge.mcp_tools.init_claude_md", return_value={"success": True, "message": "ok"}):
+            tool_create_agent(db, "backend", str(env["project"]), "API dev")
+            tool_create_agent(db, "frontend", str(project2), "UI dev")
+
+        r1 = json.loads(tool_dispatch(db, "backend", "alice task", chat_id="111", user_id="AAA"))
+        r2 = json.loads(tool_dispatch(db, "frontend", "bob task", chat_id="222", user_id="BBB"))
+
+        t1 = db.get_task(r1["task_id"])
+        t2 = db.get_task(r2["task_id"])
+        assert t1["channel_chat_id"] == "111"
+        assert t1["user_id"] == "AAA"
+        assert t2["channel_chat_id"] == "222"
+        assert t2["user_id"] == "BBB"

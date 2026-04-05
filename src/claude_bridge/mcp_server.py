@@ -52,9 +52,25 @@ def create_server(db: BridgeDB | None = None, msg_db: MessageDB | None = None) -
     # --- Bridge Operation Tools ---
 
     @server.tool()
-    def bridge_dispatch(agent: str, prompt: str, model: str | None = None) -> str:
-        """Dispatch a task to an agent. Returns task ID and PID."""
-        return mcp_tools.tool_dispatch(_db(), agent, prompt, model)
+    def bridge_dispatch(
+        agent: str,
+        prompt: str,
+        model: str | None = None,
+        chat_id: str | None = None,
+        user_id: str | None = None,
+    ) -> str:
+        """Dispatch a task to an agent. Returns task ID and PID.
+
+        Args:
+            agent: Agent name to dispatch to.
+            prompt: Task prompt.
+            model: Optional model override.
+            chat_id: Originating Telegram chat_id from the inbound message.
+                ALWAYS pass this when dispatching from a Telegram message so that
+                completion notifications are routed back to the correct user.
+            user_id: Originating Telegram user_id for multi-user tracking.
+        """
+        return mcp_tools.tool_dispatch(_db(), agent, prompt, model, chat_id, user_id)
 
     @server.tool()
     def bridge_status(agent: str | None = None) -> str:

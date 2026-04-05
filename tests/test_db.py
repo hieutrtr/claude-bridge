@@ -491,3 +491,105 @@ class TestTaskParentChild:
         tid = db.create_task("backend--api", "normal task")
         task = db.get_task(tid)
         assert task["parent_task_id"] is None
+
+
+class TestMultiUserSupport:
+    """Tests for multi-user user_id tracking in tasks."""
+
+    def test_user_id_column_exists(self, db):
+        """tasks table must have a user_id column."""
+        cursor = db.conn.execute("PRAGMA table_info(tasks)")
+        cols = {row[1] for row in cursor.fetchall()}
+        assert "user_id" in cols
+
+    def test_user_id_defaults_to_null(self, db):
+        """Tasks created without user_id should have user_id=None."""
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "")
+        tid = db.create_task("backend--api", "fix bug")
+        task = db.get_task(tid)
+        assert task["user_id"] is None
+
+    def test_create_task_with_user_id(self, db):
+        """Tasks can be created with an explicit user_id."""
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "")
+        tid = db.create_task("backend--api", "fix bug", user_id="456789")
+        task = db.get_task(tid)
+        assert task["user_id"] == "456789"
+
+    def test_create_task_with_channel_and_user_id(self, db):
+        """Tasks created with full routing context store all fields."""
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "")
+        tid = db.create_task(
+            "backend--api", "fix bug",
+            channel="telegram",
+            channel_chat_id="111222333",
+            user_id="456789",
+        )
+        task = db.get_task(tid)
+        assert task["channel"] == "telegram"
+        assert task["channel_chat_id"] == "111222333"
+        assert task["user_id"] == "456789"
+
+    def test_multiple_users_different_user_ids(self, db):
+        """Multiple tasks from different users store distinct user_ids."""
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "")
+        tid_alice = db.create_task("backend--api", "alice task", channel="telegram",
+                                   channel_chat_id="111", user_id="AAA")
+        tid_bob = db.create_task("backend--api", "bob task", channel="telegram",
+                                 channel_chat_id="222", user_id="BBB")
+        alice_task = db.get_task(tid_alice)
+        bob_task = db.get_task(tid_bob)
+        assert alice_task["user_id"] == "AAA"
+        assert alice_task["channel_chat_id"] == "111"
+        assert bob_task["user_id"] == "BBB"
+        assert bob_task["channel_chat_id"] == "222"
+
+    def test_update_task_user_id(self, db):
+        """user_id can be updated via update_task()."""
+        db.create_agent("backend", "/p/api", "backend--api", "/a.md", "")
+        tid = db.create_task("backend--api", "fix bug")
+        db.update_task(tid, user_id="987654")
+        task = db.get_task(tid)
+        assert task["user_id"] == "987654"
+
+    def test_migration_adds_user_id_to_existing_db(self, tmp_path):
+        """Existing DB without user_id column gets it added via migration."""
+        import sqlite3 as _sqlite3
+        db_path = str(tmp_path / "old.db")
+
+        # Create a DB with the old schema (no user_id column)
+        conn = _sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE agents (
+                name TEXT NOT NULL,
+                project_dir TEXT NOT NULL,
+                session_id TEXT NOT NULL UNIQUE,
+                agent_file TEXT NOT NULL,
+                purpose TEXT,
+                state TEXT DEFAULT 'created',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (name, project_dir)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                channel TEXT DEFAULT 'cli',
+                channel_chat_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+        # Now open with BridgeDB — migration should add user_id
+        from claude_bridge.db import BridgeDB
+        db = BridgeDB(db_path)
+        cursor = db.conn.execute("PRAGMA table_info(tasks)")
+        cols = {row[1] for row in cursor.fetchall()}
+        assert "user_id" in cols
+        db.close()

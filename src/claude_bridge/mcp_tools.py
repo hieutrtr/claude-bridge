@@ -67,28 +67,51 @@ def tool_status(db: BridgeDB, agent: str | None = None) -> str:
     return json.dumps({"running": running})
 
 
-def tool_dispatch(db: BridgeDB, agent: str, prompt: str, model: str | None = None) -> str:
-    """Dispatch a task to an agent."""
+def tool_dispatch(
+    db: BridgeDB,
+    agent: str,
+    prompt: str,
+    model: str | None = None,
+    chat_id: str | None = None,
+    user_id: str | None = None,
+) -> str:
+    """Dispatch a task to an agent.
+
+    Args:
+        db: BridgeDB instance.
+        agent: Agent name to dispatch to.
+        prompt: Task prompt.
+        model: Optional model override.
+        chat_id: Originating Telegram chat_id from inbound message. When provided,
+            notifications will be routed back to this chat. If None, falls back to
+            the default channel from config (backward-compatible for CLI dispatch).
+        user_id: Originating Telegram user_id for multi-user tracking. Optional.
+    """
     a = db.get_agent(agent)
     if not a:
         return json.dumps({"error": f"Agent '{agent}' not found"})
 
     session_id = a["session_id"]
 
-    # Auto-detect notification channel
-    from .notify import get_default_channel
-    channel, chat_id = get_default_channel()
+    # Determine notification channel:
+    # - If chat_id provided (Telegram inbound), use it directly for correct routing
+    # - Otherwise fall back to default channel from config (CLI / single-user mode)
+    if chat_id:
+        channel = "telegram"
+    else:
+        from .notify import get_default_channel
+        channel, chat_id = get_default_channel()
 
     # Queue if busy
     running = db.get_running_task(session_id)
     if running:
-        task_id = db.create_task(session_id, prompt, channel=channel, channel_chat_id=chat_id)
+        task_id = db.create_task(session_id, prompt, channel=channel, channel_chat_id=chat_id, user_id=user_id)
         position = db.get_next_queue_position(session_id)
         db.update_task(task_id, status="queued", position=position)
         return json.dumps({"task_id": task_id, "status": "queued", "position": position})
 
     # Create and spawn
-    task_id = db.create_task(session_id, prompt, channel=channel, channel_chat_id=chat_id)
+    task_id = db.create_task(session_id, prompt, channel=channel, channel_chat_id=chat_id, user_id=user_id)
     result_file = get_result_file(session_id, task_id)
     agent_file_name = _agent_file_name(session_id)
     task_model = model or a["model"]

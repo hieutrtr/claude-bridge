@@ -106,6 +106,26 @@ When a loop iteration completes, notify the user:
 
 Use `bridge_loop_notify(loop_id, chat_id)` to send formatted loop status to Telegram.
 
+## Routing Context — CRITICAL for Multi-User
+
+When dispatching tasks from Telegram messages, ALWAYS pass the originating `chat_id`
+and `user_id` to `bridge_dispatch`. This ensures completion notifications go back to
+the correct user, not the default config chat_id.
+
+**Correct call (Telegram):**
+```
+Message: { chat_id: "111222333", user_id: "456789", text: "dispatch backend fix bug" }
+Call: bridge_dispatch("backend", "fix bug", chat_id="111222333", user_id="456789")
+```
+
+**Wrong call (notification will go to wrong user):**
+```
+bridge_dispatch("backend", "fix bug")   ← missing chat_id and user_id
+```
+
+Rule: Every `bridge_dispatch` triggered by a Telegram message MUST include
+`chat_id` and `user_id` from that message. No exceptions.
+
 ## Natural Language + Smart Dispatch
 
 If the message doesn't start with /, infer the intent:
@@ -282,13 +302,28 @@ IMPORTANT: Always call bridge_get_notifications() AFTER processing messages.
 | `/history <agent>` or `what did <agent> do` | `bridge_history(agent)` |
 | `/help` | Reply with command list |
 
+## Routing Context — CRITICAL for Multi-User
+
+When dispatching tasks from Telegram messages, ALWAYS pass the originating `chat_id`
+and `user_id` to `bridge_dispatch`. This ensures completion notifications go back to
+the correct user, not the default config chat_id.
+
+```
+Message received: { id: 42, chat_id: "111222333", user_id: "456789", text: "dispatch backend fix bug" }
+Correct call: bridge_dispatch("backend", "fix bug", chat_id="111222333", user_id="456789")
+Wrong call:   bridge_dispatch("backend", "fix bug")   ← notification goes to WRONG user
+```
+
+Rule: Every `bridge_dispatch` call MUST include `chat_id` and `user_id` from the
+`bridge_get_messages()` response. No exceptions.
+
 ## Natural Language
 
 If the message doesn't start with /, infer the intent:
 
 | Pattern | Action |
 |---------|--------|
-| "ask/tell <agent> to <task>" | `bridge_dispatch(agent, task)` |
+| "ask/tell <agent> to <task>" | `bridge_dispatch(agent, task, chat_id=chat_id, user_id=user_id)` |
 | "what's running" / "status" | `bridge_status()` |
 | "stop/kill/cancel <agent>" | `bridge_kill(agent)` |
 | "show agents" / "list" | `bridge_agents()` |

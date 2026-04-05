@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     channel TEXT DEFAULT 'cli',
     channel_chat_id TEXT,
     channel_message_id TEXT,
+    user_id TEXT DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
@@ -191,6 +192,7 @@ class BridgeDB:
             ("tasks", "channel_chat_id", "TEXT"),
             ("tasks", "channel_message_id", "TEXT"),
             ("tasks", "reported", "INTEGER DEFAULT 0"),
+            ("tasks", "user_id", "TEXT DEFAULT NULL"),
             ("agents", "model", "TEXT DEFAULT 'sonnet'"),
             # Phase 2 loop columns
             ("loops", "max_cost_usd", "REAL"),
@@ -213,6 +215,7 @@ class BridgeDB:
         channel: str = "cli",
         channel_chat_id: str | None = None,
         channel_message_id: str | None = None,
+        user_id: str | None = None,
     ) -> tuple[int | None, bool]:
         """Atomically check for running task and create new task if agent is free.
 
@@ -238,9 +241,9 @@ class BridgeDB:
                 self.conn.execute("COMMIT")
                 return None, True
             cursor = self.conn.execute(
-                """INSERT INTO tasks (session_id, prompt, status, channel, channel_chat_id, channel_message_id)
-                   VALUES (?, ?, 'running', ?, ?, ?)""",
-                (session_id, prompt, channel, channel_chat_id, channel_message_id),
+                """INSERT INTO tasks (session_id, prompt, status, channel, channel_chat_id, channel_message_id, user_id)
+                   VALUES (?, ?, 'running', ?, ?, ?, ?)""",
+                (session_id, prompt, channel, channel_chat_id, channel_message_id, user_id),
             )
             task_id = cursor.lastrowid
             self.conn.execute("COMMIT")
@@ -326,10 +329,23 @@ class BridgeDB:
         channel: str = "cli",
         channel_chat_id: str | None = None,
         channel_message_id: str | None = None,
+        user_id: str | None = None,
     ) -> int:
+        """Create a new task and return its ID.
+
+        Args:
+            session_id: Agent session ID.
+            prompt: Task prompt text.
+            task_type: Task type ('standard' or 'loop').
+            parent_task_id: Parent task ID for sub-tasks.
+            channel: Notification channel ('cli', 'telegram', etc.).
+            channel_chat_id: Chat ID for notification routing (from inbound message).
+            channel_message_id: Message ID for reply threading.
+            user_id: Originating user ID (Telegram user_id) for multi-user tracking.
+        """
         cursor = self.conn.execute(
-            "INSERT INTO tasks (session_id, prompt, task_type, parent_task_id, channel, channel_chat_id, channel_message_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (session_id, prompt, task_type, parent_task_id, channel, channel_chat_id, channel_message_id),
+            "INSERT INTO tasks (session_id, prompt, task_type, parent_task_id, channel, channel_chat_id, channel_message_id, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (session_id, prompt, task_type, parent_task_id, channel, channel_chat_id, channel_message_id, user_id),
         )
         self.conn.commit()
         return cursor.lastrowid
@@ -368,7 +384,7 @@ class BridgeDB:
         "status", "pid", "result_file", "result_summary", "cost_usd",
         "duration_ms", "num_turns", "exit_code", "error_message", "model",
         "task_type", "parent_task_id", "channel", "channel_chat_id",
-        "channel_message_id", "started_at", "completed_at", "reported", "position",
+        "channel_message_id", "user_id", "started_at", "completed_at", "reported", "position",
     })
 
     def update_task(self, task_id: int, **kwargs):
