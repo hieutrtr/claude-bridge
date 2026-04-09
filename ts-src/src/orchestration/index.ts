@@ -10,4 +10,6 @@ export type {
   ILoopEvaluator,
   IScheduler,
   LoopIterationResult,
+  DoneCondition,
+  AgentLoopResult,
 } from "./interfaces.js";

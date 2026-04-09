@@ -1,10 +1,20 @@
 /**
  * Orchestration Layer Interfaces — loops, evaluation, scheduling.
+ *
+ * Matches Python loop_orchestrator.py, loop_evaluator.py, scheduler.py.
  */
 
-import type { Loop, Task } from "../types.js";
+import type { Loop, Task, Schedule } from "../types.js";
+import type { IDatabase } from "../data/interfaces.js";
 
-// --- Loop Orchestrator ---
+// --- Done Condition ---
+
+export interface DoneCondition {
+  type: "command" | "file_exists" | "file_contains" | "llm_judge" | "manual";
+  args: string[];
+}
+
+// --- Loop Iteration Result ---
 
 export interface LoopIterationResult {
   iteration: number;
@@ -15,67 +25,101 @@ export interface LoopIterationResult {
   doneReason?: string;
 }
 
+// --- Agent Loop Result (parsed from task output) ---
+
+export interface AgentLoopResult {
+  attempts: number;
+  status: string;
+  final_state: string;
+  remaining_issues: string[];
+}
+
+// --- Loop Orchestrator ---
+
 export interface ILoopOrchestrator {
-  /**
-   * Start a new goal loop — dispatches tasks iteratively until done condition met.
-   */
+  /** Start a new goal loop — dispatches tasks iteratively until done condition met. */
   startLoop(
     agentName: string,
     goal: string,
     doneCondition: string,
+    options?: {
+      maxIterations?: number;
+      maxConsecutiveFailures?: number;
+      loopType?: string;
+      maxCostUsd?: number | null;
+    },
+  ): Promise<string>;
+
+  /** Called when a task in a loop completes. Evaluates and decides next action. */
+  onTaskComplete(
+    loopId: string,
+    taskId: string,
+    resultSummary: string,
+    costUsd?: number,
+  ): Promise<void>;
+
+  /** Cancel a running loop. */
+  cancelLoop(loopId: string): Promise<boolean>;
+
+  /** Approve a pending_approval manual loop. */
+  approveLoop(loopId: string): Promise<boolean>;
+
+  /** Reject a pending_approval loop, dispatch next iteration with feedback. */
+  rejectLoop(loopId: string, feedback?: string): Promise<boolean>;
+
+  /** Get the status and history of a loop. */
+  getLoopStatus(loopId: string): Promise<Loop | null>;
+
+  /** Decide loop type based on goal, condition, and preferences. */
+  decideLoopType(
+    goal: string,
+    doneWhen: string,
+    userPreference?: string | null,
     maxIterations?: number,
-  ): Promise<Loop>;
+  ): string;
 
-  /**
-   * Resume a paused loop.
-   */
-  resumeLoop(loopId: number): Promise<void>;
+  /** Format loop list for display. */
+  formatLoopList(loops: Loop[]): string;
 
-  /**
-   * Pause a running loop (finishes current iteration, then stops).
-   */
-  pauseLoop(loopId: number): Promise<void>;
-
-  /**
-   * Cancel a loop immediately.
-   */
-  cancelLoop(loopId: number): Promise<void>;
-
-  /**
-   * Get the status and history of a loop.
-   */
-  getLoopStatus(loopId: number): Promise<Loop | null>;
+  /** Format loop history with iteration details. */
+  formatLoopHistory(loop: Loop, iterations: import("../types.js").LoopIteration[]): string;
 }
 
 // --- Loop Evaluator ---
 
 export interface ILoopEvaluator {
-  /**
-   * Evaluate whether a loop iteration satisfies the done condition.
-   * May invoke Claude to assess the result.
-   */
+  /** Parse a done condition string into structured form. */
+  parseDoneCondition(conditionStr: string): DoneCondition;
+
+  /** Validate a done condition string. Returns [valid, errorMessage]. */
+  validateDoneCondition(conditionStr: string): [boolean, string];
+
+  /** Evaluate whether a done condition is satisfied. Returns [passed, reason]. */
   evaluate(
-    loop: Loop,
-    latestTask: Task,
-    taskSummary: string,
-  ): Promise<{ isDone: boolean; reason: string }>;
+    condition: DoneCondition,
+    projectDir: string,
+    options?: {
+      timeout?: number;
+      resultSummary?: string;
+    },
+  ): Promise<[boolean, string]>;
 }
 
 // --- Scheduler ---
 
 export interface IScheduler {
-  /**
-   * Start the scheduler — checks cron expressions and dispatches tasks.
-   */
-  start(): void;
+  /** Start the scheduler — polls for due schedules at interval. */
+  start(intervalMs?: number): void;
 
-  /**
-   * Stop the scheduler.
-   */
+  /** Stop the scheduler. */
   stop(): void;
 
-  /**
-   * Get the next run time for a cron expression.
-   */
-  getNextRun(cronExpression: string): Date;
+  /** Compute the next run time for a schedule. */
+  computeNextRun(schedule: Schedule, now?: Date, isError?: boolean): Date;
+
+  /** Dispatch a task for a due schedule. */
+  dispatchForSchedule(schedule: Schedule): Promise<number>;
+
+  /** Run one check cycle (poll due schedules and dispatch). */
+  runOnce(): Promise<void>;
 }
