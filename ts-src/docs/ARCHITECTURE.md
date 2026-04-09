@@ -1566,3 +1566,658 @@ User                Telegram       Bridge         SQLite        Claude Code
   │  Cost: $0.04"     │             │               │               │
   │←──────────────────│             │               │               │
 ```
+
+---
+
+## 7. Deployment Model
+
+### 7.1 Deployment Modes
+
+Claude Bridge TS supports three deployment modes:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    DEPLOYMENT MODES                              │
+│                                                                 │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌────────────────┐ │
+│  │ Mode 1: Plugin   │  │ Mode 2: Standalone│ │ Mode 3: Hybrid │ │
+│  │                   │  │                   │ │ (Migration)    │ │
+│  │ Installed via     │  │ Cloned repo,     │ │ TS plugin +    │ │
+│  │ Claude Code       │  │ bun run directly │ │ Python bridge- │ │
+│  │ plugin manager    │  │ or as daemon     │ │ cli fallback   │ │
+│  │                   │  │                  │ │                │ │
+│  │ Target: post-     │  │ Target: dev &    │ │ Target: during │ │
+│  │ migration GA      │  │ self-hosting     │ │ migration      │ │
+│  └─────────────────┘  └─────────────────┘  └────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 7.2 Mode 1: Claude Code Plugin
+
+**Target audience:** End users installing via plugin marketplace
+
+**Plugin structure:**
+```
+ts-src/
+├── .claude-plugin/
+│   └── plugin.json           # Plugin metadata (name, version, description)
+├── mcp.json                  # MCP server registration
+├── skills/                   # Slash commands (/bridge:dispatch, /bridge:status)
+│   ├── dispatch.md
+│   └── status.md
+├── package.json
+└── src/
+    └── ...                   # All source code
+```
+
+**plugin.json:**
+```json
+{
+  "name": "claude-bridge",
+  "version": "0.6.0",
+  "description": "Multi-session Claude Code dispatch from Telegram, Discord, and Slack.",
+  "authors": ["Hieu TRAN"],
+  "keywords": ["channel", "mcp", "telegram", "discord", "slack"],
+  "license": "MIT"
+}
+```
+
+**mcp.json** (uses `CLAUDE_PLUGIN_ROOT` for portability):
+```json
+{
+  "mcpServers": {
+    "bridge": {
+      "command": "bun",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/src/mcp/server.ts"],
+      "env": {
+        "CLAUDE_BRIDGE_HOME": "${HOME}/.claude-bridge"
+      }
+    }
+  }
+}
+```
+
+**Install flow:**
+1. User runs plugin install command (marketplace or git URL)
+2. Claude Code clones plugin to `~/.claude/plugins/claude-bridge/`
+3. MCP server auto-registered from `mcp.json`
+4. Skills available as `/bridge:dispatch`, `/bridge:status`
+5. User sets up via `bridge-cli setup --token <token> --chat-id <id>`
+
+### 7.3 Mode 2: Standalone
+
+**Target audience:** Self-hosters, contributors, advanced users
+
+**Setup:**
+```bash
+# Clone and install
+git clone https://github.com/hieutran/claude-bridge
+cd claude-bridge/ts-src
+bun install
+
+# Configure
+bun run src/cli/index.ts setup --token "$TELEGRAM_BOT_TOKEN" --chat-id "$CHAT_ID"
+
+# Run as daemon
+bun run src/cli/index.ts daemon install
+bun run src/cli/index.ts daemon start
+
+# Or run directly
+bun run src/cli/index.ts start
+```
+
+### 7.4 Mode 3: Hybrid (During Migration)
+
+**Target audience:** Existing Python users during migration period
+
+During migration, TS can delegate unimplemented features to Python `bridge-cli`:
+
+```typescript
+// Fallback to Python CLI for features not yet ported
+import { execSync } from "child_process";
+
+function bridgeCliFallback(command: string): string {
+  return execSync(`bridge-cli ${command}`, { encoding: "utf-8" });
+}
+```
+
+**Coexistence rules:**
+- Same `~/.claude-bridge/` directory (shared SQLite DB)
+- Same `bridge.db` schema (backward compatible)
+- TS reads/writes same tables as Python
+- MCP tool names identical (no Bridge Bot CLAUDE.md changes needed)
+
+### 7.5 Configuration
+
+**config.json** (`~/.claude-bridge/config.json`):
+```json
+{
+  "telegram_bot_token": "123:ABC...",
+  "telegram_chat_id": "123456789",
+  "bot_dir": "/Users/hieu/projects/bridge-bot",
+  "allowFrom": ["123456789", "987654321"],
+  "model": "sonnet"
+}
+```
+
+**Environment variables (override config.json):**
+
+| Env Var | Purpose | Default |
+|---------|---------|---------|
+| `CLAUDE_BRIDGE_HOME` | Instance home directory | `~/.claude-bridge` |
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot API token | from config.json |
+| `TELEGRAM_CHAT_ID` | Default chat ID | from config.json |
+| `CLAUDE_PLUGIN_ROOT` | Plugin install path (set by Claude Code) | — |
+
+### 7.6 Multi-Instance Support
+
+Multiple Bridge instances run from different `CLAUDE_BRIDGE_HOME` directories:
+
+```bash
+# Main instance (default)
+~/.claude-bridge/
+├── bridge.db
+├── messages.db
+├── config.json
+└── workspaces/
+
+# Second instance (tam)
+~/.claude-bridge-tam/
+├── bridge.db
+├── messages.db
+├── config.json
+└── workspaces/
+```
+
+**Daemon naming:**
+- `~/.claude-bridge` → service: `claude-bridge`, launchd: `ai.claude-bridge`
+- `~/.claude-bridge-tam` → service: `claude-bridge-tam`, launchd: `ai.claude-bridge-tam`
+
+### 7.7 Daemon Management
+
+**macOS (launchd):**
+```xml
+<!-- ~/Library/LaunchAgents/ai.claude-bridge.plist -->
+<plist>
+  <dict>
+    <key>Label</key><string>ai.claude-bridge</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>bun</string>
+      <string>run</string>
+      <string>/path/to/ts-src/src/cli/index.ts</string>
+      <string>start</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>CLAUDE_BRIDGE_HOME</key>
+      <string>~/.claude-bridge</string>
+    </dict>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>~/.claude-bridge/bridge.log</string>
+    <key>StandardErrorPath</key><string>~/.claude-bridge/bridge.log</string>
+  </dict>
+</plist>
+```
+
+**Linux (systemd):**
+```ini
+# ~/.config/systemd/user/claude-bridge.service
+[Unit]
+Description=Claude Bridge
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/bun run /path/to/ts-src/src/cli/index.ts start
+Environment=CLAUDE_BRIDGE_HOME=%h/.claude-bridge
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+---
+
+## 8. Architecture Decision Records
+
+### ADR-1: Bun over Node.js
+
+**Status:** Accepted
+
+**Context:** Claude Code's official plugin ecosystem uses TypeScript/Bun. The migration
+must choose a runtime.
+
+**Decision:** Use Bun as the sole runtime.
+
+**Rationale:**
+- Claude Code plugins require Bun (ecosystem constraint)
+- `bun:sqlite` is built-in — no external `better-sqlite3` dependency (which requires native compilation)
+- ~10ms cold start vs Node's ~50ms and Python's ~200ms (critical for stop hooks)
+- Native TypeScript execution (no build step for development)
+- `Bun.spawn()` with `detached: true` replaces Python's `start_new_session=True`
+- Anthropic acquired Bun, signaling long-term investment in the runtime
+
+**Consequences:**
+- Cannot use Node-only packages (few in practice)
+- Must test with Bun's runtime behavior (subtle differences in EventEmitter, streams)
+- `bun:sqlite` API differs slightly from `better-sqlite3` (e.g., `$param` syntax)
+
+**Alternatives rejected:**
+- **Node.js** — No native SQLite, slower startup, not plugin-compatible
+- **Deno** — Not supported by Claude Code plugin ecosystem
+
+---
+
+### ADR-2: grammy over raw Telegram HTTP
+
+**Status:** Accepted
+
+**Context:** Telegram integration requires either raw HTTP calls or an SDK wrapper.
+
+**Decision:** Use `grammy` SDK for Telegram Bot API.
+
+**Rationale:**
+- TypeScript-native with full type safety (built for Deno/Bun/Node)
+- Handles: long polling, rate limiting, retry logic, file downloads
+- Battle-tested — 3.7k GitHub stars, active maintenance
+- Already used in existing `channel/server.ts` (proven in production)
+- Reduces boilerplate: `bot.on("message", ...)` vs manual getUpdates loop
+
+**Consequences:**
+- Adds a runtime dependency (~200KB)
+- Must match grammy version to Telegram Bot API version
+- grammy's context object has opinions about middleware patterns
+
+**Alternatives rejected:**
+- **Raw fetch()** — Too much boilerplate for polling, retry, rate limiting
+- **telegraf** — Less TypeScript-native, larger bundle, maintenance concerns
+- **node-telegram-bot-api** — Node-only, no Bun support
+
+---
+
+### ADR-3: Process group isolation via setsid/detached
+
+**Status:** Accepted
+
+**Context:** Claude Bridge spawns long-running `claude -p` processes. If Bridge dies,
+spawned agents must continue running.
+
+**Decision:** Spawn processes with `detached: true` (creates new session/process group).
+
+**Python implementation:**
+```python
+subprocess.Popen(cmd, start_new_session=True)  # calls setsid() on Unix
+```
+
+**Bun implementation:**
+```typescript
+Bun.spawn(cmd, { detached: true })
+```
+
+**Rationale:**
+- `start_new_session=True` calls `setsid()` → new session ID, new process group
+- Bridge's SIGTERM/SIGKILL won't propagate to agent processes
+- Agent processes become orphans (reparented to init/launchd) — this is intentional
+- PID tracked in SQLite for later kill/status check
+
+**Consequences:**
+- Orphaned processes must be cleaned up by watcher (cron) if stop hook fails
+- `kill(pid, SIGTERM)` must be sent to the process group: `process.kill(-pid)` in Node
+  or `Bun.spawn(["kill", "-TERM", `-${pid}`])` — **Bun.spawn detached does NOT create
+  a new process group by default; must verify behavior**
+- On macOS, `launchd` may not reap orphans properly in all cases
+
+**Risk:** Bun's `detached` may behave differently from Python's `start_new_session=True`.
+Must verify in integration tests that:
+1. Bridge exit doesn't kill agent
+2. SIGTERM to Bridge doesn't cascade
+3. Agent PID is reapable after completion
+
+---
+
+### ADR-4: WAL mode for all SQLite databases
+
+**Status:** Accepted
+
+**Context:** Multiple processes access SQLite concurrently (Bridge Bot, stop hooks,
+watcher, channel server).
+
+**Decision:** Enable WAL mode on every database connection open.
+
+**Implementation:**
+```typescript
+const db = new Database(path);
+db.exec("PRAGMA journal_mode=WAL");
+db.exec("PRAGMA foreign_keys=ON");
+```
+
+**Rationale:**
+- WAL allows concurrent readers without blocking writer
+- Critical for: stop hook writing task result while Bridge Bot reads status
+- `bun:sqlite` supports WAL natively
+- Performance: 10-50x faster than default journal mode for concurrent access
+
+**Consequences:**
+- WAL files (`-wal`, `-shm`) must be cleaned up properly (auto on clean shutdown)
+- WAL checkpoint happens automatically but can be forced if DB grows
+- Database portability: WAL mode creates additional files alongside `.db`
+
+---
+
+### ADR-5: Two-database architecture (bridge.db + messages.db)
+
+**Status:** Accepted
+
+**Context:** Channel server writes inbound/outbound messages at high frequency (every 2s
+polling + every message received). Core state (agents, tasks) has lower write frequency.
+
+**Decision:** Separate message queue into `messages.db` from core state in `bridge.db`.
+
+**Rationale:**
+- SQLite WAL has a single writer — separating DBs doubles write throughput
+- Message queue I/O doesn't block task status updates
+- Allows independent cleanup (old messages deleted without vacuuming core DB)
+- Python already uses this pattern successfully
+
+**Consequences:**
+- Two database connections to manage per process
+- No foreign key constraints between databases (task_id in outbound_messages is soft reference)
+- Must ensure both DBs are in same directory for consistent backups
+
+---
+
+### ADR-6: Atomic task dispatch with BEGIN EXCLUSIVE
+
+**Status:** Accepted
+
+**Context:** Two concurrent dispatch requests (e.g., from Telegram + scheduler) could
+both check "no running task" and both spawn, creating a double-dispatch.
+
+**Decision:** Use `BEGIN EXCLUSIVE` transaction for the check-and-create pattern.
+
+**Rationale:**
+- `BEGIN EXCLUSIVE` acquires a write lock on the entire database
+- Guarantees: only one transaction can check-and-insert at a time
+- Pattern: check running → if free, insert with status='running' → commit
+- Python uses this pattern in `db.py:atomic_check_and_create_task()`
+
+**Consequences:**
+- Brief lock contention during dispatch (~1ms) — acceptable for Bridge's scale
+- Must ensure transaction is short (no I/O inside exclusive section)
+- Readers using WAL are NOT blocked by exclusive lock (WAL advantage)
+
+---
+
+### ADR-7: Channel abstraction via IChannelAdapter interface
+
+**Status:** Accepted
+
+**Context:** Bridge must support Telegram (now), Discord (Phase 3), and Slack (Phase 6)
+with different APIs, message formats, and capabilities.
+
+**Decision:** Define `IChannelAdapter` + `IMessageFormatter` interfaces. Each platform
+provides an implementation pair.
+
+**Rationale:**
+- Single interface for core logic to send/receive messages
+- Formatter handles platform-specific markup (HTML, Markdown, mrkdwn)
+- New channels added by implementing interface — no core changes
+- Already scaffolded in `ts-src/src/channel/interface.ts`
+
+**Interface:**
+```typescript
+interface IChannelAdapter {
+  readonly platform: string;
+  readonly maxMessageLength: number;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  sendMessage(chatId: string, text: string, opts?: SendOpts): Promise<string>;
+  onMessage(handler: (msg: ChannelMessage) => void): void;
+}
+```
+
+**Consequences:**
+- Lowest-common-denominator API (threads, reactions are optional)
+- Platform-specific features (Slack Blocks, Discord embeds) not exposed in interface
+- Formatting differences handled at formatter level, not adapter level
+
+---
+
+### ADR-8: MCP channel notifications for push-based messaging
+
+**Status:** Accepted
+
+**Context:** Bridge Bot needs to receive Telegram messages. Two approaches: poll-based
+(MCP tool that Bridge Bot calls) or push-based (channel notification that arrives automatically).
+
+**Decision:** Use MCP channel capability (`experimental: { "claude/channel": {} }`) for
+push-based message delivery.
+
+**Rationale:**
+- Push eliminates polling latency (messages arrive in ~2s vs ~10s poll interval)
+- Native Claude Code feature — Bridge registers as a "channel"
+- Messages appear as `<channel>` tags in Bridge Bot's conversation
+- Already implemented and battle-tested in `channel/server.ts`
+
+**Trade-off:** Channel API is marked "experimental" — may change. However, Claude Bridge
+already depends on it in production and Anthropic uses it for official channels.
+
+---
+
+### ADR-9: Stop hooks over polling for task completion
+
+**Status:** Accepted
+
+**Context:** Bridge needs to know when a `claude -p` task completes.
+
+**Decision:** Use Claude Code's Stop hook mechanism as primary, with PID polling as fallback.
+
+**Stop hook (primary):**
+- Agent .md includes hook in YAML frontmatter
+- Claude Code invokes hook script when process exits
+- Hook script (`on-complete.ts`) parses result, updates DB, sends notification
+
+**PID watcher (fallback):**
+- Cron job every 5 minutes checks PIDs of `running` tasks
+- If PID dead but task still `running` → marks as failed, sends notification
+- Catches cases where stop hook didn't fire (process crash, OOM kill)
+
+**Rationale:**
+- Stop hooks are immediate (0 latency after completion)
+- Polling adds up to 5 min delay for missed completions
+- Dual approach provides reliability guarantee (QA-1)
+
+**Consequences:**
+- Stop hook binary must start fast (<100ms) — critical Bun advantage over Python
+- Hook failure is silent — watcher is essential safety net
+- Hook script must handle concurrent invocations (multiple tasks finishing simultaneously)
+
+---
+
+## 9. Migration Strategy
+
+### 9.1 Strategy Overview
+
+**Approach:** Incremental wave-based migration with coexistence. TS plugin works from
+Wave 1 by delegating to Python CLI. Each subsequent wave replaces one Python layer
+with native TS, until Python can be fully removed.
+
+```
+Week 1       Week 2-3     Week 3-4     Week 4-5     Week 5-6     Week 6-7     Week 7
+┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+│ Wave 1   │ │ Wave 2   │ │ Wave 3   │ │ Wave 4   │ │ Wave 5   │ │ Wave 6   │ │ Wave 7   │
+│ Plugin   │ │ Data     │ │ Execution│ │ Orchestr.│ │ CLI &    │ │ Infra    │ │ MCP      │
+│ Shell    │ │ Layer    │ │ Layer    │ │ Layer    │ │ Integ.   │ │          │ │ Consolid.│
+│          │ │          │ │          │ │          │ │          │ │          │ │          │
+│ Plugin   │ │ db.ts    │ │dispatch. │ │ loop.ts  │ │ cli.ts   │ │daemon.ts │ │ Merge    │
+│ mcp.json │ │session.ts│ │ on-comp. │ │ eval.ts  │ │agent-md. │ │ tmux.ts  │ │ MCP      │
+│ skills/  │ │config.ts │ │ watcher  │ │sched.ts  │ │claude-md │ │ perms.ts │ │ servers  │
+│          │ │msg-db.ts │ │ notify   │ │          │ │ memory   │ │          │ │ tools.ts │
+└──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘
+     │            │             │            │            │            │            │
+     ▼            ▼             ▼            ▼            ▼            ▼            ▼
+  Plugin       Python       Python       Python       Python      TS-only      TS-only
+  + Python     partially    partially    partially    mostly       (Python     (Python
+  fallback     replaced     replaced     replaced     replaced     removed)    removed)
+```
+
+### 9.2 Wave Details
+
+#### Wave 1: Plugin Shell (Week 1)
+**Goal:** Plugin installable from Day 1, delegating all logic to Python.
+
+**Deliverable:** `plugin install claude-bridge` works.
+
+**What's built:**
+- `.claude-plugin/plugin.json` — plugin metadata
+- `mcp.json` — MCP server registration (points to TS entry)
+- `skills/` — slash commands (`/bridge:dispatch`, `/bridge:status`)
+- Channel server absorbed from `channel/server.ts`
+
+**Coexistence:** MCP tools call `bridge-cli` (Python) via subprocess:
+```typescript
+function bridgeCli(cmd: string): string {
+  const result = Bun.spawnSync(["bridge-cli", ...cmd.split(" ")]);
+  return result.stdout.toString();
+}
+```
+
+#### Wave 2: Data Layer (Weeks 2-3)
+**Goal:** Replace Python SQLite/session with native `bun:sqlite`.
+
+**Modules:**
+| Python | TypeScript | LOC | Effort |
+|--------|-----------|-----|--------|
+| `db.py` (977 LOC) | `data/db.ts` | ~800 | High |
+| `message_db.py` (263 LOC) | `data/message-db.ts` | ~200 | Medium |
+| `session.py` (140 LOC) | `data/session.ts` | ~120 | Low |
+| `__init__.py` (50 LOC) | `config.ts` | ~50 | Low |
+
+**Key risks:** Schema parity — TS must read/write identical SQLite as Python.
+
+**Validation:** Run Python test suite against a DB created by TS (and vice versa).
+
+#### Wave 3: Execution Layer (Weeks 3-4)
+**Goal:** Replace subprocess spawning with `Bun.spawn()`.
+
+**Modules:**
+| Python | TypeScript | LOC | Effort |
+|--------|-----------|-----|--------|
+| `dispatcher.py` (114 LOC) | `execution/dispatcher.ts` | ~100 | High |
+| `on_complete.py` (264 LOC) | `execution/on-complete.ts` | ~200 | Medium |
+| `watcher.py` (279 LOC) | `execution/watcher.ts` | ~200 | Medium |
+| `notify.py` (146 LOC) | `execution/notify.ts` | ~120 | Low |
+
+**Critical validation:** Process isolation test — spawn, kill Bridge, verify agent survives.
+
+#### Wave 4: Orchestration (Weeks 4-5)
+**Goal:** Port loop state machine and scheduler.
+
+**Modules:**
+| Python | TypeScript | LOC | Effort |
+|--------|-----------|-----|--------|
+| `loop_orchestrator.py` (1,059 LOC) | `orchestration/loop.ts` | ~800 | High |
+| `loop_evaluator.py` (313 LOC) | `orchestration/evaluator.ts` | ~250 | Medium |
+| `scheduler.py` (125 LOC) | `orchestration/scheduler.ts` | ~100 | Low |
+
+#### Wave 5: CLI & Integration (Weeks 5-6)
+**Goal:** Replace `bridge-cli` Python command with TS version.
+
+**Modules:**
+| Python | TypeScript | LOC | Effort |
+|--------|-----------|-----|--------|
+| `cli.py` (2,361 LOC) | `cli/index.ts` | ~1,500 | High |
+| `agent_md.py` (160 LOC) | `cli/agent-md.ts` | ~130 | Low |
+| `claude_md_init.py` (101 LOC) | `cli/claude-md.ts` | ~80 | Low |
+| `memory.py` (95 LOC) | `cli/memory.ts` | ~80 | Low |
+
+#### Wave 6: Infrastructure (Weeks 6-7)
+**Goal:** Port daemon management and remove Python dependency.
+
+**Modules:**
+| Python | TypeScript | LOC | Effort |
+|--------|-----------|-----|--------|
+| `daemon.py` (500 LOC) | `infra/daemon.ts` | ~400 | High |
+| `bridge_cmd.py` (426 LOC) | `infra/bridge-cmd.ts` | ~350 | Medium |
+| `permission_relay.py` (89 LOC) | `infra/permissions.ts` | ~70 | Low |
+
+#### Wave 7: MCP Consolidation (Week 7)
+**Goal:** Merge Python MCP and channel server into unified TS MCP server.
+
+**Modules:**
+| Python | TypeScript | LOC | Effort |
+|--------|-----------|-----|--------|
+| `mcp_server.py` (348 LOC) | `mcp/server.ts` | ~300 | Medium |
+| `mcp_tools.py` (741 LOC) | `mcp/tools.ts` | ~600 | Medium |
+| `bridge_bot_claude_md.py` (521 LOC) | `mcp/bridge-md.ts` | ~400 | Medium |
+
+### 9.3 Coexistence Protocol
+
+During migration (Waves 1-6), Python and TS coexist:
+
+```
+                   ┌─────────────────────────┐
+                   │     Bridge Bot          │
+                   │  (Claude Code session)   │
+                   └────────┬────────────────┘
+                            │ MCP tools
+                            ▼
+                   ┌────────────────────────┐
+                   │   TS MCP Server        │
+                   │                        │
+                   │  Implemented? ──Yes──→ Handle natively (TS)
+                   │       │                │
+                   │      No                │
+                   │       │                │
+                   │  bridge-cli fallback ──→ Python subprocess
+                   └────────────────────────┘
+```
+
+**Rules for coexistence:**
+1. **Same DB** — both Python and TS read/write `~/.claude-bridge/bridge.db`
+2. **Same schema** — TS never adds columns that Python doesn't know about
+3. **Same MCP tool names** — Bridge Bot's CLAUDE.md works unchanged
+4. **Gradual cutover** — each wave replaces Python calls with native TS
+5. **Rollback** — if a wave fails, revert to Python fallback for affected tools
+
+### 9.4 Cutover Criteria
+
+Each wave must pass before moving to the next:
+
+| Wave | Gate Criteria |
+|------|--------------|
+| **Wave 1** | Plugin installs, channel server receives messages, bridge-cli fallback works |
+| **Wave 2** | All `IDatabase` tests pass, TS can read Python-created DB and vice versa |
+| **Wave 3** | Task dispatch, completion, kill, timeout all work end-to-end |
+| **Wave 4** | Loop: start → iterate → evaluate → complete. Schedule: create → fire → complete |
+| **Wave 5** | All CLI commands work via `bun run cli.ts <command>` |
+| **Wave 6** | Daemon install/start/stop works on macOS (launchd) and Linux (systemd) |
+| **Wave 7** | All 23+ MCP tools work, Python CLI no longer called |
+
+### 9.5 Full Cutover (Post Wave 7)
+
+After Wave 7, Python is no longer needed:
+
+1. Remove Python dependency from installation instructions
+2. Update `pyproject.toml` to mark as deprecated
+3. Archive Python source (keep in repo under `src/claude_bridge/` for reference)
+4. Update Bridge Bot CLAUDE.md to reference TS tools only
+5. Submit plugin to Claude Code marketplace
+
+### 9.6 Testing Strategy During Migration
+
+```
+Per-wave testing:
+├── Unit tests (bun test)
+│   └── Mock subprocess, mock SQLite, test business logic
+├── Integration tests
+│   └── Real SQLite DB, real file I/O, mocked Claude CLI
+├── Cross-compatibility tests
+│   └── Python creates DB → TS reads it (and vice versa)
+└── E2E smoke test
+    └── Telegram → Bridge Bot → dispatch → complete → notification
+```
+
+**Key rule:** Never call real `claude` CLI in tests — always mock subprocess.
