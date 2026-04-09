@@ -83,12 +83,19 @@ describe("tool-handlers.ts coverage", () => {
 
   describe("bridge_reply", () => {
     test("fails without valid token", async () => {
-      const result = await executeToolNative("bridge_reply", {
-        chat_id: "123",
-        text: "hello",
-      });
-      // Should fail since no telegram token is configured
-      expect(result.isError).toBe(true);
+      // Ensure no token is available so we don't make real HTTP calls
+      const origToken = process.env["TELEGRAM_BOT_TOKEN"];
+      delete process.env["TELEGRAM_BOT_TOKEN"];
+      try {
+        const result = await executeToolNative("bridge_reply", {
+          chat_id: "123",
+          text: "hello",
+        });
+        // Should fail since no telegram token is configured
+        expect(result.isError).toBe(true);
+      } finally {
+        if (origToken) process.env["TELEGRAM_BOT_TOKEN"] = origToken;
+      }
     });
   });
 
