@@ -1,0 +1,34 @@
+{
+  "name": "claude-bridge",
+  "version": "0.6.0",
+  "type": "module",
+  "description": "Multi-session Claude Code dispatch — official plugin for Claude Code",
+  "bin": {
+    "bridge-cli": "./src/cli/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target node",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "grammy": "^1.21.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.4.0"
+  },
+  "keywords": [
+    "claude-code",
+    "plugin",
+    "channel",
+    "mcp",
+    "telegram",
+    "discord",
+    "slack"
+  ],
+  "license": "MIT"
+}
