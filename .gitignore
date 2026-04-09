@@ -1,17 +1,11 @@
 # Claude Code
 .claude/worktrees/
 
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-dist/
-build/
-*.egg
-.eggs/
+# Dependencies
+node_modules/
 
-# Keep pre-built channel server JS in package (needed for pip install)
-!src/claude_bridge/channel_server/dist/
+# Build output
+dist/
 
 # IDE
 .vscode/
@@ -22,16 +16,12 @@ build/
 *.db
 *.log
 
-# Environment secrets (keep .env.example tracked)
-channel/.env
+# Environment secrets
 .env
+channel/.env
 
 # OS
 .DS_Store
 
 # Claude
 .mcp.json
-
-# Pytest
-.pytest_cache/
-
