@@ -1,10 +1,8 @@
 /**
  * MCP Server — exposes bridge tools to Claude Code.
  *
- * This is the main entry point when running as a plugin.
- * Consolidates Python mcp_server.py + mcp_tools.py + channel/server.ts.
- *
- * TODO: Implement in Wave 7 migration.
+ * Wave 1: All tools delegate to Python CLI via bridge-cli subprocess.
+ * Wave 7: Tools reimplemented with native TS layers.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -13,6 +11,7 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { TOOL_DEFINITIONS, TOOL_NAMES, executeTool } from "./tools.js";
 
 const server = new Server(
   { name: "claude-bridge", version: "0.6.0" },
@@ -22,37 +21,7 @@ const server = new Server(
 // --- Tool Definitions ---
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: "bridge_dispatch",
-        description: "Dispatch a task to a Claude Bridge agent",
-        inputSchema: {
-          type: "object" as const,
-          properties: {
-            agent: { type: "string", description: "Agent name" },
-            prompt: { type: "string", description: "Task prompt" },
-          },
-          required: ["agent", "prompt"],
-        },
-      },
-      {
-        name: "bridge_status",
-        description: "Get status of agents and tasks",
-        inputSchema: {
-          type: "object" as const,
-          properties: {
-            agent: { type: "string", description: "Optional agent name filter" },
-          },
-        },
-      },
-      {
-        name: "bridge_list_agents",
-        description: "List all configured agents",
-        inputSchema: { type: "object" as const, properties: {} },
-      },
-    ],
-  };
+  return { tools: TOOL_DEFINITIONS };
 });
 
 // --- Tool Handlers ---
@@ -60,18 +29,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
-  switch (name) {
-    case "bridge_dispatch":
-    case "bridge_status":
-    case "bridge_list_agents":
-      return {
-        content: [
-          { type: "text" as const, text: `Tool ${name} not yet implemented` },
-        ],
-      };
-    default:
-      throw new Error(`Unknown tool: ${name}`);
+  if (!TOOL_NAMES.includes(name as (typeof TOOL_NAMES)[number])) {
+    throw new Error(`Unknown tool: ${name}`);
   }
+
+  return executeTool(name, (args ?? {}) as Record<string, unknown>);
 });
 
 // --- Start ---
