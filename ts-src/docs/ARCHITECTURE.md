@@ -564,3 +564,1005 @@ The recommended approach per wave:
 
 **Wave 7 (MCP):**
 - Expand MCP tools from 3 → 23+ (full parity with Python)
+
+---
+
+## 4. Component Design
+
+### 4.1 Layered Architecture Overview
+
+Claude Bridge TS uses a **6-layer architecture** with strict dependency direction:
+outer layers depend on inner layers, never the reverse.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        Layer 6: ENTRY POINTS                            │
+│                                                                         │
+│   ┌───────────────┐   ┌──────────────────┐   ┌──────────────────────┐  │
+│   │  CLI           │   │  MCP Server      │   │  Stop Hook (bin)     │  │
+│   │  src/cli/      │   │  src/mcp/        │   │  on-complete entry   │  │
+│   │  index.ts      │   │  server.ts       │   │                      │  │
+│   └───────┬────────┘   └────────┬─────────┘   └──────────┬───────────┘  │
+│           │                     │                        │             │
+├───────────┼─────────────────────┼────────────────────────┼─────────────┤
+│           ▼                     ▼                        ▼             │
+│                     Layer 5: ORCHESTRATION                              │
+│                                                                         │
+│   ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐    │
+│   │ LoopOrchestrator │  │  LoopEvaluator   │  │   Scheduler      │    │
+│   │ orchestration/   │  │  orchestration/  │  │  orchestration/  │    │
+│   │ loop.ts          │  │  evaluator.ts    │  │  scheduler.ts    │    │
+│   └────────┬─────────┘  └────────┬─────────┘  └────────┬─────────┘    │
+│            │                     │                      │             │
+├────────────┼─────────────────────┼──────────────────────┼─────────────┤
+│            ▼                     ▼                      ▼             │
+│                      Layer 4: CHANNEL                                  │
+│                                                                         │
+│   ┌─────────────────────────────────────────────────────────────────┐  │
+│   │                    IChannelAdapter                               │  │
+│   │                    IMessageFormatter                             │  │
+│   ├──────────────────┬──────────────────┬───────────────────────────┤  │
+│   │ TelegramAdapter  │ DiscordAdapter   │ SlackAdapter              │  │
+│   │ TelegramFormatter│ DiscordFormatter │ SlackFormatter            │  │
+│   │ channel/telegram/│ channel/discord/ │ channel/slack/            │  │
+│   └────────┬─────────┘──────────────────┘───────────────────────────┘  │
+│            │                                                           │
+├────────────┼───────────────────────────────────────────────────────────┤
+│            ▼                                                           │
+│                     Layer 3: EXECUTION                                  │
+│                                                                         │
+│   ┌──────────────┐  ┌──────────────────┐  ┌──────────┐  ┌──────────┐ │
+│   │  Dispatcher   │  │CompletionHandler │  │ Watcher  │  │ Notifier │ │
+│   │  execution/   │  │  execution/      │  │execution/│  │execution/│ │
+│   │  dispatcher.ts│  │  on-complete.ts  │  │watcher.ts│  │notify.ts │ │
+│   └──────┬────────┘  └────────┬─────────┘  └────┬─────┘  └────┬─────┘ │
+│          │                    │                  │             │       │
+├──────────┼────────────────────┼──────────────────┼─────────────┼───────┤
+│          ▼                    ▼                  ▼             ▼       │
+│                      Layer 2: DATA                                     │
+│                                                                         │
+│   ┌──────────────────┐  ┌──────────────────┐  ┌────────────────────┐  │
+│   │  BridgeDatabase  │  │  SessionManager  │  │  ConfigProvider    │  │
+│   │  data/db.ts      │  │  data/session.ts │  │  config.ts         │  │
+│   └──────┬───────────┘  └──────────────────┘  └────────────────────┘  │
+│          │                                                             │
+├──────────┼─────────────────────────────────────────────────────────────┤
+│          ▼                                                             │
+│                      Layer 1: TYPES                                    │
+│                                                                         │
+│   ┌────────────────────────────────────────────────────────────────┐   │
+│   │  types.ts — Agent, Task, Loop, Schedule, Notification, Config │   │
+│   └────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.2 C4 Component Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    C4 — COMPONENT (Claude Bridge TS)                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                        ENTRY POINTS                                 │   │
+│  │                                                                     │   │
+│  │  ┌──────────┐    ┌──────────────┐    ┌──────────────────────────┐  │   │
+│  │  │   CLI    │    │  MCP Server  │    │    Stop Hook (binary)    │  │   │
+│  │  │ [Comp]   │    │   [Comp]     │    │       [Comp]             │  │   │
+│  │  │          │    │              │    │                          │  │   │
+│  │  │ Parses   │    │ Exposes 23+  │    │ Called by Claude Code    │  │   │
+│  │  │ bridge-  │    │ bridge_*     │    │ on task finish. Parses   │  │   │
+│  │  │ cli args │    │ tools via    │    │ result JSON, updates DB, │  │   │
+│  │  │          │    │ MCP/stdio    │    │ triggers notifications   │  │   │
+│  │  └────┬─────┘    └──────┬───────┘    └────────────┬─────────────┘  │   │
+│  │       │                 │                         │                │   │
+│  └───────┼─────────────────┼─────────────────────────┼────────────────┘   │
+│          │                 │                         │                    │
+│          ▼                 ▼                         ▼                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                     ORCHESTRATION                                   │   │
+│  │                                                                     │   │
+│  │  ┌────────────────┐  ┌──────────────┐  ┌────────────────────────┐  │   │
+│  │  │ Loop           │  │   Loop       │  │     Scheduler          │  │   │
+│  │  │ Orchestrator   │  │  Evaluator   │  │      [Comp]            │  │   │
+│  │  │   [Comp]       │  │   [Comp]     │  │                        │  │   │
+│  │  │                │  │              │  │ Polls due schedules,    │  │   │
+│  │  │ Iterates:      │  │ Checks done  │  │ dispatches tasks,      │  │   │
+│  │  │ dispatch →     │  │ conditions:  │  │ computes next_run      │  │   │
+│  │  │ evaluate →     │  │ command,     │  │ with exp. backoff      │  │   │
+│  │  │ decide         │  │ file, LLM,   │  │                        │  │   │
+│  │  │                │  │ manual       │  │                        │  │   │
+│  │  └────────┬───────┘  └──────┬───────┘  └───────────┬────────────┘  │   │
+│  └───────────┼─────────────────┼──────────────────────┼───────────────┘   │
+│              │                 │                      │                    │
+│              ▼                 ▼                      ▼                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                       EXECUTION                                     │   │
+│  │                                                                     │   │
+│  │  ┌──────────────┐  ┌────────────────┐  ┌────────┐  ┌────────────┐ │   │
+│  │  │  Dispatcher   │  │  Completion    │  │Watcher │  │  Notifier  │ │   │
+│  │  │   [Comp]      │  │  Handler       │  │ [Comp] │  │   [Comp]   │ │   │
+│  │  │               │  │   [Comp]       │  │        │  │            │ │   │
+│  │  │ Bun.spawn()   │  │               │  │Fallback│  │ Routes to  │ │   │
+│  │  │ with detached │  │ Parses result  │  │PID poll│  │ channel    │ │   │
+│  │  │ + worktree    │  │ Updates task   │  │every   │  │ adapter    │ │   │
+│  │  │               │  │ Dequeues next  │  │5 min   │  │ for send   │ │   │
+│  │  └───────┬───────┘  └───────┬────────┘  └───┬────┘  └──────┬─────┘ │   │
+│  └──────────┼──────────────────┼────────────────┼──────────────┼──────┘   │
+│             │                  │                │              │          │
+│             ▼                  ▼                ▼              ▼          │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                         DATA                                        │   │
+│  │                                                                     │   │
+│  │  ┌──────────────────┐  ┌────────────────┐  ┌────────────────────┐  │   │
+│  │  │  BridgeDatabase  │  │ SessionManager │  │  ConfigProvider    │  │   │
+│  │  │    [Comp]        │  │    [Comp]      │  │     [Comp]         │  │   │
+│  │  │                  │  │                │  │                    │  │   │
+│  │  │ bun:sqlite WAL   │  │ session_id     │  │ CLAUDE_BRIDGE_HOME │  │   │
+│  │  │ agents, tasks,   │  │ derivation,    │  │ config.json        │  │   │
+│  │  │ loops, schedules,│  │ workspace &    │  │ env vars           │  │   │
+│  │  │ permissions,     │  │ agent .md      │  │                    │  │   │
+│  │  │ messages, notifs │  │ path mgmt      │  │                    │  │   │
+│  │  └──────────────────┘  └────────────────┘  └────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│             ┌────────────────────────────────────┐                          │
+│             │  CHANNEL (cross-cutting)            │                          │
+│             │                                    │                          │
+│             │  ┌──────────┐ ┌────────┐ ┌──────┐ │                          │
+│             │  │ Telegram │ │Discord │ │Slack │ │                          │
+│             │  │ Adapter  │ │Adapter │ │Adapt.│ │                          │
+│             │  │+Formatter│ │+Format.│ │+Fmt. │ │                          │
+│             │  └──────────┘ └────────┘ └──────┘ │                          │
+│             └────────────────────────────────────┘                          │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.3 Component Responsibilities
+
+#### 4.3.1 Entry Points (Layer 6)
+
+**CLI** (`src/cli/index.ts`)
+- Parses `bridge-cli <command> [args]` via Bun's built-in arg parsing
+- Routes to appropriate layer: data (CRUD), execution (dispatch/kill), orchestration (loop/schedule)
+- Maps to Python: `cli.py` (10 commands), `bridge_cmd.py` (6 daemon commands)
+- Dependencies: all layers
+
+**MCP Server** (`src/mcp/server.ts` + `src/mcp/tools.ts`)
+- Exposes Bridge operations as MCP tools consumed by Bridge Bot
+- Transport: stdio (Claude Code spawns Bridge MCP as subprocess)
+- 23+ tools mapping 1:1 to Python `mcp_server.py` tool registry
+- Dependencies: all layers (each tool delegates to appropriate layer)
+
+**Stop Hook Binary** (entry point TBD, maps to Python `on_complete.py:main()`)
+- Invoked by Claude Code when a task's `claude -p` process exits
+- Receives: `--session-id`, `--task-id` via CLI args
+- Must start fast (<100ms) — imports only data + execution layers
+- Dependencies: data layer, CompletionHandler
+
+#### 4.3.2 Orchestration (Layer 5)
+
+**LoopOrchestrator** (`src/orchestration/loop.ts`)
+- State machine: `running → (dispatch → evaluate → decide) → completed/failed/cancelled`
+- Iteration flow: dispatch task → wait for completion → evaluate done condition → continue or stop
+- Tracks: iteration count, consecutive failures, total cost, approval state
+- Interfaces: `ILoopOrchestrator` (5 methods, expanding to ~9)
+- Dependencies: IDatabase, IDispatcher, ILoopEvaluator, INotifier
+
+**LoopEvaluator** (`src/orchestration/evaluator.ts`)
+- Evaluates done conditions: `command:`, `file_exists:`, `file_contains:`, `llm_judge:`, `manual:`
+- Parses condition strings into typed DoneCondition objects
+- For `llm_judge`: spawns `claude -p` with rubric prompt
+- Interface: `ILoopEvaluator` (1 method, expanding to ~3)
+- Dependencies: none (pure function + subprocess for llm_judge)
+
+**Scheduler** (`src/orchestration/scheduler.ts`)
+- Polls `schedules` table every 60s for due schedules
+- Computes next_run using anchor-based timing (prevents drift)
+- Error backoff: `interval * 2^consecutive_errors` (capped at 8x)
+- Interface: `IScheduler` (3 methods)
+- Dependencies: IDatabase, IDispatcher
+
+#### 4.3.3 Channel (Layer 4, cross-cutting)
+
+**IChannelAdapter** — Platform abstraction
+- Each platform (Telegram, Discord, Slack) implements the same interface
+- Lifecycle: `start()` / `stop()` — connects/disconnects from platform API
+- Messaging: `sendMessage()`, `editMessage()`, `deleteMessage()`
+- Events: `onMessage()`, `onCommand()` — callback registration
+- The Notifier (Layer 3) uses IChannelAdapter to deliver notifications
+
+**IMessageFormatter** — Platform-specific formatting
+- Each platform has different markup: HTML (Telegram), Markdown (Discord), mrkdwn (Slack)
+- `chunkMessage()` splits long messages respecting platform limits
+  - Telegram: 4096 chars, fence-aware splitting
+  - Discord: 2000 chars
+  - Slack: 40000 chars
+
+**TelegramAdapter** (`src/channel/telegram/adapter.ts`)
+- Uses `grammy` SDK for Bot API interaction
+- Absorbs logic from existing `channel/server.ts` + `channel/lib.ts` (~3,500 LOC)
+- Handles: allowlist, file downloads, inbound tracking, outbound queue
+
+#### 4.3.4 Execution (Layer 3)
+
+**Dispatcher** (`src/execution/dispatcher.ts`)
+- Spawns `claude -p --agent <name> --session-id <uuid> --output-format json`
+- Process isolation: `detached: true` (own process group)
+- Writes stdout to result file, stderr to log file
+- Passes `CLAUDE_BRIDGE_HOME` env var
+- Interface: `IDispatcher` (3 methods, expanding to ~5)
+
+**CompletionHandler** (`src/execution/on-complete.ts`)
+- Parses result JSON from `--output-format json` output
+- Extracts: exit_code, cost_usd, num_turns, result_summary, duration
+- Updates task in DB → auto-dequeues next task → creates notification
+- Hands off to LoopOrchestrator if task belongs to a loop
+- Interface: `ICompletionHandler` (1 method)
+
+**ProcessWatcher** (`src/execution/watcher.ts`)
+- Fallback for tasks where stop hook didn't fire (process crash, OOM, etc.)
+- Polls every 5 min: checks if PID is alive for each `running` task
+- If PID dead: marks task failed, creates notification
+- Timeout detection: tasks running > 360 min → force kill
+- Interface: `IProcessWatcher` (2 methods)
+
+**Notifier** (`src/execution/notify.ts`)
+- Formats completion messages (cost, duration, summary, iteration info)
+- Routes to appropriate IChannelAdapter based on task's channel field
+- Retry logic: exponential backoff, max 3 attempts
+- Interface: `INotifier` (1 method)
+
+#### 4.3.5 Data (Layer 2)
+
+**BridgeDatabase** (`src/data/db.ts`)
+- `bun:sqlite` with WAL mode, foreign keys ON
+- Schema matches Python `db.py` exactly (backward compatible)
+- Atomic operations: `BEGIN EXCLUSIVE` for task creation and dequeue
+- Interface: `IDatabase` (20 methods, expanding to ~55)
+
+**SessionManager** (`src/data/session.ts`)
+- `deriveSessionId(agent, project)` → `"agent--project-basename"`
+- Workspace paths: `~/.claude-bridge/workspaces/{session_id}/`
+- Agent file paths: `{bot_dir}/.claude/agents/bridge--{session_id}.md`
+- Validation: agent names (alphanumeric + hyphens, no `--`)
+- Interface: `ISessionManager` (3 methods, expanding to ~8)
+
+**ConfigProvider** (`src/config.ts`)
+- Reads `${CLAUDE_BRIDGE_HOME}/config.json` (default: `~/.claude-bridge`)
+- Falls back to env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+- Interface: `IConfigProvider` (1 method + 2 readonly props)
+
+#### 4.3.6 Types (Layer 1)
+
+**types.ts** — shared across all layers
+- `Agent`, `Session`, `Task`, `TaskCreateInput`, `TaskStatus`
+- `Loop`, `LoopStatus`, `Schedule`
+- `BridgeConfig`, `Notification`
+- No logic, no dependencies — pure type definitions
+
+### 4.4 Dependency Rules
+
+1. **Types** (Layer 1) → depends on nothing
+2. **Data** (Layer 2) → depends on Types only
+3. **Execution** (Layer 3) → depends on Data + Types
+4. **Channel** (Layer 4) → depends on Types only (adapters are self-contained)
+5. **Orchestration** (Layer 5) → depends on Execution + Data + Types
+6. **Entry Points** (Layer 6) → depends on all layers
+
+**Cross-cutting exception:** Notifier (Layer 3) depends on IChannelAdapter (Layer 4).
+This is acceptable because Notifier uses the channel interface, not implementation.
+
+### 4.5 New Components Needed (Not in Python)
+
+| Component | Purpose | Rationale |
+|-----------|---------|-----------|
+| `AgentMdGenerator` | Generate agent .md files | Maps to Python `agent_md.py` — no TS interface yet |
+| `ClaudeMdInit` | Auto-init project CLAUDE.md | Maps to Python `claude_md_init.py` |
+| `PermissionRelay` | PreToolUse hook handler | Maps to Python `permission_relay.py` |
+| `MessageDatabase` | Separate DB for messages | Maps to Python `message_db.py` |
+| `DaemonManager` | launchd/systemd integration | Maps to Python `daemon.py` |
+| `BridgeBotMdGen` | Bridge Bot CLAUDE.md generator | Maps to Python `bridge_bot_claude_md.py` |
+
+These will be added as interfaces are expanded in their respective waves.
+
+---
+
+## 5. Data Architecture
+
+### 5.1 Database Topology
+
+Claude Bridge uses **two SQLite databases** to isolate high-frequency message I/O
+from core state management:
+
+```
+~/.claude-bridge/                    (CLAUDE_BRIDGE_HOME)
+├── bridge.db                        Core state: agents, tasks, loops, schedules, permissions
+├── bridge.db-wal                    WAL file (auto-managed by SQLite)
+├── bridge.db-shm                    Shared memory file (auto-managed)
+├── messages.db                      Message queue: inbound/outbound messages
+├── messages.db-wal
+├── messages.db-shm
+├── config.json                      Instance configuration
+└── workspaces/
+    └── {session_id}/
+        └── tasks/
+            ├── task-{id}-result.json   Claude Code JSON output
+            └── task-{id}-stderr.log    Process stderr capture
+```
+
+### 5.2 Core Database Schema (bridge.db)
+
+Exact replica of Python `db.py` schema — TS must produce identical DDL for
+backward compatibility.
+
+```sql
+-- Connection setup (every open)
+PRAGMA journal_mode=WAL;
+PRAGMA foreign_keys=ON;
+
+-- Agents: one per (name, project_dir) pair
+CREATE TABLE IF NOT EXISTS agents (
+    name TEXT NOT NULL,
+    project_dir TEXT NOT NULL,
+    session_id TEXT NOT NULL UNIQUE,
+    agent_file TEXT NOT NULL,
+    purpose TEXT,
+    state TEXT DEFAULT 'created',         -- created | idle | running
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_task_at TIMESTAMP,
+    total_tasks INTEGER DEFAULT 0,
+    model TEXT DEFAULT 'sonnet',
+    PRIMARY KEY (name, project_dir)
+);
+
+-- Tasks: lifecycle tracking for each dispatched task
+CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES agents(session_id) ON DELETE CASCADE,
+    prompt TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',         -- pending | running | queued | done | failed | timeout | killed
+    position INTEGER,                     -- queue position (for queued tasks)
+    pid INTEGER,                          -- OS process ID
+    result_file TEXT,                     -- path to result JSON
+    result_summary TEXT,                  -- extracted summary from result
+    cost_usd REAL,                        -- API cost in USD
+    duration_ms INTEGER,                  -- execution time
+    num_turns INTEGER,                    -- Claude conversation turns
+    exit_code INTEGER,
+    error_message TEXT,
+    model TEXT,                           -- model used for this task
+    task_type TEXT DEFAULT 'standard',    -- standard | team
+    parent_task_id INTEGER REFERENCES tasks(id),  -- for team subtasks
+    channel TEXT DEFAULT 'cli',           -- cli | telegram | discord | slack
+    channel_chat_id TEXT,
+    channel_message_id TEXT,
+    user_id TEXT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    reported INTEGER DEFAULT 0            -- 1 = notification sent
+);
+
+-- Permission relay: tracks approval/denial for dangerous operations
+CREATE TABLE IF NOT EXISTS permissions (
+    id TEXT PRIMARY KEY,                  -- UUID
+    session_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,              -- e.g., "Bash", "Write"
+    command TEXT,                         -- the actual command
+    description TEXT,
+    status TEXT DEFAULT 'pending',        -- pending | approved | denied | timeout
+    response TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    responded_at TIMESTAMP,
+    timeout_seconds INTEGER DEFAULT 300
+);
+
+-- Teams: multi-agent coordination
+CREATE TABLE IF NOT EXISTS teams (
+    name TEXT PRIMARY KEY,
+    lead_agent TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS team_members (
+    team_name TEXT NOT NULL REFERENCES teams(name) ON DELETE CASCADE,
+    agent_name TEXT NOT NULL,
+    PRIMARY KEY (team_name, agent_name)
+);
+
+-- Notifications: completion message delivery queue
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER REFERENCES tasks(id),
+    channel TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    message TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',        -- pending | sent | failed
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    sent_at TIMESTAMP
+);
+
+-- Goal loops: iterative task execution
+CREATE TABLE IF NOT EXISTS loops (
+    loop_id TEXT PRIMARY KEY,             -- UUID
+    agent TEXT NOT NULL,
+    project TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    done_when TEXT NOT NULL,              -- condition string: "command:", "file_exists:", etc.
+    loop_type TEXT NOT NULL DEFAULT 'bridge',  -- bridge | agent | auto
+    status TEXT NOT NULL DEFAULT 'running',    -- running | done | failed | exceeded | cancelled
+    max_iterations INTEGER NOT NULL DEFAULT 10,
+    max_consecutive_failures INTEGER NOT NULL DEFAULT 3,
+    current_iteration INTEGER NOT NULL DEFAULT 0,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    total_cost_usd REAL NOT NULL DEFAULT 0.0,
+    max_cost_usd REAL,                   -- cost ceiling (nullable = unlimited)
+    pending_approval INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    finish_reason TEXT,
+    current_task_id TEXT
+);
+
+-- Loop iterations: per-iteration tracking
+CREATE TABLE IF NOT EXISTS loop_iterations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    loop_id TEXT NOT NULL,
+    iteration_num INTEGER NOT NULL,
+    task_id TEXT,
+    prompt TEXT,
+    result_summary TEXT,
+    done_check_passed INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0.0,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    status TEXT NOT NULL DEFAULT 'running'
+);
+
+-- Schedules: cron-like recurring task definitions
+CREATE TABLE IF NOT EXISTS schedules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    agent_name TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    interval_minutes INTEGER,             -- interval-based scheduling
+    cron_expr TEXT,                        -- cron expression (alternative)
+    run_once INTEGER DEFAULT 0,
+    enabled INTEGER DEFAULT 1,
+    run_count INTEGER DEFAULT 0,
+    consecutive_errors INTEGER DEFAULT 0,
+    last_run_at TIMESTAMP,
+    next_run_at TIMESTAMP,
+    last_error TEXT,
+    channel TEXT DEFAULT 'cli',
+    channel_chat_id TEXT,
+    user_id TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(name, agent_name)
+);
+
+-- Indexes for query performance
+CREATE INDEX IF NOT EXISTS idx_schedules_next_run ON schedules(next_run_at, enabled);
+CREATE INDEX IF NOT EXISTS idx_loops_status ON loops(status);
+CREATE INDEX IF NOT EXISTS idx_loops_agent ON loops(agent);
+CREATE INDEX IF NOT EXISTS idx_loop_iterations_loop ON loop_iterations(loop_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status);
+CREATE INDEX IF NOT EXISTS idx_permissions_status ON permissions(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+```
+
+### 5.3 Message Database Schema (messages.db)
+
+```sql
+PRAGMA journal_mode=WAL;
+
+-- Inbound: messages received from messaging platforms
+CREATE TABLE IF NOT EXISTS inbound_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL DEFAULT 'telegram',
+    chat_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    username TEXT,
+    message_text TEXT NOT NULL,
+    message_id TEXT,                      -- platform-specific message ID
+    status TEXT DEFAULT 'pending',        -- pending | delivered | acknowledged | failed
+    retry_count INTEGER DEFAULT 0,
+    max_retries INTEGER DEFAULT 5,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    delivered_at TIMESTAMP,
+    acknowledged_at TIMESTAMP
+);
+
+-- Outbound: messages to send to messaging platforms
+CREATE TABLE IF NOT EXISTS outbound_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL DEFAULT 'telegram',
+    chat_id TEXT NOT NULL,
+    message_text TEXT NOT NULL,
+    reply_to_message_id TEXT,
+    source TEXT DEFAULT 'bot',            -- bot | notification
+    status TEXT DEFAULT 'pending',        -- pending | sent | failed
+    retry_count INTEGER DEFAULT 0,
+    max_retries INTEGER DEFAULT 3,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    sent_at TIMESTAMP,
+    task_id INTEGER                       -- links to tasks.id in bridge.db
+);
+
+-- Poller state: tracks platform polling cursors
+CREATE TABLE IF NOT EXISTS poller_state (
+    key TEXT PRIMARY KEY,
+    value TEXT                            -- e.g., last_update_id for Telegram getUpdates
+);
+
+CREATE INDEX IF NOT EXISTS idx_inbound_status ON inbound_messages(status);
+CREATE INDEX IF NOT EXISTS idx_outbound_status ON outbound_messages(status);
+```
+
+### 5.4 WAL Mode & Concurrency
+
+**Why WAL:** Multiple processes access the database concurrently:
+- Bridge Bot (MCP server) — reads/writes agents, tasks
+- Stop hook (on-complete) — writes task results, reads loops
+- Watcher (cron) — reads running tasks, writes timeouts
+- Channel server — reads/writes messages.db
+- CLI — reads status, writes agent CRUD
+
+**WAL guarantees:**
+- Multiple concurrent readers don't block each other
+- Single writer doesn't block readers
+- Readers see a consistent snapshot (no partial writes)
+
+**Setting WAL in Bun:**
+```typescript
+import { Database } from "bun:sqlite";
+
+const db = new Database(path, { create: true });
+db.exec("PRAGMA journal_mode=WAL");
+db.exec("PRAGMA foreign_keys=ON");
+```
+
+### 5.5 Critical Transaction Patterns
+
+#### Atomic Task Dispatch (prevents double-dispatch)
+
+```typescript
+// Python equivalent: db.py atomic_check_and_create_task()
+// Uses BEGIN EXCLUSIVE to lock the database during check-and-insert
+function atomicCheckAndCreateTask(
+  db: Database,
+  sessionId: string,
+  prompt: string,
+  channel: string,
+): { taskId: number | null; busy: boolean } {
+  // BEGIN EXCLUSIVE prevents any other connection from reading or writing
+  db.exec("BEGIN EXCLUSIVE");
+  try {
+    const running = db
+      .query("SELECT id FROM tasks WHERE session_id = ? AND status = 'running' LIMIT 1")
+      .get(sessionId);
+
+    if (running) {
+      db.exec("COMMIT");
+      return { taskId: null, busy: true };
+    }
+
+    const result = db
+      .query(
+        `INSERT INTO tasks (session_id, prompt, status, channel)
+         VALUES (?, ?, 'running', ?)`
+      )
+      .run(sessionId, prompt, channel);
+
+    db.exec("COMMIT");
+    return { taskId: Number(result.lastInsertRowid), busy: false };
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+```
+
+#### Auto-Dequeue (pops next queued task on completion)
+
+```typescript
+// After a task completes, check if there's a queued task waiting
+function dequeueNextTask(db: Database, sessionId: string): Row | null {
+  db.exec("BEGIN EXCLUSIVE");
+  try {
+    const next = db
+      .query(
+        `SELECT id, prompt FROM tasks
+         WHERE session_id = ? AND status = 'queued'
+         ORDER BY position ASC LIMIT 1`
+      )
+      .get(sessionId);
+
+    if (next) {
+      db.query("UPDATE tasks SET status = 'running', started_at = ? WHERE id = ?")
+        .run(new Date().toISOString(), next.id);
+    }
+
+    db.exec("COMMIT");
+    return next;
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+```
+
+### 5.6 State Machines
+
+#### Agent State
+```
+created ──→ idle ──→ running ──→ idle
+                        │          ▲
+                        └──────────┘
+                       (task done)
+```
+
+#### Task Status
+```
+pending ──→ running ──→ done
+    │          │
+    │          ├──→ failed
+    │          ├──→ timeout
+    │          └──→ killed
+    │
+    └──→ queued ──→ running (dequeued)
+            │
+            └──→ cancelled
+```
+
+#### Loop Status
+```
+running ──→ done       (done condition met)
+    │
+    ├──→ failed        (max failures exceeded)
+    ├──→ exceeded      (max iterations or cost exceeded)
+    ├──→ cancelled     (user cancelled)
+    │
+    └──→ paused ──→ running (resumed)
+```
+
+### 5.7 Bun SQLite Considerations
+
+| Python (`sqlite3`) | Bun (`bun:sqlite`) | Notes |
+|--------------------|---------------------|-------|
+| `conn.row_factory = sqlite3.Row` | `.all()` returns objects by default | No explicit row factory needed |
+| `conn.execute(sql, params)` | `db.query(sql).run/get/all(params)` | Prepared statements are cached |
+| `cursor.lastrowid` | `result.lastInsertRowid` | Returns BigInt — cast to Number |
+| `conn.isolation_level = None` | `db.exec("BEGIN EXCLUSIVE")` | Manual transaction control |
+| `fetchone()` → `Row` or `None` | `.get()` → object or `undefined` | Check `undefined`, not `null` |
+| Named params `:name` | Named params `$name` or `?` positional | Different placeholder syntax |
+
+### 5.8 Migration-Safe Schema Evolution
+
+The TS codebase must handle Python databases that may have been created at different
+versions. Strategy:
+
+1. Run `CREATE TABLE IF NOT EXISTS` for all tables (idempotent)
+2. Use `ALTER TABLE ADD COLUMN IF NOT EXISTS` for columns added after initial release
+3. Never drop or rename columns — only add
+4. Python's `db.py` already does this pattern (checks for column existence before ALTER)
+
+---
+
+## 6. Integration Points
+
+### 6.1 Integration Overview
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    CLAUDE BRIDGE TS                               │
+│                                                                  │
+│  ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌───────────────┐  │
+│  │ Telegram  │  │ Discord  │  │   Slack   │  │  MCP Server   │  │
+│  │ Adapter   │  │ Adapter  │  │  Adapter  │  │  (stdio)      │  │
+│  └─────┬─────┘  └────┬─────┘  └─────┬─────┘  └───────┬───────┘  │
+│        │              │              │                │          │
+└────────┼──────────────┼──────────────┼────────────────┼──────────┘
+         │              │              │                │
+         ▼              ▼              ▼                ▼
+  ┌──────────────┐ ┌──────────┐ ┌──────────┐  ┌──────────────────┐
+  │ Telegram Bot │ │ Discord  │ │  Slack   │  │  Claude Code     │
+  │ API (HTTPS)  │ │ Gateway  │ │  Socket  │  │  (stdin/stdout)  │
+  │              │ │ (WSS)    │ │  Mode    │  │                  │
+  │ api.telegram │ │discord.  │ │(WSS)     │  │  Spawns Bridge   │
+  │ .org/bot...  │ │ gg       │ │          │  │  MCP as child    │
+  └──────────────┘ └──────────┘ └──────────┘  └──────────────────┘
+```
+
+### 6.2 MCP Integration (Claude Code ↔ Bridge)
+
+**Transport:** stdio (stdin/stdout JSON-RPC 2.0)
+
+Claude Code spawns Bridge's MCP server as a child process and communicates via stdio.
+This is configured in `.mcp.json` (per-project) or `mcp.json` (plugin-level).
+
+**Current channel/server.ts pattern** (to be absorbed):
+```typescript
+// MCP server with channel capability (push notifications)
+const mcp = new Server(
+  { name: "bridge", version: "1.0.0" },
+  {
+    capabilities: {
+      tools: {},
+      experimental: { "claude/channel": {} },  // Enables push notifications
+    },
+    instructions: [
+      // Bridge Bot behavior instructions embedded in MCP server
+    ],
+  }
+);
+```
+
+**Push notification mechanism:**
+```typescript
+// Push a Telegram message into the Bridge Bot's conversation
+mcp.notification({
+  method: "notifications/claude/channel",
+  params: {
+    channel: `<channel source="bridge" chat_id="${chatId}" user="${username}" tracking_id="${trackingId}" ts="${ts}">${messageText}</channel>`,
+  },
+});
+```
+
+**Tool registry (23+ tools):**
+
+| Tool Category | Tools | Protocol |
+|---------------|-------|----------|
+| **Agent CRUD** | `bridge_agents`, `bridge_create_agent` | MCP CallTool |
+| **Task Dispatch** | `bridge_dispatch`, `bridge_status`, `bridge_kill`, `bridge_history` | MCP CallTool |
+| **Messaging** | `reply`, `bridge_acknowledge`, `bridge_check_messages`, `bridge_get_notifications` | MCP CallTool |
+| **Loop Mgmt** | `bridge_loop`, `bridge_loop_status`, `bridge_loop_cancel`, `bridge_loop_approve`, `bridge_loop_reject`, `bridge_loop_list`, `bridge_loop_history`, `bridge_loop_notify` | MCP CallTool |
+| **Schedules** | `bridge_schedule_add`, `bridge_schedule_remove`, `bridge_schedule_list`, `bridge_schedule_pause`, `bridge_schedule_resume` | MCP CallTool |
+| **Files** | `download_attachment` | MCP CallTool |
+
+**MCP config (ts-src/mcp.json):**
+```json
+{
+  "mcpServers": {
+    "bridge": {
+      "command": "bun",
+      "args": ["run", "ts-src/src/mcp/server.ts"],
+      "env": {
+        "CLAUDE_BRIDGE_HOME": "${HOME}/.claude-bridge"
+      }
+    }
+  }
+}
+```
+
+### 6.3 Telegram Integration
+
+**SDK:** `grammy` (v1.21+) — TypeScript-native Telegram Bot API wrapper
+
+**Connection:** Long polling via `bot.start()` (getUpdates loop)
+
+**Message flow (inbound):**
+```
+Telegram servers ──getUpdates──→ grammy Bot
+                                    │
+                    bot.on('message', handler)
+                                    │
+                    ┌───────────────▼───────────────┐
+                    │ 1. Check allowlist             │
+                    │ 2. Track in messages.db        │
+                    │ 3. Download attachments (if any)│
+                    │ 4. Push via MCP notification    │
+                    └───────────────────────────────┘
+```
+
+**Message flow (outbound):**
+```
+CompletionHandler ──creates notification──→ messages.db (outbound)
+                                                │
+                              processOutbound() (interval: 2s)
+                                                │
+                                    ┌───────────▼───────────────┐
+                                    │ bot.api.sendMessage(      │
+                                    │   chatId, text,           │
+                                    │   { parse_mode: "HTML" }  │
+                                    │ )                          │
+                                    └───────────────────────────┘
+```
+
+**Key implementation details:**
+- **Allowlist:** `config.json` → `allowFrom: [chatId1, chatId2]` or `telegram_chat_id: single`
+- **Message chunking:** 4096 char limit, fence-aware splitting (don't break code blocks)
+- **HTML formatting:** Telegram uses HTML mode — `<b>`, `<i>`, `<code>`, `<pre>`
+- **File downloads:** `bot.api.getFile(fileId)` → download to `~/.claude-bridge/inbox/`
+- **Retry logic:** Exponential backoff on 429 (rate limit), max 3 retries
+
+**grammy SDK usage:**
+```typescript
+import { Bot } from "grammy";
+
+const bot = new Bot(token);
+
+bot.on("message", async (ctx) => {
+  const chatId = String(ctx.chat.id);
+  const userId = String(ctx.from?.id);
+  const text = ctx.message?.text ?? "";
+  // ... process message
+});
+
+// Send with HTML formatting
+await bot.api.sendMessage(chatId, htmlMessage, { parse_mode: "HTML" });
+```
+
+### 6.4 Discord Integration (Phase 3)
+
+**SDK:** `discord.js` (v14+) — requires adding to package.json
+
+**Connection:** WebSocket via Discord Gateway (no public URL needed)
+
+**Key differences from Telegram:**
+- **Thread support** — Discord supports threaded conversations natively
+- **Message limit** — 2000 chars (vs Telegram's 4096)
+- **Markdown** — Standard markdown (`**bold**`, `` `code` ``, ` ```lang\ncode``` `)
+- **Reactions** — Full emoji reactions (used for approval workflows)
+- **Slash commands** — Discord supports `/dispatch`, `/status` natively
+
+**Adapter contract:**
+```typescript
+class DiscordAdapter implements IChannelAdapter {
+  readonly platform = "discord";
+  readonly maxMessageLength = 2000;
+  readonly supportsThreads = true;
+  readonly supportsReactions = true;
+  readonly supportsFileUpload = true;
+  readonly markdownFormat = "standard";
+}
+```
+
+### 6.5 Slack Integration (Phase 6)
+
+**SDK:** `@slack/bolt` (v4+) — requires adding to package.json
+
+**Connection:** Socket Mode (WebSocket, no public URL needed)
+
+**Key differences:**
+- **Message limit** — 40000 chars (generous)
+- **mrkdwn format** — `*bold*` (not `**`), `_italic_`, `<url|text>` (not `[text](url)`)
+- **Blocks API** — Slack supports rich block layouts (sections, buttons, dividers)
+- **Thread support** — `thread_ts` parameter for threaded replies
+- **No syntax highlighting** — Code blocks have no language-aware highlighting
+
+**Adapter contract:**
+```typescript
+class SlackAdapter implements IChannelAdapter {
+  readonly platform = "slack";
+  readonly maxMessageLength = 40000;
+  readonly supportsThreads = true;
+  readonly supportsReactions = true;
+  readonly supportsFileUpload = true;
+  readonly markdownFormat = "slack-mrkdwn";
+}
+```
+
+### 6.6 Claude Code CLI Integration
+
+**Binary:** `claude` (must be in PATH)
+
+**Dispatch command:**
+```bash
+claude \
+  --agent bridge--{session_id} \
+  --session-id {deterministic-uuid} \
+  --output-format json \
+  --dangerously-skip-permissions \
+  -p "{task prompt}"
+```
+
+**Process management:**
+```typescript
+const proc = Bun.spawn(cmd, {
+  cwd: expandedProjectDir,
+  stdout: Bun.file(resultFile),   // Capture JSON output
+  stderr: Bun.file(stderrFile),   // Capture logs
+  env: {
+    ...process.env,
+    CLAUDE_BRIDGE_HOME: bridgeHome,
+  },
+  detached: true,                  // Own process group
+});
+
+// Track PID in SQLite
+db.query("UPDATE tasks SET pid = ? WHERE id = ?").run(proc.pid, taskId);
+```
+
+**Result file parsing (on-complete):**
+```typescript
+interface ClaudeResult {
+  type: "result";
+  subtype: "success" | "error_max_turns" | "error_during_execution";
+  cost_usd: number;
+  duration_ms: number;
+  duration_api_ms: number;
+  num_turns: number;
+  result: string;             // Summary text
+  session_id: string;
+}
+```
+
+**Stop hook integration:**
+The agent .md file includes a Stop hook that Claude Code calls when the process exits:
+```yaml
+---
+tools:
+  - Read
+  - Edit
+  - Write
+  - Bash
+  - Grep
+  - Glob
+isolation: worktree
+memory: project
+hooks:
+  Stop:
+    - command: "bun run ts-src/src/execution/on-complete.ts --session-id SESSION --task-id TASK"
+---
+```
+
+### 6.7 File System Integration
+
+| Path | Purpose | Owner |
+|------|---------|-------|
+| `~/.claude-bridge/` | Instance home directory | Bridge |
+| `~/.claude-bridge/bridge.db` | Core database | Bridge |
+| `~/.claude-bridge/messages.db` | Message queue | Bridge |
+| `~/.claude-bridge/config.json` | Configuration | Bridge |
+| `~/.claude-bridge/workspaces/{session}/tasks/` | Task results | Bridge |
+| `~/.claude-bridge/inbox/` | Downloaded attachments | Bridge |
+| `{bot_dir}/.claude/agents/bridge--{session}.md` | Agent definitions | Bridge (generates) |
+| `{project}/.claude/settings.local.json` | Stop hook registration | Bridge (modifies) |
+| `~/.claude/projects/{path}/memory/` | Auto Memory | Claude Code (read-only for Bridge) |
+
+### 6.8 Integration Sequence: End-to-End Task Dispatch
+
+```
+User                Telegram       Bridge         SQLite        Claude Code
+  │                   │             │               │               │
+  │ "dispatch backend  │             │               │               │
+  │  add pagination"   │             │               │               │
+  │──────────────────→│             │               │               │
+  │                   │ getUpdates  │               │               │
+  │                   │────────────→│               │               │
+  │                   │             │ trackInbound  │               │
+  │                   │             │──────────────→│               │
+  │                   │             │               │               │
+  │                   │             │ pushMessage   │               │
+  │                   │             │ (MCP notif)   │               │
+  │                   │             │──→Bridge Bot  │               │
+  │                   │             │   (parses)    │               │
+  │                   │             │               │               │
+  │                   │             │ bridge_dispatch(backend, ...)  │
+  │                   │             │ atomicCreate  │               │
+  │                   │             │──────────────→│               │
+  │                   │             │               │               │
+  │                   │             │ spawn claude -p               │
+  │                   │             │──────────────────────────────→│
+  │                   │             │               │               │
+  │                   │             │               │    (working)  │
+  │                   │             │               │               │
+  │                   │             │               │  Stop hook    │
+  │                   │             │←──────────────────────────────│
+  │                   │             │ on-complete   │               │
+  │                   │             │ updateTask    │               │
+  │                   │             │──────────────→│               │
+  │                   │             │ createNotif   │               │
+  │                   │             │──────────────→│               │
+  │                   │             │               │               │
+  │                   │ sendMessage │               │               │
+  │                   │←────────────│               │               │
+  │ "✓ Task done      │             │               │               │
+  │  Cost: $0.04"     │             │               │               │
+  │←──────────────────│             │               │               │
+```
