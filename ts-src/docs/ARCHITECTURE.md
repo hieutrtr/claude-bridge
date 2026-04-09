@@ -2221,3 +2221,113 @@ Per-wave testing:
 ```
 
 **Key rule:** Never call real `claude` CLI in tests — always mock subprocess.
+
+---
+
+## 10. Risk Assessment
+
+### 10.1 Risk Matrix
+
+| ID | Risk | Impact | Likelihood | Severity | Mitigation |
+|----|------|--------|------------|----------|------------|
+| R-1 | Bun `detached` != Python `start_new_session` | **High** | Medium | **High** | Integration test in Wave 3: kill Bridge, verify agent survives |
+| R-2 | `bun:sqlite` WAL behavior differs from Python sqlite3 | **High** | Low | **Medium** | Cross-compatibility test: Python writes → TS reads (and reverse) |
+| R-3 | MCP channel API changes (marked "experimental") | **High** | Medium | **High** | Pin MCP SDK version, monitor Anthropic changelog, have polling fallback |
+| R-4 | grammy SDK breaks on Bun runtime update | **Medium** | Low | **Low** | Pin grammy version, test on Bun upgrade |
+| R-5 | 85% interface gap delays migration | **Medium** | High | **Medium** | Expand interfaces wave-by-wave, not all upfront |
+| R-6 | Python/TS DB schema divergence during coexistence | **High** | Medium | **High** | Schema parity test suite, no TS-only columns until cutover |
+| R-7 | Stop hook latency regression (TS slower than expected) | **Medium** | Low | **Low** | Benchmark in Wave 3: on-complete must finish in <100ms |
+| R-8 | Orphaned processes from Bun.spawn | **Medium** | Medium | **Medium** | Watcher cron catches orphans, test kill -0 check in Bun |
+| R-9 | Channel server migration breaks Telegram integration | **High** | Medium | **High** | Keep existing channel/server.ts working until Wave 7 |
+| R-10 | Loss of data during DB migration | **High** | Low | **Medium** | Read-only access to existing DB; never DROP/ALTER destructively |
+
+### 10.2 Risk Deep Dives
+
+#### R-1: Process Isolation (Severity: High)
+
+**The problem:** Python's `start_new_session=True` calls `setsid()`, creating a new
+session and process group. Bun's `detached: true` may not create a new session —
+it may only prevent the parent's signals from reaching the child.
+
+**Impact if realized:** Killing Bridge also kills all running agents. Tasks silently
+vanish. Data loss.
+
+**Mitigation plan:**
+1. **Wave 3 integration test:** Spawn agent → kill Bridge → verify agent PID alive
+2. **Fallback:** If `detached` isn't sufficient, use `Bun.spawn(["setsid", "claude", ...])` — call `setsid` as an explicit wrapper
+3. **Verify on both macOS and Linux** — behavior may differ
+
+#### R-3: MCP Channel API Stability (Severity: High)
+
+**The problem:** The push notification mechanism uses `experimental: { "claude/channel": {} }`.
+Anthropic could change or remove this API.
+
+**Impact if realized:** Push-based messaging breaks. Bridge falls back to polling
+(10s latency vs 2s).
+
+**Mitigation plan:**
+1. **Dual-mode support:** Keep polling fallback (Python's `bridge_get_messages` pattern)
+2. **Pin MCP SDK:** Don't auto-update `@modelcontextprotocol/sdk`
+3. **Monitor:** Watch Claude Code release notes for channel API changes
+4. **Alternative:** If channel API removed, use Claude Code's native Channel feature
+   (if it supports third-party channels)
+
+#### R-6: Schema Divergence (Severity: High)
+
+**The problem:** During coexistence, both Python and TS write to the same DB. If TS
+introduces a column that Python doesn't know about, Python queries may fail or
+silently lose data.
+
+**Impact if realized:** Task results lost, agent state corrupted.
+
+**Mitigation plan:**
+1. **Schema parity rule:** TS never adds columns until Python is fully retired
+2. **Cross-compatibility CI test:** Create DB with Python → read with TS → verify all data
+3. **Schema checksum:** Hash CREATE TABLE statements, fail if they differ
+4. **Column handling:** Use `SELECT *` or explicit column lists (never assume column order)
+
+#### R-9: Channel Server Migration (Severity: High)
+
+**The problem:** The existing `channel/server.ts` (~3,500 LOC) is battle-tested. Absorbing
+it into `TelegramAdapter` risks breaking message delivery.
+
+**Impact if realized:** Users stop receiving task notifications. Messages dropped silently.
+
+**Mitigation plan:**
+1. **Keep existing channel server until Wave 7** — don't touch what works
+2. **Port incrementally:** Extract testable functions → write tests → verify parity
+3. **Shadow mode:** Run old and new in parallel, compare outputs
+4. **Rollback path:** If new adapter fails, revert to `channel/server.ts`
+
+### 10.3 Risk Acceptance Criteria
+
+A risk is **accepted** when:
+- Mitigation is implemented and tested
+- Fallback path exists
+- Impact is documented and operator is aware
+
+A risk is **escalated** when:
+- Mitigation fails in testing
+- No fallback path exists
+- Impact could cause data loss or extended downtime
+
+### 10.4 Monitoring & Observability
+
+During and after migration, monitor:
+
+| Signal | Tool | Alert Condition |
+|--------|------|----------------|
+| Task completion rate | `bridge status` | Tasks stuck in `running` > 6h |
+| Notification delivery | `messages.db` outbound | Pending outbound > 10 messages |
+| Orphaned processes | `watcher.ts` | PIDs not in DB still running |
+| DB integrity | `PRAGMA integrity_check` | Any corruption |
+| Stop hook latency | stderr timing | > 500ms per invocation |
+| Channel connectivity | grammy error events | > 3 consecutive Telegram API failures |
+
+---
+
+## Appendix: Document Revision History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 0.1.0 | 2026-04-09 | Initial architecture document — all 10 sections |
