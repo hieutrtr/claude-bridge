@@ -1426,3 +1426,167 @@ cp "$BRIDGE_HOME/messages.db" "$BRIDGE_HOME/messages.db.pre-wave-$WAVE"
 sqlite3 "$BRIDGE_HOME/bridge.db" "PRAGMA integrity_check"
 echo "Backup complete for wave $WAVE"
 ```
+
+---
+
+## 10. Success Metrics & KPIs
+
+### 10.1 Feature Parity Metrics
+
+Feature parity is the primary success measure — the TS version must do everything Python does.
+
+| Metric | Target | Measurement | When |
+|--------|--------|-------------|------|
+| **Python function coverage** | 100% of public functions have TS equivalent | Count: TS methods / Python public functions | Per wave gate |
+| **MCP tool parity** | 23/23 tools (100%) | Tool-by-tool response comparison | W7 gate |
+| **CLI command parity** | 10/10 commands (100%) | Snapshot test comparison | W5 gate |
+| **DB method parity** | 61/61 methods (100%) | Interface method count vs Python | W2 gate |
+| **Channel feature parity** | All Telegram features working | Feature checklist vs channel/server.ts | W7 gate |
+
+**Parity tracking table (updated per wave):**
+
+```
+┌───────────────────────┬──────────┬──────────┬──────────┬─────────┐
+│ Category              │ Python   │ TS Done  │ Parity % │ Wave    │
+├───────────────────────┼──────────┼──────────┼──────────┼─────────┤
+│ DB methods            │    61    │    0→61  │   0→100  │ W2      │
+│ Session methods       │    10    │    0→10  │   0→100  │ W2      │
+│ Message DB methods    │    24    │    0→24  │   0→100  │ W2      │
+│ Dispatcher methods    │     6    │    0→6   │   0→100  │ W3      │
+│ Completion methods    │     3    │    0→3   │   0→100  │ W3      │
+│ Watcher methods       │     4    │    0→4   │   0→100  │ W3      │
+│ Notifier methods      │     6    │    0→6   │   0→100  │ W3      │
+│ Loop Orchestrator     │    21    │    0→21  │   0→100  │ W4      │
+│ Loop Evaluator        │     8    │    0→8   │   0→100  │ W4      │
+│ Scheduler             │     3    │    0→3   │   0→100  │ W4      │
+│ CLI commands          │    10    │    0→10  │   0→100  │ W5      │
+│ Agent .md generation  │     4    │    0→4   │   0→100  │ W5      │
+│ Daemon management     │    24    │    0→24  │   0→100  │ W6      │
+│ Bridge command        │    17    │    0→17  │   0→100  │ W6      │
+│ MCP tools             │    23    │    0→23  │   0→100  │ W7      │
+│ MCP server            │    28    │    0→28  │   0→100  │ W7      │
+├───────────────────────┼──────────┼──────────┼──────────┼─────────┤
+│ TOTAL                 │   252    │    0→252 │   0→100  │         │
+└───────────────────────┴──────────┴──────────┴──────────┴─────────┘
+```
+
+### 10.2 Test Coverage Metrics
+
+| Metric | Target | Current | Measured By |
+|--------|--------|---------|-------------|
+| **Overall line coverage** | ≥80% | 0% (scaffold only) | `bun test --coverage` |
+| **Data layer coverage** | ≥85% | 0% | `bun test --coverage tests/data/` |
+| **Execution layer coverage** | ≥80% | 0% | `bun test --coverage tests/execution/` |
+| **Orchestration coverage** | ≥80% | 0% | `bun test --coverage tests/orchestration/` |
+| **CLI coverage** | ≥75% | 0% | `bun test --coverage tests/cli/` |
+| **MCP coverage** | ≥80% | 0% | `bun test --coverage tests/mcp/` |
+| **Cross-compat tests** | All pass | N/A | `bun test tests/data/cross-compat.test.ts` |
+| **Integration tests** | All pass | N/A | `bun test tests/integration/` |
+
+**Test count targets per wave:**
+
+| Wave | Unit Tests | Integration Tests | Cross-Compat | Total |
+|------|-----------|-------------------|-------------|-------|
+| W1 | 5 | 2 | 0 | 7 |
+| W2 | 60 | 5 | 10 | 75 |
+| W3 | 30 | 8 | 0 | 38 |
+| W4 | 35 | 5 | 0 | 40 |
+| W5 | 25 | 5 | 0 | 30 |
+| W6 | 15 | 5 | 0 | 20 |
+| W7 | 30 | 5 | 0 | 35 |
+| **Total** | **200** | **35** | **10** | **245** |
+
+### 10.3 Performance Benchmarks
+
+| Metric | Python Baseline | TS Target | Improvement | Measured At |
+|--------|----------------|-----------|-------------|-------------|
+| **Stop hook (on-complete) latency** | ~200ms | <100ms (p95) | ≥2x | W3 gate (CP-5) |
+| **CLI cold start** | ~200ms | <50ms | ≥4x | W5 gate |
+| **DB open + schema init** | ~50ms | <50ms | Parity | W2 gate |
+| **Agent CRUD** | <10ms | <5ms | ≥2x | W2 gate |
+| **Atomic task dispatch** | <15ms | <10ms | ~1.5x | W2 gate |
+| **MCP tool response** | ~250ms (Python parse + exec) | <100ms | ≥2.5x | W7 gate |
+| **Telegram message delivery** | <3s | <3s | Parity | W7 gate |
+| **Daemon memory usage** | ~50MB (Python) | <30MB (Bun) | ~1.7x | W6 gate |
+
+**Benchmark protocol:**
+1. Run 100 iterations of each operation
+2. Measure p50, p95, p99
+3. Compare against Python baseline (measured once before migration starts)
+4. Target is p95 — occasional spikes are acceptable if p95 meets threshold
+
+### 10.4 Reliability KPIs
+
+| KPI | Target | Measurement Period | How |
+|-----|--------|-------------------|-----|
+| **Silent task drop rate** | 0% | 24h soak test | Dispatch 100 tasks → count completed + failed. Must = 100 |
+| **Notification delivery rate** | ≥99% | 24h soak test | Count notifications created vs delivered |
+| **Daemon uptime** | ≥99.9% | 7-day run | Monitor with `bridge status` every 5 min |
+| **DB corruption events** | 0 | Entire migration | `PRAGMA integrity_check` after every wave |
+| **Orphaned process count** | 0 | 24h soak test | Compare running PIDs vs DB tracked PIDs |
+| **Stop hook failure rate** | <1% | 100 task completions | Count completions caught by watcher (fallback) vs stop hook |
+
+### 10.5 Migration Progress KPIs
+
+Track these weekly throughout the migration:
+
+| KPI | Formula | Target Trajectory |
+|-----|---------|------------------|
+| **LOC migrated** | TS production LOC written / 7,050 total | Linear: ~700 LOC/week |
+| **Functions ported** | TS methods implemented / 252 total | Wave-aligned: jumps at wave completion |
+| **Tests written** | Total test count / 245 target | Proportional to LOC |
+| **Wave completion** | Waves passed gate / 7 total | 1 per ~1.5 weeks |
+| **Buffer consumed** | Actual buffer days used / 8 allocated | <50% = healthy; >75% = timeline risk |
+| **Risks materialized** | Count of risks that triggered mitigation | 0-2 = expected; >3 = reassess |
+
+### 10.6 Plugin Submission Readiness
+
+Final metric — the migration is ready for plugin marketplace submission when:
+
+| # | Criterion | Status |
+|---|-----------|--------|
+| PS-1 | `plugin.json` passes marketplace validation | Pending |
+| PS-2 | `mcp.json` correctly registers MCP server | Pending |
+| PS-3 | All 23+ MCP tools functional without Python | Pending |
+| PS-4 | `skills/` directory contains working slash commands | Pending |
+| PS-5 | No runtime errors on fresh install (clean machine test) | Pending |
+| PS-6 | README.md with setup instructions | Pending |
+| PS-7 | LICENSE file present | Pending |
+| PS-8 | No hardcoded paths or developer-specific config | Pending |
+| PS-9 | `bun install` resolves all dependencies | Pending |
+| PS-10 | Test suite passes on CI (GitHub Actions with Bun) | Pending |
+
+### 10.7 Dashboard Summary (Template)
+
+Update this after each wave gate:
+
+```
+╔══════════════════════════════════════════════════════════════╗
+║          CLAUDE BRIDGE TS MIGRATION — DASHBOARD             ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║  Wave Progress:  [░░░░░░░░░░░░░░░░░░░░] 0/7 (0%)           ║
+║  LOC Migrated:   0 / 7,050 (0%)                             ║
+║  Functions:      0 / 252 (0%)                                ║
+║  Tests Written:  0 / 245 (0%)                                ║
+║  Test Coverage:  0%  (target: ≥80%)                          ║
+║  Buffer Used:    0 / 8 days (0%)                             ║
+║  Risks Active:   0 / 10                                      ║
+║                                                              ║
+║  Current Wave:   Not started                                 ║
+║  Next Gate:      G1 (Plugin Shell)                           ║
+║  Next Milestone: M1 — Plugin installable (Day 4)             ║
+║                                                              ║
+║  Blockers:       None                                        ║
+║  Risks Triggered: None                                       ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+```
+
+---
+
+## Appendix: Document Revision History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 0.1.0 | 2026-04-09 | Initial implementation plan — all 10 sections |
