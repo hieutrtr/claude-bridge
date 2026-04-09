@@ -884,3 +884,545 @@ compressing timeline to ~35-40 days effective.
 | AC-7.9 | Soak test | Run 24h with synthetic tasks | Zero silent drops, zero crashes |
 | AC-7.10 | Plugin submission ready | Verify plugin.json, mcp.json, skills/ | All files valid, passes linting |
 | AC-7.11 | Overall test coverage | `bun test --coverage` | ≥80% line coverage across all modules |
+
+---
+
+## 7. Quality Gates & Review Checkpoints
+
+### 7.1 Gate Model
+
+Each wave must pass a quality gate before the next wave begins. Gates are binary
+(pass/fail) — there is no "partial pass." If a gate fails, the wave is not complete.
+
+```
+Wave N ──→ [Quality Gate N] ──pass──→ Wave N+1
+                │
+              fail
+                │
+                ▼
+         Fix → Re-test → Re-gate
+```
+
+### 7.2 Quality Gate Definitions
+
+#### Gate G1: Plugin Shell (before Wave 2)
+
+| # | Condition | Verification | Fail Action |
+|---|-----------|-------------|-------------|
+| G1.1 | Plugin installs without errors | Manual install test | Fix plugin.json/mcp.json structure |
+| G1.2 | MCP server responds to `initialize` | `echo '{"jsonrpc":"2.0","method":"initialize",...}' \| bun run server.ts` | Fix stdio transport |
+| G1.3 | At least 1 tool call succeeds via Python fallback | Call `bridge_status` tool | Fix bridge-cli PATH/subprocess |
+| G1.4 | No runtime errors on startup | Check stderr output | Fix import/dependency issues |
+
+#### Gate G2: Data Layer (before Wave 3)
+
+| # | Condition | Verification | Fail Action |
+|---|-----------|-------------|-------------|
+| G2.1 | All IDatabase unit tests pass | `bun test tests/data/` | Fix failing methods |
+| G2.2 | Cross-compatibility test passes both directions | `bun test tests/data/cross-compat.test.ts` | Fix schema divergence |
+| G2.3 | Schema checksum matches Python | Compare DDL output | Align column names/types/defaults |
+| G2.4 | WAL + foreign keys verified on connection | Pragma check in test | Fix connection setup |
+| G2.5 | Atomic dispatch prevents double-dispatch | Concurrent test | Fix transaction isolation |
+| G2.6 | Test coverage ≥85% for data layer | `bun test --coverage` | Add missing test cases |
+
+#### Gate G3: Execution Layer (before Wave 4)
+
+| # | Condition | Verification | Fail Action |
+|---|-----------|-------------|-------------|
+| G3.1 | Process isolation confirmed | Kill Bridge → agent survives | Switch to `setsid` wrapper (R-1 fallback) |
+| G3.2 | Stop hook completes in <100ms (p95) | Benchmark 100 runs | Profile and optimize imports |
+| G3.3 | Dispatch → complete → notify works E2E | Integration test with mock claude | Fix broken link in chain |
+| G3.4 | Watcher catches dead PIDs | Integration test | Fix PID checking logic |
+| G3.5 | Graceful kill works (SIGTERM → SIGKILL) | Kill test | Fix signal handling |
+| G3.6 | Test coverage ≥80% for execution layer | `bun test --coverage` | Add missing test cases |
+
+#### Gate G4: Orchestration (before Wave 5)
+
+| # | Condition | Verification | Fail Action |
+|---|-----------|-------------|-------------|
+| G4.1 | Loop: start → iterate → done (happy path) | Unit test | Fix state machine transitions |
+| G4.2 | Loop: max iterations exceeded | Unit test | Fix limit checking |
+| G4.3 | Loop: approval workflow (approve + reject) | Unit test | Fix pending_approval state |
+| G4.4 | All 5 evaluator types work | Unit tests per type | Fix condition parsing/evaluation |
+| G4.5 | Schedule fires on time (±5s) | Time-mocked test | Fix next_run computation |
+| G4.6 | Schedule error backoff works | Test with consecutive errors | Fix backoff formula |
+| G4.7 | Test coverage ≥80% for orchestration | `bun test --coverage` | Add missing test cases |
+
+#### Gate G5: CLI & Integration (before Wave 6)
+
+| # | Condition | Verification | Fail Action |
+|---|-----------|-------------|-------------|
+| G5.1 | All 10 CLI commands execute without error | Run each command | Fix arg parsing/routing |
+| G5.2 | Output format matches Python snapshots | Snapshot comparison tests | Align formatting |
+| G5.3 | Agent .md file is valid YAML + Markdown | Parse generated file | Fix YAML frontmatter generation |
+| G5.4 | Stop hook in agent .md points to TS binary | Inspect generated hook | Fix path in AgentMdGenerator |
+| G5.5 | Test coverage ≥80% for CLI layer | `bun test --coverage` | Add missing test cases |
+
+#### Gate G6: Infrastructure (before Wave 7)
+
+| # | Condition | Verification | Fail Action |
+|---|-----------|-------------|-------------|
+| G6.1 | Daemon installs on macOS (launchd) | `bun cli.ts daemon install` on macOS | Fix plist generation |
+| G6.2 | Daemon starts/stops cleanly | `bun cli.ts daemon start/stop` | Fix launchctl integration |
+| G6.3 | Zero Python subprocess calls in TS source | `grep -r "bridge-cli\|python3\|Popen" ts-src/src/` | Remove remaining fallbacks |
+| G6.4 | All operations work without Python installed | Uninstall Python bridge → test | Fix any remaining dependencies |
+
+#### Gate G7: MCP Consolidation (Migration Complete)
+
+| # | Condition | Verification | Fail Action |
+|---|-----------|-------------|-------------|
+| G7.1 | All 23+ MCP tools return correct results | Tool-by-tool test | Fix broken tools |
+| G7.2 | Channel push notifications work | Telegram → MCP notification test | Fix channel capability |
+| G7.3 | E2E full pipeline passes | Dispatch + loop + schedule E2E | Fix integration issues |
+| G7.4 | 24h soak test: zero drops | Synthetic task runner | Investigate and fix reliability issues |
+| G7.5 | Overall test coverage ≥80% | `bun test --coverage` | Add missing test cases |
+| G7.6 | Plugin metadata valid for submission | Validate against plugin spec | Fix plugin.json |
+
+### 7.3 Review Checkpoints
+
+Reviews happen at specific points within each wave, not just at gates.
+
+| When | What | How | Reviewer |
+|------|------|-----|---------|
+| **After each task** | Code review checklist | `.claude/rules/code-review.md` | Self (developer) + Claude Code |
+| **After interface expansion** (W2.1, W3.1, W4.1) | Interface review | Check all Python methods mapped, types correct | Self — compare against §3.1-3.6 mapping |
+| **After DB implementation** (W2.2-W2.3) | Schema parity review | `PRAGMA table_info()` comparison | Automated test |
+| **After process isolation** (W3.2) | Security review | Verify detached, env isolation, no leaked state | Manual + integration test |
+| **After loop state machine** (W4.2) | State transition review | Verify all paths in state diagram covered | Unit test coverage report |
+| **After CLI completion** (W5.5) | UX review | Compare TS CLI output with Python side-by-side | Manual comparison |
+| **After Python removal** (W6.4) | Dependency audit | `grep` for any Python references | Automated scan |
+| **After E2E** (W7.4) | Production readiness review | Full checklist from §1.3 (D-1 through D-12) | Manual + automated |
+
+### 7.4 Continuous Quality Checks
+
+These run on every commit, not just at gates:
+
+| Check | Tool | Trigger | Fail Behavior |
+|-------|------|---------|--------------|
+| TypeScript type checking | `bun run tsc --noEmit` | Every commit | Block merge |
+| Unit tests | `bun test` | Every commit | Block merge |
+| Lint | `bunx @biomejs/biome check` (or eslint) | Every commit | Warn (fix before gate) |
+| Schema parity | Custom test comparing DDL | Every W2+ commit | Block merge |
+
+### 7.5 Gate Escalation Protocol
+
+If a gate fails repeatedly (>2 attempts):
+
+1. **Document the failure** — what failed, what was tried
+2. **Root cause analysis** — is it a code bug, environment issue, or assumption violation?
+3. **Check risk register** — does this match a known risk (R-1 through R-10)?
+4. **If assumption violated** — update §1.4, re-plan affected tasks
+5. **If risk materialized** — execute mitigation from §8
+6. **If novel issue** — timebox investigation to 4h, then decide: fix or defer + workaround
+
+---
+
+## 8. Risk Mitigation Actions
+
+### 8.1 Risk Register (from Architecture Doc §10)
+
+All 10 risks from the architecture document mapped to concrete mitigation actions,
+triggers, owners, and timeline.
+
+### 8.2 R-1: Process Isolation (`Bun.spawn detached` != Python `start_new_session`)
+
+| Attribute | Value |
+|-----------|-------|
+| **Severity** | High |
+| **Likelihood** | Medium |
+| **Wave affected** | W3 (Execution) |
+| **Trigger** | W3.2 integration test: kill Bridge → check if agent PID survives |
+
+**Mitigation actions (ordered by preference):**
+
+1. **Primary (Day 16-17):** Write integration test in W3.2:
+   ```
+   spawn mock agent with detached:true → record PID → kill Bridge process →
+   sleep 2s → verify PID still alive with kill(pid, 0)
+   ```
+2. **Fallback A:** If `detached` doesn't create new session, wrap with explicit `setsid`:
+   ```typescript
+   Bun.spawn(["setsid", "claude", ...args], { /* no detached needed */ })
+   ```
+3. **Fallback B:** If `setsid` not available (unlikely on macOS/Linux), use `nohup` wrapper
+4. **Verification:** Test on both macOS (primary dev) and Linux (production target)
+5. **Acceptance:** Agent PID must survive Bridge death in 10/10 test runs
+
+### 8.3 R-2: `bun:sqlite` WAL Behavior Differs from Python `sqlite3`
+
+| Attribute | Value |
+|-----------|-------|
+| **Severity** | Medium |
+| **Likelihood** | Low |
+| **Wave affected** | W2 (Data) |
+| **Trigger** | W2.6 cross-compatibility test failure |
+
+**Mitigation actions:**
+
+1. **Primary (Day 8-12):** Cross-compatibility test suite (W2.6):
+   - Python creates DB with 10 agents, 50 tasks, 5 loops → TS reads all records
+   - TS creates DB → Python reads all records
+   - Compare `PRAGMA table_info()` output column-by-column
+2. **WAL verification:** After TS opens DB, verify `PRAGMA journal_mode` returns `wal`
+3. **Placeholder syntax:** Test `$param` (bun) vs `:param` (Python) — ensure queries use correct syntax
+4. **BigInt handling:** `lastInsertRowid` returns BigInt in bun:sqlite — always cast to `Number()`
+5. **Row format:** bun:sqlite `.get()` returns `undefined` (not `null`) — check all comparisons
+
+### 8.4 R-3: MCP Channel API Changes (Experimental)
+
+| Attribute | Value |
+|-----------|-------|
+| **Severity** | High |
+| **Likelihood** | Medium |
+| **Wave affected** | W7 (MCP Consolidation) |
+| **Trigger** | Claude Code update changes/removes `experimental: { "claude/channel": {} }` |
+
+**Mitigation actions:**
+
+1. **Pin MCP SDK version:** Lock `@modelcontextprotocol/sdk` to tested version in package.json
+2. **Monitor changelog:** Check Claude Code release notes at each wave gate
+3. **Dual-mode support (Day 46-48):** Implement polling fallback alongside push:
+   ```typescript
+   // If channel capability unavailable, fall back to bridge_check_messages tool
+   // Bridge Bot polls every 10s instead of receiving push notifications
+   ```
+4. **Abstraction layer:** Channel notifications go through `IChannelAdapter.pushMessage()` — swapping implementation doesn't change callers
+5. **Acceptance:** If API removed, latency increases from ~2s to ~10s (acceptable degradation)
+
+### 8.5 R-4: grammy SDK Breaks on Bun Runtime Update
+
+| Attribute | Value |
+|-----------|-------|
+| **Severity** | Low |
+| **Likelihood** | Low |
+| **Wave affected** | W7 (channel absorption) |
+| **Trigger** | Bun update → grammy import or runtime error |
+
+**Mitigation actions:**
+
+1. **Pin versions:** Lock both `bun` and `grammy` versions in `package.json` + `.tool-versions`
+2. **Existing proof:** Current `channel/server.ts` runs grammy on Bun in production — low risk
+3. **Test on upgrade:** Before upgrading Bun, run `bun test tests/channel/` first
+4. **Fallback:** If grammy breaks, stay on known-good Bun version until grammy patches
+
+### 8.6 R-5: 85% Interface Gap Delays Migration
+
+| Attribute | Value |
+|-----------|-------|
+| **Severity** | Medium |
+| **Likelihood** | High |
+| **Wave affected** | W2-W4 (interface expansion tasks) |
+| **Trigger** | Interface expansion takes longer than estimated 0.5-1 day per wave |
+
+**Mitigation actions:**
+
+1. **Wave-by-wave expansion:** DON'T expand all interfaces upfront. Expand only what the current wave needs (Architecture doc §3.9 strategy)
+2. **Python source as spec:** Each interface method maps 1:1 to a Python function — use Python signature as the type spec
+3. **AI-assisted generation:** Feed Python function signatures to Claude Code → generate TS interface methods
+4. **Track velocity:** If W2.1 takes >1.5 days, re-estimate W3.1 and W4.1 buffer
+5. **Acceptance:** Interface expansion is "done" when all Python public functions have a TS method signature
+
+### 8.7 R-6: Python/TS DB Schema Divergence During Coexistence
+
+| Attribute | Value |
+|-----------|-------|
+| **Severity** | High |
+| **Likelihood** | Medium |
+| **Wave affected** | W2-W6 (entire coexistence period) |
+| **Trigger** | Python test fails on TS-created DB, or vice versa |
+
+**Mitigation actions:**
+
+1. **Schema parity rule (enforced from Day 8):** TS never adds columns, tables, or indexes that Python doesn't have. Zero exceptions until W7 (full cutover)
+2. **Schema checksum CI check:** Hash `CREATE TABLE` DDL from both Python and TS, fail if they differ
+3. **Cross-compat test in CI:** Runs on every commit to data layer
+4. **Column handling:** Always use explicit column lists in INSERT/SELECT (never `SELECT *` for mutations)
+5. **If divergence found:** Stop current wave, fix schema, re-run cross-compat tests before proceeding
+
+### 8.8 R-7: Stop Hook Latency Regression
+
+| Attribute | Value |
+|-----------|-------|
+| **Severity** | Low |
+| **Likelihood** | Low |
+| **Wave affected** | W3 (CompletionHandler) |
+| **Trigger** | W3.3 benchmark shows p95 > 100ms |
+
+**Mitigation actions:**
+
+1. **Lazy imports:** `on-complete.ts` imports only `data/db.ts` and `execution/on-complete.ts` — never full orchestration layer
+2. **Benchmark in CI (Day 19):** Run 100 invocations of on-complete with mock result file, measure p95
+3. **If >100ms:** Profile with `bun --smol` flag or remove unnecessary imports
+4. **If >200ms:** Consider pre-compiled binary entry point (`bun build --compile`)
+5. **Baseline comparison:** Python on-complete takes ~200ms — TS should be ≤50ms (Bun advantage)
+
+### 8.9 R-8: Orphaned Processes from Bun.spawn
+
+| Attribute | Value |
+|-----------|-------|
+| **Severity** | Medium |
+| **Likelihood** | Medium |
+| **Wave affected** | W3 (Dispatcher + Watcher) |
+| **Trigger** | Watcher finds PIDs not tracked in DB, or DB PIDs that don't exist |
+
+**Mitigation actions:**
+
+1. **PID tracking discipline:** Every `Bun.spawn()` immediately records PID in tasks table
+2. **Watcher fallback (W3.4):** Runs every 5 min, checks all `running` task PIDs with `kill(pid, 0)`
+3. **Zombie cleanup:** If PID dead but task still `running` → mark failed + create notification
+4. **Process group kill:** When killing a task, kill the process group (`kill(-pid, SIGTERM)`) to catch children
+5. **Soak test (W7.4):** 24h test specifically monitors for orphaned processes
+
+### 8.10 R-9: Channel Server Migration Breaks Telegram
+
+| Attribute | Value |
+|-----------|-------|
+| **Severity** | High |
+| **Likelihood** | Medium |
+| **Wave affected** | W7 (MCP Consolidation) |
+| **Trigger** | After absorbing channel/server.ts into TelegramAdapter, Telegram messages stop flowing |
+
+**Mitigation actions:**
+
+1. **Keep existing channel server until W7:** Don't touch `channel/server.ts` during W1-W6
+2. **Extract-then-absorb (Day 46-48):**
+   - Extract testable functions from channel/server.ts → standalone modules
+   - Write tests for each extracted function
+   - Absorb into TelegramAdapter with tests already green
+3. **Shadow mode:** Run old and new channel servers in parallel for 1 day, compare message counts
+4. **Rollback path:** If new adapter fails, revert to old `channel/server.ts` (it's still in the repo)
+5. **Feature flag:** `config.json: { "use_new_channel": true/false }` — toggle between old and new
+
+### 8.11 R-10: Loss of Data During DB Migration
+
+| Attribute | Value |
+|-----------|-------|
+| **Severity** | Medium |
+| **Likelihood** | Low |
+| **Wave affected** | W2 (Data Layer) |
+| **Trigger** | TS DB operation corrupts existing data |
+
+**Mitigation actions:**
+
+1. **Read-only first (Day 8-10):** TS tests read existing Python-created DB before writing
+2. **Never DROP or ALTER destructively:** Only `CREATE TABLE IF NOT EXISTS` and `ALTER TABLE ADD COLUMN`
+3. **Backup before cutover:** Before switching from Python to TS, backup `bridge.db` and `messages.db`
+4. **PRAGMA integrity_check:** Run after every write test to verify no corruption
+5. **WAL checkpoint:** Force checkpoint before backup: `PRAGMA wal_checkpoint(TRUNCATE)`
+
+### 8.12 Risk Summary Matrix
+
+```
+                    Low Impact          Medium Impact         High Impact
+                ┌──────────────────┬───────────────────┬──────────────────┐
+  High          │                  │ R-5 Interface gap │                  │
+  Likelihood    │                  │                   │                  │
+                ├──────────────────┼───────────────────┼──────────────────┤
+  Medium        │                  │ R-8 Orphaned proc │ R-1 Proc isolat. │
+  Likelihood    │                  │                   │ R-3 MCP channel  │
+                │                  │                   │ R-6 Schema div.  │
+                │                  │                   │ R-9 Channel mig. │
+                ├──────────────────┼───────────────────┼──────────────────┤
+  Low           │ R-4 grammy/Bun  │ R-10 Data loss    │ R-2 WAL behavior │
+  Likelihood    │ R-7 Hook latency│                   │                  │
+                └──────────────────┴───────────────────┴──────────────────┘
+```
+
+**Priority order for mitigation investment:**
+1. R-1 (Process isolation) — blocking, high severity, testable early
+2. R-6 (Schema divergence) — long duration exposure, high severity
+3. R-9 (Channel migration) — high severity but late in timeline
+4. R-3 (MCP channel API) — external dependency, can't fully control
+5. R-5 (Interface gap) — high likelihood but manageable with wave-by-wave approach
+
+---
+
+## 9. Rollback Strategy
+
+### 9.1 Rollback Philosophy
+
+The migration is designed so that **at any point, the Python version can resume full
+operation**. This is possible because:
+
+1. TS and Python share the same SQLite DB schema (no TS-only columns until W7 cutover)
+2. TS and Python share the same `~/.claude-bridge/` directory structure
+3. MCP tool names are identical (Bridge Bot CLAUDE.md works with either)
+4. The Python package remains installed throughout Waves 1-6
+
+**Rollback = switch the entry point back to Python.** No data migration needed.
+
+### 9.2 Per-Wave Rollback Procedures
+
+#### Wave 1 Rollback: Plugin Shell → Remove plugin
+
+| Step | Action | Command |
+|------|--------|---------|
+| 1 | Uninstall TS plugin | Remove from `~/.claude/plugins/` |
+| 2 | Restore Python MCP config | Restore `.mcp.json` pointing to Python `mcp_server.py` |
+| 3 | Verify | `bridge-cli status` (Python) works |
+
+**Data impact:** None. Wave 1 writes no data.
+**Time to rollback:** <5 minutes.
+
+#### Wave 2 Rollback: Data Layer → Stop using TS DB code
+
+| Step | Action | Command |
+|------|--------|---------|
+| 1 | Revert MCP tools to Python fallback | Set all MCP tools to call `bridge-cli` |
+| 2 | Verify Python reads DB | `bridge-cli list-agents` returns correct data |
+| 3 | Check DB integrity | `sqlite3 bridge.db "PRAGMA integrity_check"` |
+
+**Data impact:** TS-created records are fully compatible with Python (same schema).
+No cleanup needed.
+**Time to rollback:** <10 minutes.
+
+#### Wave 3 Rollback: Execution → Revert stop hook to Python
+
+| Step | Action | Command |
+|------|--------|---------|
+| 1 | Regenerate agent .md files | `bridge-cli setup-bot` (Python) — overwrites stop hook path |
+| 2 | Kill any TS-spawned processes | Check `tasks` table for running PIDs, kill manually |
+| 3 | Revert MCP dispatch tool | Point back to Python `bridge-cli dispatch` |
+| 4 | Verify | Dispatch task via Python → complete → notification arrives |
+
+**Data impact:** Running tasks may need manual cleanup (kill PIDs, update status in DB).
+**Time to rollback:** <15 minutes.
+**Risk:** Tasks spawned by TS dispatcher used TS-formatted stop hook path. Must regenerate
+agent .md files to point stop hooks back to Python `on_complete.py`.
+
+#### Wave 4 Rollback: Orchestration → Revert loop/schedule to Python
+
+| Step | Action | Command |
+|------|--------|---------|
+| 1 | Cancel active TS loops | Update `loops` table: set status='cancelled' for running loops |
+| 2 | Pause TS schedules | Update `schedules` table: set enabled=0 |
+| 3 | Revert MCP loop/schedule tools | Point back to Python fallback |
+| 4 | Resume loops/schedules via Python | `bridge-cli loop ...` / `bridge-cli schedule ...` |
+
+**Data impact:** Loop iteration history preserved in DB. Schedules may need next_run recalculation.
+**Time to rollback:** <15 minutes.
+
+#### Wave 5 Rollback: CLI → Use Python bridge-cli
+
+| Step | Action | Command |
+|------|--------|---------|
+| 1 | Verify Python CLI still in PATH | `which bridge-cli` |
+| 2 | Regenerate agent .md files via Python | `bridge-cli setup-bot` |
+| 3 | Use Python CLI for all operations | All `bun cli.ts` commands → `bridge-cli` |
+
+**Data impact:** None (CLI is stateless; all state is in SQLite).
+**Time to rollback:** <5 minutes.
+
+#### Wave 6 Rollback: Infrastructure → Revert daemon to Python
+
+| Step | Action | Command |
+|------|--------|---------|
+| 1 | Stop TS daemon | `launchctl unload ~/Library/LaunchAgents/ai.claude-bridge.plist` |
+| 2 | Reinstall Python daemon | `bridge-cli daemon install && bridge-cli daemon start` |
+| 3 | Verify Python daemon running | `bridge-cli daemon status` |
+
+**Data impact:** None.
+**Time to rollback:** <10 minutes.
+
+#### Wave 7 Rollback: MCP Consolidation → Revert to Python MCP + channel server
+
+| Step | Action | Command |
+|------|--------|---------|
+| 1 | Stop TS MCP server | Kill the bun process |
+| 2 | Restore Python MCP config | Point `.mcp.json` to Python `mcp_server.py` |
+| 3 | Restart channel server | `node channel/dist/server.js` (old channel server) |
+| 4 | Restart Bridge Bot session | Restart Claude Code session for Bridge Bot |
+| 5 | Verify | Send Telegram message → Bridge Bot responds |
+
+**Data impact:** None (MCP server is stateless; all state in SQLite).
+**Time to rollback:** <15 minutes.
+**Note:** This is the most complex rollback because it involves reverting the MCP
+server, channel server, and Bridge Bot session simultaneously.
+
+### 9.3 Coexistence Fallback Architecture
+
+During Waves 1-6, the system maintains dual-mode capability:
+
+```
+                   ┌─────────────────────────────┐
+                   │        Bridge Bot            │
+                   └──────────┬──────────────────┘
+                              │
+                   ┌──────────▼──────────────────┐
+                   │      TS MCP Server           │
+                   │                              │
+                   │  for each tool call:         │
+                   │    if (nativeTS(tool)):       │
+                   │      → execute in TS          │
+                   │    else:                      │
+                   │      → bridge-cli fallback    │◄── Python CLI
+                   └──────────────────────────────┘
+```
+
+**Fallback toggle mechanism:**
+
+```typescript
+// In MCP tool handler
+const NATIVE_TOOLS: Set<string> = new Set([
+  // Added incrementally as waves complete:
+  // Wave 2: "bridge_agents", "bridge_status" (data queries)
+  // Wave 3: "bridge_dispatch", "bridge_kill" (execution)
+  // Wave 4: "bridge_loop", "bridge_schedule_*" (orchestration)
+  // Wave 5: all remaining tools
+]);
+
+function handleTool(name: string, args: any): Result {
+  if (NATIVE_TOOLS.has(name)) {
+    return executeNative(name, args);
+  }
+  return bridgeCliFallback(name, args);
+}
+```
+
+### 9.4 Emergency Rollback (Full Revert)
+
+If the entire TS migration needs to be abandoned:
+
+| Step | Action | Time |
+|------|--------|------|
+| 1 | Stop TS daemon/processes | 1 min |
+| 2 | Remove TS plugin | 1 min |
+| 3 | Restore Python MCP config (`.mcp.json`) | 2 min |
+| 4 | Reinstall Python daemon | 2 min |
+| 5 | Regenerate agent .md files (Python stop hooks) | 2 min |
+| 6 | Restart Bridge Bot session | 2 min |
+| 7 | Verify: dispatch → complete → notify via Telegram | 5 min |
+| **Total** | | **~15 min** |
+
+**Prerequisites for emergency rollback:**
+- Python `claude-agent-bridge` package still installed (`pip install -e .`)
+- Python `bridge-cli` still in PATH
+- `channel/server.ts` (old) still in repo and buildable
+
+### 9.5 Point of No Return
+
+The **point of no return** is after Wave 7 completion, when:
+- Python MCP tools are removed from Bridge Bot CLAUDE.md
+- Old `channel/server.ts` is no longer started
+- Python package is uninstalled
+
+After this point, rolling back requires reinstalling Python and reconfiguring.
+This should only happen after the 24h soak test (W7.4) passes.
+
+### 9.6 DB Backup Schedule
+
+| Event | Backup Action | Retention |
+|-------|-------------|-----------|
+| Before each wave starts | `cp bridge.db bridge.db.pre-wave-N` | Until wave N+1 gate passes |
+| Before full cutover (W7) | `cp bridge.db bridge.db.pre-cutover` | 2 weeks |
+| Weekly during migration | `cp bridge.db bridge.db.weekly-YYYY-MM-DD` | 4 weeks |
+
+```bash
+# Backup script (run before each wave)
+WAVE=$1
+BRIDGE_HOME=${CLAUDE_BRIDGE_HOME:-~/.claude-bridge}
+cp "$BRIDGE_HOME/bridge.db" "$BRIDGE_HOME/bridge.db.pre-wave-$WAVE"
+cp "$BRIDGE_HOME/messages.db" "$BRIDGE_HOME/messages.db.pre-wave-$WAVE"
+sqlite3 "$BRIDGE_HOME/bridge.db" "PRAGMA integrity_check"
+echo "Backup complete for wave $WAVE"
+```
