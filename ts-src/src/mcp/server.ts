@@ -1,8 +1,7 @@
 /**
  * MCP Server — exposes bridge tools to Claude Code.
  *
- * Wave 1: All tools delegate to Python CLI via bridge-cli subprocess.
- * Wave 7: Tools reimplemented with native TS layers.
+ * Wave 7: All tools use native TS implementations.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -11,7 +10,8 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { TOOL_DEFINITIONS, TOOL_NAMES, executeTool } from "./tools.js";
+import { TOOL_DEFINITIONS, TOOL_NAMES } from "./tools.js";
+import { executeToolNative } from "./tool-handlers.js";
 
 const server = new Server(
   { name: "claude-bridge", version: "0.6.0" },
@@ -33,7 +33,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     throw new Error(`Unknown tool: ${name}`);
   }
 
-  return executeTool(name, (args ?? {}) as Record<string, unknown>);
+  return executeToolNative(name, (args ?? {}) as Record<string, unknown>);
 });
 
 // --- Start ---
