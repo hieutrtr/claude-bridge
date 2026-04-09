@@ -4,4 +4,4 @@
 
 export { BridgeDatabase } from "./db.js";
 export { SessionManager } from "./session.js";
-export type { IDatabase, ISessionManager, IConfigProvider } from "./interfaces.js";
+export type { IDatabase, IMessageDatabase, ISessionManager, IConfigProvider } from "./interfaces.js";
