@@ -575,3 +575,312 @@ These dependencies are on the critical path AND involve high-risk work:
                     │           │
                     └─────→ W7.4
 ```
+
+---
+
+## 4. Timeline & Milestones
+
+### 4.1 Timeline Assumptions
+
+- **Work mode:** Solo developer, part-time (~4h/day effective coding)
+- **Effective days/week:** 5 (Mon-Fri)
+- **Net velocity:** ~100-120 LOC/day (tested TS, including test code)
+- **Buffer:** 20% added per wave for unknowns, debugging, and review
+- **Start date:** Relative (Day 1 = project kickoff)
+
+### 4.2 Wave Timeline (Gantt-style)
+
+```
+Day   1    5   10   15   20   25   30   35   40   45   50
+      │    │    │    │    │    │    │    │    │    │    │
+W1    ████                                              Plugin Shell
+      │3d+1d buffer│
+W2         ██████████                                   Data Layer
+           │8d+2d buf│
+W3                    ████████                          Execution
+                      │6d+1d│
+W4                           ███████                    Orchestration
+                             │6d+1d│
+W5                                  █████████           CLI & Integration
+                                    │7d+1d│
+W6                                          ██████      Infrastructure
+                                            │5d+1d│
+W7                                               █████ MCP Consolidation
+                                                 │5d+1d│
+      │    │    │    │    │    │    │    │    │    │    │
+      M0   M1        M2        M3        M4   M5  M6  M7
+```
+
+### 4.3 Milestone Schedule
+
+| Milestone | Day | Wave | Deliverable | Gate |
+|-----------|-----|------|-------------|------|
+| **M0** | 1 | — | Project kickoff, dev env setup | Bun installed, `bun test` runs, repo structure verified |
+| **M1** | 4 | W1 | Plugin installable | `plugin install claude-bridge` works, MCP tools respond via Python fallback |
+| **M2** | 14 | W2 | Native data layer | All IDatabase tests pass, cross-compat with Python DB verified |
+| **M3** | 22 | W3 | E2E task lifecycle | Dispatch → complete → notify works entirely in TS. Process isolation verified |
+| **M4** | 30 | W4 | Loop & schedule | Loop: start → iterate → evaluate → complete. Schedule: create → fire → complete |
+| **M5** | 38 | W5 | CLI replacement | `bun run cli.ts` replaces `bridge-cli` for all 10 commands |
+| **M6** | 44 | W6 | Python-free | Daemon works, permissions work, zero Python subprocess calls |
+| **M7** | 50 | W7 | Migration complete | All 23+ MCP tools native TS. E2E passes. Ready for plugin submission |
+
+### 4.4 Key Checkpoints (Within Waves)
+
+| Checkpoint | Day | Description | Go/No-Go Decision |
+|-----------|-----|-------------|-------------------|
+| CP-1 | 2 | W1.2 MCP fallback working | If Python CLI not callable from Bun → investigate PATH/env issues before proceeding |
+| CP-2 | 8 | W2.2 Core DB passes unit tests | If schema parity fails → stop, debug with `PRAGMA table_info`, compare column-by-column |
+| CP-3 | 12 | W2.6 Cross-compat suite green | If Python can't read TS DB → schema divergence; must fix before W3 |
+| CP-4 | 17 | W3.2 Process isolation verified | If `detached` doesn't isolate → switch to `setsid` wrapper; blocks all subsequent work |
+| CP-5 | 19 | W3.3 Stop hook <100ms | If >100ms → profile, lazy-load imports, consider compiled entry point |
+| CP-6 | 26 | W4.2 Loop state machine complete | If state transitions incorrect → regression against Python loop test cases |
+| CP-7 | 34 | W5.1 Core CLI commands pass snapshots | If output format differs → align with Python; blocks user-facing cutover |
+| CP-8 | 42 | W6.4 Zero Python calls verified | If Python still called → grep for `bridge-cli` / `python` in TS source; fix before W7 |
+| CP-9 | 48 | W7.4 Full E2E passes | If E2E fails → identify broken link in chain; fix before declaring migration complete |
+
+### 4.5 Buffer Strategy
+
+| Wave | Base Days | Buffer (20%) | Total Days | Buffer Use |
+|------|-----------|-------------|------------|-----------|
+| W1 | 3 | 1 | 4 | Plugin install debugging, MCP transport issues |
+| W2 | 8 | 2 | 10 | Schema parity debugging, bun:sqlite quirks |
+| W3 | 6 | 1 | 7 | Process isolation investigation, stop hook perf |
+| W4 | 6 | 1 | 7 | Loop state machine edge cases |
+| W5 | 7 | 1 | 8 | CLI output format alignment, arg parsing edge cases |
+| W6 | 5 | 1 | 6 | Platform-specific daemon issues (launchd vs systemd) |
+| W7 | 5 | 1 | 6 | MCP tool parity, channel server absorption |
+| **Total** | **40** | **8** | **48** | |
+
+**Unused buffer policy:** If a wave finishes early, buffer days roll forward to
+the next wave. They do NOT compress the timeline (use for thorough testing instead).
+
+### 4.6 Calendar Mapping (Part-Time Example)
+
+For a part-time schedule (~4h/day, 5 days/week):
+
+| Week | Days | Wave(s) | Key Deliverable |
+|------|------|---------|----------------|
+| Week 1 | 1-5 | W1 + W2 start | M1: Plugin installable |
+| Week 2 | 6-10 | W2 | Data layer core |
+| Week 3 | 11-15 | W2 finish + W3 start | M2: Native data layer |
+| Week 4 | 16-20 | W3 | M3: E2E task lifecycle |
+| Week 5 | 21-25 | W3 finish + W4 | Orchestration start |
+| Week 6 | 26-30 | W4 finish | M4: Loop & schedule |
+| Week 7 | 31-35 | W5 | CLI core commands |
+| Week 8 | 36-40 | W5 finish + W6 start | M5: CLI replacement |
+| Week 9 | 41-45 | W6 finish | M6: Python-free |
+| Week 10 | 46-50 | W7 | M7: Migration complete |
+
+**Total: ~10 weeks (part-time) or ~7 weeks (full-time at ~6h/day)**
+
+---
+
+## 5. Resource Allocation
+
+### 5.1 Solo Developer Capacity
+
+| Resource | Details |
+|----------|---------|
+| **Developer** | 1 (solo) |
+| **Available hours** | ~4h/day effective coding (part-time), 5 days/week |
+| **Net output** | ~100-120 LOC/day (tested TS), ~500-600 LOC/week |
+| **Total LOC target** | ~7,050 LOC (production) + ~3,000 LOC (tests) ≈ 10,000 LOC |
+| **Estimated duration** | ~50 working days (10 weeks part-time) with 20% buffer |
+
+### 5.2 Tools & Infrastructure Required
+
+| Tool | Purpose | When Needed | Setup Effort |
+|------|---------|-------------|-------------|
+| **Bun ≥1.1** | Runtime, test runner, package manager | Day 1 | `curl -fsSL https://bun.sh/install \| bash` — already installed |
+| **bun:sqlite** | Native SQLite driver | Wave 2 | Built into Bun — zero setup |
+| **@modelcontextprotocol/sdk** | MCP server implementation | Wave 1 | `bun add @modelcontextprotocol/sdk` — already in package.json |
+| **grammy** | Telegram Bot API SDK | Wave 7 (absorption) | Already used in channel/server.ts |
+| **Python 3.11+** | Cross-compat testing, fallback | Waves 1-6 | Already installed |
+| **pytest** | Run Python tests against TS-created DBs | Wave 2 | Already configured |
+| **SQLite CLI** | Schema inspection, debugging | Wave 2 | `brew install sqlite3` — likely already available |
+| **Claude Code CLI** | Integration testing (mocked in unit tests) | Wave 3+ | Already installed |
+| **tmux** | Session management testing | Wave 6 | Already installed |
+| **git** | Version control, worktree testing | All waves | Already configured |
+
+### 5.3 Dev Environment Setup (Day 0)
+
+```bash
+# Verify prerequisites
+bun --version          # ≥1.1
+python3 --version      # ≥3.11
+claude --version       # Claude Code CLI
+sqlite3 --version      # SQLite CLI
+
+# Install TS dependencies
+cd ts-src && bun install
+
+# Verify test runner
+bun test               # Should run existing scaffold tests
+
+# Verify Python tests still pass
+cd .. && pytest tests/ --ignore=tests/test_telegram_poller.py
+```
+
+### 5.4 Effort Distribution by Activity
+
+| Activity | % of Time | Hours/Wave (avg) | Notes |
+|----------|-----------|-------------------|-------|
+| **Implementation** | 45% | ~10h | Writing production TS code |
+| **Testing** | 30% | ~7h | Unit, integration, cross-compat, E2E |
+| **Debugging & Investigation** | 15% | ~3.5h | Bun quirks, schema issues, process isolation |
+| **Review & Documentation** | 10% | ~2.5h | Code review checklist, wave reports |
+
+### 5.5 Bottleneck Analysis
+
+| Bottleneck | Wave | Impact | Mitigation |
+|-----------|------|--------|-----------|
+| **Schema parity debugging** | W2 | Could consume entire buffer if bun:sqlite behaves differently | Write cross-compat tests FIRST (W2.6 moved earlier as TDD); fail fast |
+| **Process isolation verification** | W3 | Manual testing required (spawn, kill, verify) — slow feedback loop | Create automated integration test; run on both macOS and Linux |
+| **CLI output alignment** | W5 | 60 Python CLI fns → output format must match exactly | Generate Python CLI output snapshots first; use as golden files |
+| **MCP tool count** | W7 | 23+ tools is mechanical but time-consuming | Template-based generation; most tools are thin wrappers over layer calls |
+| **Single-threaded development** | All | No parallel dev capacity; blocked tasks block everything | Exploit intra-wave parallelism (§3.3); switch to unblocked task when stuck |
+
+### 5.6 AI-Assisted Development Strategy
+
+Claude Code itself accelerates the migration:
+
+| Activity | AI Leverage | Expected Speedup |
+|----------|------------|------------------|
+| Python → TS translation | Feed Python fn + interface → generate TS impl | 2-3x for mechanical translation |
+| Test generation | Generate test cases from Python test suite | 2x for unit test boilerplate |
+| MCP tool stubs | 23 tools follow same pattern → batch generate | 3-4x for W7.1 |
+| CLI arg parsing | Translate argparse → Bun/yargs patterns | 2x for W5.1 |
+| Schema DDL | Direct copy from Python + syntax adjustment | Trivial (copy-paste) |
+| Code review | Automated review per `.claude/rules/code-review.md` | Consistent quality |
+
+**Realistic velocity with AI:** 150-200 LOC/day (vs 100-120 manual), potentially
+compressing timeline to ~35-40 days effective.
+
+---
+
+## 6. Acceptance Criteria
+
+### 6.1 Wave 1: Plugin Shell — "Plugin installs and tools respond"
+
+| # | Criterion | Test Method | Pass Condition |
+|---|-----------|-------------|---------------|
+| AC-1.1 | Plugin metadata valid | `cat .claude-plugin/plugin.json \| jq .` | Valid JSON with name, version, description |
+| AC-1.2 | MCP server starts | `bun run src/mcp/server.ts` (stdio) | Responds to `initialize` JSON-RPC |
+| AC-1.3 | MCP tools listed | `tools/list` JSON-RPC call | Returns 23+ tool definitions with correct schemas |
+| AC-1.4 | Python fallback works | Call `bridge_dispatch` tool | Shells out to `bridge-cli dispatch`, returns result |
+| AC-1.5 | Skills files exist | `ls skills/` | `dispatch.md`, `status.md` present |
+| AC-1.6 | Plugin install works | `plugin install` from local path | Plugin appears in installed list, MCP server registered |
+
+### 6.2 Wave 2: Data Layer — "Native DB with Python compatibility"
+
+| # | Criterion | Test Method | Pass Condition |
+|---|-----------|-------------|---------------|
+| AC-2.1 | Schema matches Python | `PRAGMA table_info(agents)` on both DBs | Identical columns, types, defaults |
+| AC-2.2 | WAL mode enabled | `PRAGMA journal_mode` | Returns `wal` |
+| AC-2.3 | Foreign keys ON | `PRAGMA foreign_keys` | Returns `1` |
+| AC-2.4 | Agent CRUD | Unit tests: create, get, list, delete, update | All 7 agent methods pass |
+| AC-2.5 | Atomic task dispatch | Concurrent dispatch test | Only one task created; second returns `busy: true` |
+| AC-2.6 | Queue operations | Unit tests: enqueue, dequeue, cancel | FIFO order preserved, dequeue atomic |
+| AC-2.7 | Loop CRUD | Unit tests: create, get, update, iterations | 10 loop methods pass |
+| AC-2.8 | Schedule CRUD | Unit tests: create, get, getDue, update, delete | 7 schedule methods pass |
+| AC-2.9 | Permission CRUD | Unit tests: create, get, update, timeout | 6 permission methods pass |
+| AC-2.10 | Notification queue | Unit tests: create, get, markSent, retry | 5 notification methods pass |
+| AC-2.11 | MessageDatabase | Unit tests: inbound/outbound CRUD, poller state | 24 methods pass |
+| AC-2.12 | SessionManager | Unit tests: deriveSessionId, paths, validation | 8 methods pass |
+| AC-2.13 | ConfigProvider | Unit tests: JSON + env var override | Config loaded correctly |
+| AC-2.14 | Cross-compat (TS→Py) | Create DB with TS → run Python tests | All Python DB tests pass |
+| AC-2.15 | Cross-compat (Py→TS) | Create DB with Python → read with TS | All TS DB tests pass |
+| AC-2.16 | Test coverage | `bun test --coverage` | ≥85% line coverage for data layer |
+
+**Performance targets:**
+- DB open + schema init: <50ms
+- Agent CRUD operation: <5ms
+- Atomic task dispatch: <10ms
+- Query (list agents, running tasks): <5ms
+
+### 6.3 Wave 3: Execution Layer — "Tasks dispatch and complete end-to-end"
+
+| # | Criterion | Test Method | Pass Condition |
+|---|-----------|-------------|---------------|
+| AC-3.1 | Dispatch spawns process | Mock `claude` binary, dispatch task | Process spawned with correct args, PID in DB |
+| AC-3.2 | Process isolation | Spawn agent → kill Bridge process → check PID | Agent process survives Bridge death |
+| AC-3.3 | Graceful kill | Dispatch → cancel | SIGTERM sent, 10s wait, SIGKILL if needed |
+| AC-3.4 | Result file written | Dispatch with mock claude → check file | `task-{id}-result.json` exists with valid JSON |
+| AC-3.5 | on-complete parses result | Feed result JSON to CompletionHandler | Task status=done, cost/duration/summary extracted |
+| AC-3.6 | on-complete dequeues | Complete task with queued task waiting | Next task auto-dispatched |
+| AC-3.7 | on-complete notifies | Complete task with channel | Notification created in DB |
+| AC-3.8 | on-complete start time | Time 100 invocations | p95 < 100ms |
+| AC-3.9 | Watcher detects dead PID | Set task PID to non-existent PID, run watcher | Task marked failed, notification created |
+| AC-3.10 | Watcher timeout | Task running > 360min (mocked time) | Task force-killed, marked timeout |
+| AC-3.11 | Notifier formats message | Format completion notification | Contains cost, duration, summary, agent name |
+| AC-3.12 | Notifier retry | Simulate send failure, retry | Retries with exponential backoff, max 3 |
+| AC-3.13 | Test coverage | `bun test --coverage` | ≥80% line coverage for execution layer |
+
+### 6.4 Wave 4: Orchestration — "Loops iterate and schedules fire"
+
+| # | Criterion | Test Method | Pass Condition |
+|---|-----------|-------------|---------------|
+| AC-4.1 | Loop start | Start loop with goal + condition | Loop created in DB, first task dispatched |
+| AC-4.2 | Loop iterate | Complete task → on_task_complete | Next iteration dispatched, iteration recorded |
+| AC-4.3 | Loop done | Done condition met | Loop status=done, finish_reason set |
+| AC-4.4 | Loop max iterations | Exceed max_iterations | Loop status=exceeded |
+| AC-4.5 | Loop max failures | 3 consecutive failures | Loop status=failed |
+| AC-4.6 | Loop cost ceiling | Exceed max_cost_usd | Loop status=exceeded |
+| AC-4.7 | Loop approve/reject | Pending approval → approve/reject | State transitions correctly |
+| AC-4.8 | Loop cancel | Cancel running loop | Loop status=cancelled, current task killed |
+| AC-4.9 | Evaluator: command | `command:exit 0` condition | Returns done=true |
+| AC-4.10 | Evaluator: file_exists | `file_exists:path` condition | Returns done=true when file exists |
+| AC-4.11 | Evaluator: file_contains | `file_contains:path:pattern` | Returns done=true when pattern found |
+| AC-4.12 | Evaluator: manual | `manual:` condition | Returns done=false (always, until manual approval) |
+| AC-4.13 | Schedule create + fire | Create schedule, advance time past next_run | Task dispatched for schedule |
+| AC-4.14 | Schedule next_run | Anchor-based computation | No drift over 100 iterations |
+| AC-4.15 | Schedule error backoff | Consecutive errors | next_run interval doubles, caps at 8x |
+| AC-4.16 | Test coverage | `bun test --coverage` | ≥80% line coverage for orchestration layer |
+
+### 6.5 Wave 5: CLI & Integration — "CLI replaces Python bridge-cli"
+
+| # | Criterion | Test Method | Pass Condition |
+|---|-----------|-------------|---------------|
+| AC-5.1 | create-agent | `bun cli.ts create-agent backend /path --purpose "dev"` | Agent created in DB, agent .md file generated |
+| AC-5.2 | delete-agent | `bun cli.ts delete-agent backend` | Agent removed from DB, tasks cascaded |
+| AC-5.3 | list-agents | `bun cli.ts list-agents` | Table format output matching Python |
+| AC-5.4 | status | `bun cli.ts status` | Shows running agents, active tasks, daemon state |
+| AC-5.5 | dispatch | `bun cli.ts dispatch backend "task"` | Task dispatched, PID shown |
+| AC-5.6 | kill | `bun cli.ts kill backend` | Running task killed gracefully |
+| AC-5.7 | history | `bun cli.ts history backend` | Last N tasks shown with status, cost, duration |
+| AC-5.8 | memory | `bun cli.ts memory backend` | Auto Memory contents displayed |
+| AC-5.9 | loop | `bun cli.ts loop backend --goal "..." --done-when "..."` | Loop started |
+| AC-5.10 | schedule | `bun cli.ts schedule add ...` | Schedule created |
+| AC-5.11 | Agent .md generation | Create agent → inspect .md file | YAML frontmatter with tools, isolation, hooks. Stop hook points to TS binary |
+| AC-5.12 | CLAUDE.md init | Create agent for new project | CLAUDE.md created with project-specific content |
+| AC-5.13 | Output format parity | Snapshot tests vs Python CLI output | All 10 commands produce compatible output |
+| AC-5.14 | Test coverage | `bun test --coverage` | ≥80% line coverage for CLI layer |
+
+### 6.6 Wave 6: Infrastructure — "Daemon runs, Python removed"
+
+| # | Criterion | Test Method | Pass Condition |
+|---|-----------|-------------|---------------|
+| AC-6.1 | launchd install (macOS) | `bun cli.ts daemon install` | Plist created in ~/Library/LaunchAgents/ |
+| AC-6.2 | launchd start/stop | `bun cli.ts daemon start/stop` | Service starts/stops via launchctl |
+| AC-6.3 | systemd install (Linux) | `bun cli.ts daemon install` on Linux | Unit file created in ~/.config/systemd/user/ |
+| AC-6.4 | Daemon keepalive | Kill Bridge process | Daemon restarts automatically |
+| AC-6.5 | setup-bot workflow | `bun cli.ts setup-bot /path` | Config created, agent .md files generated, MCP registered |
+| AC-6.6 | Permission relay | Trigger dangerous command in agent | Permission request created, Telegram notification sent, approval workflow works |
+| AC-6.7 | Zero Python calls | `grep -r "bridge-cli\|python" ts-src/src/` | No Python subprocess calls in production code |
+| AC-6.8 | Python uninstall test | `pip uninstall claude-agent-bridge` → run all Bridge ops | Everything works without Python |
+
+### 6.7 Wave 7: MCP Consolidation — "Full TS, plugin-ready"
+
+| # | Criterion | Test Method | Pass Condition |
+|---|-----------|-------------|---------------|
+| AC-7.1 | All 23+ MCP tools | Call each tool via JSON-RPC | All return correct results |
+| AC-7.2 | Tool response parity | Compare TS tool output vs Python tool output | Identical format for all tools |
+| AC-7.3 | Channel push notifications | Send Telegram message → check MCP notification | Bridge Bot receives `<channel>` tag |
+| AC-7.4 | Channel server absorbed | No separate `channel/server.ts` process needed | Single MCP server handles everything |
+| AC-7.5 | Bridge Bot CLAUDE.md | Generate and inspect | Contains all 23+ tool docs, behavior rules |
+| AC-7.6 | E2E: dispatch cycle | Telegram → dispatch → complete → notification | Full cycle works in <5s (excluding task runtime) |
+| AC-7.7 | E2E: loop cycle | Telegram → start loop → 3 iterations → done | Loop completes with correct iteration count |
+| AC-7.8 | E2E: schedule cycle | Create schedule → advance time → fires | Schedule dispatches on time |
+| AC-7.9 | Soak test | Run 24h with synthetic tasks | Zero silent drops, zero crashes |
+| AC-7.10 | Plugin submission ready | Verify plugin.json, mcp.json, skills/ | All files valid, passes linting |
+| AC-7.11 | Overall test coverage | `bun test --coverage` | ≥80% line coverage across all modules |
