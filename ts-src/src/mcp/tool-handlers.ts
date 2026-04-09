@@ -58,7 +58,7 @@ async function handleTool(
       const agents = db.listAgents();
       if (agents.length === 0) return text("No agents configured.");
       const lines = agents.map((a) => {
-        const state = a.state === "busy" ? " [BUSY]" : "";
+        const state = a.state === "running" ? " [BUSY]" : "";
         return `${a.name}${state} — ${a.project_dir} (${a.model})`;
       });
       return text(lines.join("\n"));
@@ -124,7 +124,7 @@ async function handleTool(
       const running = db.getRunningTasks();
       const lines = [`Agents: ${agents.length} | Running: ${running.length}`];
       for (const a of agents) {
-        lines.push(`  ${a.name}: ${a.state === "busy" ? "BUSY" : "idle"}`);
+        lines.push(`  ${a.name}: ${a.state === "running" ? "BUSY" : "idle"}`);
       }
       return text(lines.join("\n"));
     }
@@ -153,7 +153,7 @@ async function handleTool(
       const running = db.getRunningTask(agent.session_id);
       if (!running || !running.pid) return text(`No running task for "${agentName}"`);
 
-      const dispatcher = new Dispatcher(bridgeHome, db);
+      const dispatcher = new Dispatcher(bridgeHome);
       await dispatcher.cancel(running.pid);
       db.updateTask(running.id, {
         status: "failed", error_message: "Killed via MCP",
@@ -192,7 +192,7 @@ async function handleTool(
       const chatId = String(args["chat_id"]);
       const replyText = String(args["text"]);
       const notifier = new Notifier(bridgeHome);
-      const ok = await notifier.notify({ chat_id: chatId, message: replyText, task_id: 0, channel: "telegram" });
+      const ok = await notifier.notify({ chat_id: chatId, message: replyText });
       return ok ? text("Reply sent") : error("Failed to send reply");
     }
 
@@ -290,7 +290,7 @@ async function handleTool(
       if (!loop) return error(`Loop "${loopId}" not found`);
       const notifier = new Notifier(bridgeHome);
       const msg = `Loop ${loopId}: ${loop.status} — iter ${loop.current_iteration}/${loop.max_iterations}`;
-      const ok = await notifier.notify({ chat_id: chatId, message: msg, task_id: 0, channel: "telegram" });
+      const ok = await notifier.notify({ chat_id: chatId, message: msg });
       return ok ? text("Notification sent") : error("Failed to send notification");
     }
 

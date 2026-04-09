@@ -33,7 +33,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     throw new Error(`Unknown tool: ${name}`);
   }
 
-  return executeToolNative(name, (args ?? {}) as Record<string, unknown>);
+  const result = await executeToolNative(name, (args ?? {}) as Record<string, unknown>);
+  return { ...result };
 });
 
 // --- Start ---

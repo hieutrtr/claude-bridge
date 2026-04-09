@@ -110,7 +110,7 @@ async function cmdCreateAgent(ctx: CommandContext): Promise<number> {
 
   // Generate and write agent.md
   const content = generateAgentMd(sessionId, name, resolvedPath, purpose, model, ctx.bridgeHome);
-  const botDir = (ctx.config as Record<string, unknown>)["bot_dir"] as string | undefined;
+  const botDir = ctx.config.bot_dir ?? undefined;
   const filePath = writeAgentMd(sessionId, content, botDir);
 
   // Register in DB
@@ -135,7 +135,7 @@ async function cmdDeleteAgent(ctx: CommandContext): Promise<number> {
     return 1;
   }
 
-  const botDir = (ctx.config as Record<string, unknown>)["bot_dir"] as string | undefined;
+  const botDir = ctx.config.bot_dir ?? undefined;
   deleteAgentMd(agent.session_id, botDir);
   ctx.db.deleteAgent(name);
   console.log(`Deleted agent "${name}"`);
@@ -150,7 +150,7 @@ async function cmdListAgents(ctx: CommandContext): Promise<number> {
   }
 
   for (const agent of agents) {
-    const state = agent.state === "busy" ? " [BUSY]" : "";
+    const state = agent.state === "running" ? " [BUSY]" : "";
     console.log(`${agent.name}${state} — ${agent.project_dir} (${agent.model})`);
     if (agent.purpose) console.log(`  Purpose: ${agent.purpose}`);
   }
@@ -184,7 +184,7 @@ async function cmdStatus(ctx: CommandContext): Promise<number> {
   const running = ctx.db.getRunningTasks();
   console.log(`Agents: ${agents.length} | Running tasks: ${running.length}`);
   for (const agent of agents) {
-    const state = agent.state === "busy" ? "🔴 BUSY" : "🟢 idle";
+    const state = agent.state === "running" ? "🔴 BUSY" : "🟢 idle";
     console.log(`  ${agent.name}: ${state}`);
   }
   return 0;
@@ -258,7 +258,7 @@ async function cmdKill(ctx: CommandContext): Promise<number> {
     return 0;
   }
 
-  const dispatcher = new Dispatcher(ctx.bridgeHome, ctx.db);
+  const dispatcher = new Dispatcher(ctx.bridgeHome);
   const killed = await dispatcher.cancel(running.pid);
   if (killed) {
     ctx.db.updateTask(running.id, {

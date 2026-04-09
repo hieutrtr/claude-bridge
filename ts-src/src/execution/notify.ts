@@ -70,7 +70,7 @@ export class Notifier implements INotifier {
     return process.env["TELEGRAM_BOT_TOKEN"] ?? null;
   }
 
-  async notify(notification: Notification): Promise<boolean> {
+  async notify(notification: Pick<Notification, "chat_id" | "message">): Promise<boolean> {
     const token = this.getBotToken();
     if (!token) return false;
 

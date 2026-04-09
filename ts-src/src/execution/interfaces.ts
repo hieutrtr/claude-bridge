@@ -75,7 +75,7 @@ export interface INotifier {
   formatMessage(task: Task, agentName: string): string;
 
   /** Send a notification about task completion. */
-  notify(notification: Notification): Promise<boolean>;
+  notify(notification: Pick<Notification, "chat_id" | "message">): Promise<boolean>;
 
   /** Retry failed notifications. */
   retryFailed(): Promise<void>;

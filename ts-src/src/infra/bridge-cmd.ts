@@ -147,7 +147,7 @@ export function getSessionUptime(bridgeHome?: string): string | null {
 export function validateConfig(config: BridgeConfig): string[] {
   const errors: string[] = [];
 
-  const botDir = (config as Record<string, unknown>)["bot_dir"] as string | undefined;
+  const botDir = config.bot_dir ?? undefined;
   if (!botDir) {
     errors.push("bot_dir not configured");
   } else if (!existsSync(botDir)) {

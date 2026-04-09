@@ -308,7 +308,7 @@ export class BridgeDatabase implements IDatabase {
     }
     if (setClauses.length === 0) return;
     values.push(id);
-    this.db.run(`UPDATE tasks SET ${setClauses.join(", ")} WHERE id = ?`, values);
+    this.db.run(`UPDATE tasks SET ${setClauses.join(", ")} WHERE id = ?`, values as import("bun:sqlite").SQLQueryBindings[]);
   }
 
   markTaskReported(id: number): void {
@@ -542,7 +542,7 @@ export class BridgeDatabase implements IDatabase {
     }
     if (setClauses.length === 0) return;
     values.push(loopId);
-    this.db.run(`UPDATE loops SET ${setClauses.join(", ")} WHERE loop_id = ?`, values);
+    this.db.run(`UPDATE loops SET ${setClauses.join(", ")} WHERE loop_id = ?`, values as import("bun:sqlite").SQLQueryBindings[]);
   }
 
   listLoops(agent?: string, limit: number = 20, status?: string): Loop[] {
@@ -552,7 +552,7 @@ export class BridgeDatabase implements IDatabase {
     if (status) { sql += " AND status = ?"; params.push(status); }
     sql += " ORDER BY started_at DESC LIMIT ?";
     params.push(limit);
-    return this.db.query(sql).all(...params) as Loop[];
+    return this.db.query(sql).all(...(params as import("bun:sqlite").SQLQueryBindings[])) as Loop[];
   }
 
   createLoopIteration(loopId: string, iterationNum: number, prompt: string): number {
@@ -575,7 +575,7 @@ export class BridgeDatabase implements IDatabase {
     }
     if (setClauses.length === 0) return;
     values.push(iterationId);
-    this.db.run(`UPDATE loop_iterations SET ${setClauses.join(", ")} WHERE id = ?`, values);
+    this.db.run(`UPDATE loop_iterations SET ${setClauses.join(", ")} WHERE id = ?`, values as import("bun:sqlite").SQLQueryBindings[]);
   }
 
   getLoopIterations(loopId: string): LoopIteration[] {
@@ -677,7 +677,7 @@ export class BridgeDatabase implements IDatabase {
     if (agentName) { sql += " AND agent_name = ?"; params.push(agentName); }
     if (!includeDisabled) { sql += " AND enabled = 1"; }
     sql += " ORDER BY created_at DESC";
-    return this.db.query(sql).all(...params) as Schedule[];
+    return this.db.query(sql).all(...(params as import("bun:sqlite").SQLQueryBindings[])) as Schedule[];
   }
 
   removeSchedule(nameOrId: string): boolean {
@@ -729,7 +729,7 @@ export class BridgeDatabase implements IDatabase {
     } else if (period === "month") {
       sql += " AND completed_at >= datetime('now', '-30 days')";
     }
-    const row = this.db.query(sql).get(...params) as { total: number; cnt: number };
+    const row = this.db.query(sql).get(...(params as import("bun:sqlite").SQLQueryBindings[])) as { total: number; cnt: number };
     return {
       total_cost_usd: row.total,
       task_count: row.cnt,
