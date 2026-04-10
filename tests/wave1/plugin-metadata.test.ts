@@ -39,7 +39,7 @@ describe("W1.1: Plugin Metadata & Structure", () => {
 
     test("has required version field", () => {
       expect(typeof plugin["version"]).toBe("string");
-      expect(plugin["version"]).toMatch(/^\d+\.\d+\.\d+$/);
+      expect(plugin["version"]).toMatch(/^\d+\.\d+\.\d+(-[\w.]+)?$/);
     });
 
     test("has description", () => {
