@@ -6,8 +6,8 @@
 
 > Tạo nhiều agent, phân công dự án, dispatch task, theo dõi tiến độ — tất cả từ điện thoại.
 
-[![Version](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/hieutrtr/claude-bridge/releases)
-[![Tests](https://img.shields.io/badge/tests-405%2B%20passing-brightgreen)](tests/)
+[![Version](https://img.shields.io/badge/version-1.0.0--beta-blue)](https://github.com/hieutrtr/claude-bridge/releases)
+[![Tests](https://img.shields.io/badge/tests-541%20passing-brightgreen)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ---
@@ -74,20 +74,22 @@ Claude Code session (Bridge Bot)   Message đến dưới dạng thẻ <channel>
 claude --agent --worktree -p "task" Mỗi task = Claude Code agent riêng biệt
   │
   ▼
-Stop hook → on_complete.py         Cập nhật SQLite, xếp hàng thông báo
+Stop hook → on-complete.ts         Cập nhật SQLite, xếp hàng thông báo
                                    Channel server giao đến Telegram
 ```
 
 ## Bắt đầu nhanh
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hieutrtr/claude-bridge/main/install.sh | sh
+git clone https://github.com/hieutrtr/claude-bridge.git ~/projects/claude-bridge
+cd ~/projects/claude-bridge
+bun install
 ```
 
-Một lệnh duy nhất: kiểm tra prerequisites, cài Bun (nếu cần), clone repo, build channel server, và cài `bridge-cli`. Sau đó chạy wizard thiết lập:
+Sau đó chạy wizard thiết lập:
 
 ```bash
-bridge-cli setup
+bun run src/cli/index.ts setup
 ```
 
 Wizard sẽ hỏi bot token Telegram, tạo project bridge-bot, deploy channel server, và cài watcher cron. Hoàn tất trong dưới 2 phút.
@@ -98,8 +100,7 @@ Wizard sẽ hỏi bot token Telegram, tạo project bridge-bot, deploy channel s
 
 | Thứ | Để làm gì |
 |------|-----|
-| Python 3.11+ | Core của Bridge |
-| [Bun](https://bun.sh) | Runtime channel server |
+| [Bun](https://bun.sh) | Runtime (TypeScript) |
 | [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) | Chạy `claude --version` để kiểm tra |
 | Tài khoản Telegram | Bạn gửi lệnh từ điện thoại |
 
@@ -110,31 +111,22 @@ Wizard sẽ hỏi bot token Telegram, tạo project bridge-bot, deploy channel s
 ```bash
 git clone https://github.com/hieutrtr/claude-bridge.git ~/projects/claude-bridge
 cd ~/projects/claude-bridge
-
-# Lựa chọn A: pipx (khuyến nghị — sạch sẽ, cô lập)
-brew install pipx
-pipx install -e .
-
-# Lựa chọn B: pip với --break-system-packages (Homebrew Python)
-pip3 install -e . --break-system-packages
-
-# Lựa chọn C: venv
-python3 -m venv ~/.claude-bridge/venv
-~/.claude-bridge/venv/bin/pip install -e .
-# Sau đó dùng: ~/.claude-bridge/venv/bin/bridge-cli (hoặc thêm vào PATH)
+bun install
 ```
 
-Lệnh `bridge-cli` sẽ có trong PATH sau bước này.
-
-### Bước 2: Cài Bun và build
+Lệnh `bridge-cli` có thể chạy bằng `bun run src/cli/index.ts` hoặc link vào PATH:
 
 ```bash
-curl -fsSL https://bun.sh/install | bash
-exec $SHELL
+bun link
+```
+
+### Bước 2: Build (tuỳ chọn)
+
+```bash
 bun run build
 ```
 
-Lệnh này đóng gói `channel/server.ts` thành một file JS duy nhất.
+Lệnh này đóng gói thành `dist/index.js`.
 
 ### Bước 3: Tạo Telegram bot
 
@@ -485,7 +477,7 @@ sequenceDiagram
     CLI->>Agent: claude --agent --session-id backend--api -p "thêm auth"
     DB-->>CLI: task đang chạy (PID 1234)
     Note over Agent: Làm việc trong git worktree<br/>Đọc/ghi bản sao riêng biệt
-    Agent->>CLI: Stop hook → on_complete.py
+    Agent->>CLI: Stop hook → on-complete.ts
     CLI->>DB: task #42 → done, cost=$0.12
     CLI->>CS: xếp hàng thông báo
     CS->>You: "✓ Task #42 (backend) — xong trong 3p 14s"
@@ -524,46 +516,36 @@ Xem tài liệu kiến trúc chi tiết tại [specs/MVP.md](specs/MVP.md).
 | Worktree | Mỗi task trong `git worktree` riêng biệt |
 | Hàng đợi | Tự động xếp hàng khi bận, tự dequeue khi xong |
 
-## Chạy từ source (không cần pipx)
-
-Nếu không muốn cài package, chạy trực tiếp từ repo:
+## Chạy từ source
 
 ```bash
 git clone https://github.com/hieutrtr/claude-bridge.git ~/projects/claude-bridge
 cd ~/projects/claude-bridge
+bun install
 
-# Cài dependencies cho channel
-cd channel && bun install && cd ..
-
-# Chạy bất kỳ lệnh CLI nào với PYTHONPATH
-PYTHONPATH=src python3 -m claude_bridge.cli setup
-PYTHONPATH=src python3 -m claude_bridge.cli list-agents
-PYTHONPATH=src python3 -m claude_bridge.cli dispatch backend "fix bug"
-
-# Hoặc tạo alias
-alias bridge-cli="PYTHONPATH=$(pwd)/src python3 -m claude_bridge.cli"
-bridge-cli setup
+# Chạy bất kỳ lệnh CLI nào
+bun run src/cli/index.ts setup
+bun run src/cli/index.ts list-agents
+bun run src/cli/index.ts dispatch backend "fix bug"
 ```
-
-`.mcp.json` được tạo bởi setup sẽ trỏ tới `channel/server.ts` (source) thay vì bundle `server.js`.
 
 ## Phát triển
 
 ```bash
-# Cài cho phát triển
-pip3 install -e . --break-system-packages   # hoặc: pipx install -e .
+# Cài dependencies
+bun install
 
-# Python tests (405+ test — bao gồm MCP tests)
-python3 -m pytest tests/ -v
+# Chạy toàn bộ test (541 test, 36 files)
+bun test
 
-# TypeScript tests (43 test)
-cd channel && bun test
+# Typecheck
+bun run typecheck    # hoặc: tsc --noEmit
 
-# Build channel server bundle
+# Build
 bun run build
 
 # Chạy bất kỳ lệnh CLI nào
-bridge-cli <command>
+bun run src/cli/index.ts <command>
 ```
 
 ## Xử lý sự cố
@@ -580,7 +562,7 @@ bridge-cli doctor --fix  # tự sửa những gì có thể
 | Triệu chứng | Nguyên nhân có thể | Cách khắc phục |
 |---------|-------------|-----|
 | Bot không phản hồi DM Telegram | Token sai hoặc channel server chưa chạy | `bridge-cli doctor` — kiểm tra token và server; diệt zombie: `ps aux \| grep "bun.*server"` |
-| Stop hook không kích hoạt | Python path sai (pipx install) | `bridge-cli doctor --fix` hoặc chạy lại `bridge-cli setup` |
+| Stop hook không kích hoạt | Path sai hoặc chưa setup | `bridge-cli doctor --fix` hoặc chạy lại `bridge-cli setup` |
 | Task bị kẹt ở trạng thái "running" | Stop hook không bao giờ chạy (crash/reboot) | Watcher cron tự sửa trong vòng 1 phút; hoặc chạy `bridge-cli watcher` thủ công |
 | Nhiều bot xung đột | Session bot cũ vẫn đang poll cùng token | Diệt cái cũ: `ps aux \| grep claude`, rồi `bridge start` |
 | Thông báo kép | Bug reporting (đã sửa ở 0.2.0) | Nâng cấp: `pip install -U claude-agent-bridge` |
@@ -589,8 +571,6 @@ bridge-cli doctor --fix  # tự sửa những gì có thể
 | Reset toàn bộ | State bị corrupt hoặc cần migration | `bridge-cli uninstall --force` rồi `bridge-cli setup` từ đầu |
 | Stop hook không kích hoạt | Debug thông báo hoàn thành bị mất | Kiểm tra `~/.claude/logs/` hoặc thêm `echo "hook fired"` vào hook command |
 | Bot không phản hồi sau pair | Policy chưa đặt thành allowlist | Trong Claude session: `/telegram:access policy allowlist` |
-| Permission denied trên `bridge-cli` | Vấn đề PATH với pipx/pip install | `pipx ensurepath` rồi restart shell; hoặc dùng `~/.local/bin/bridge-cli` |
-| `bridge-cli` không tìm thấy sau install | pipx không trong PATH | `export PATH="$HOME/.local/bin:$PATH"` — thêm vào `~/.bashrc` hoặc `~/.zshrc` |
-| `ModuleNotFoundError: mcp` | Bản cài cũ thiếu dependency | `pip install -U "claude-agent-bridge[mcp]"` hoặc `pip install mcp>=1.0` |
+| `bridge-cli` không tìm thấy | Chưa link hoặc PATH sai | `bun link` trong thư mục project hoặc dùng `bun run src/cli/index.ts` |
 | Agent task thất bại ngay lập tức | Claude CLI không trong PATH | `which claude` — nếu thiếu, cài lại Claude Code; `bridge-cli doctor` hiện lỗi chính xác |
 | Lỗi worktree: đã tồn tại | Task trước crash giữa chừng | `git worktree prune` trong thư mục project |

@@ -1,6 +1,6 @@
 {
   "name": "claude-bridge",
-  "version": "0.6.0",
+  "version": "1.0.0-beta",
   "type": "module",
   "description": "Multi-session Claude Code dispatch — official plugin for Claude Code",
   "bin": {

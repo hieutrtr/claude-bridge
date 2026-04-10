@@ -6,8 +6,8 @@
 
 > Spawn multiple agents, assign projects, dispatch tasks, track progress — all from your phone.
 
-[![Version](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/hieutrtr/claude-bridge/releases)
-[![Tests](https://img.shields.io/badge/tests-405%2B%20passing-brightgreen)](tests/)
+[![Version](https://img.shields.io/badge/version-1.0.0--beta-blue)](https://github.com/hieutrtr/claude-bridge/releases)
+[![Tests](https://img.shields.io/badge/tests-541%20passing-brightgreen)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ---
