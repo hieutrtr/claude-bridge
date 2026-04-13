@@ -45,9 +45,13 @@ export async function startServer(): Promise<void> {
   process.stderr.write("claude-bridge MCP server started\n");
 }
 
-// Auto-start when run directly
+// Auto-start when run directly — uses StartupOrchestrator to wire all services
 if (import.meta.main) {
-  startServer().catch((err) => {
+  (async () => {
+    const { StartupOrchestrator } = await import("../infra/startup.js");
+    const orchestrator = new StartupOrchestrator();
+    await orchestrator.start();
+  })().catch((err) => {
     process.stderr.write(`Failed to start: ${err}\n`);
     process.exit(1);
   });

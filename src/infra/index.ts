@@ -29,3 +29,5 @@ export {
 } from "./bridge-cmd.js";
 
 export { handlePermissionRequest, main as permissionRelayMain } from "./permissions.js";
+
+export { StartupOrchestrator } from "./startup.js";
