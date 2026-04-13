@@ -12,6 +12,7 @@ import { existsSync, readFileSync, writeFileSync } from "fs";
 import { BridgeDatabase } from "../data/db.js";
 import { SessionManager } from "../data/session.js";
 import { Dispatcher } from "../execution/dispatcher.js";
+import { CompletionHandler } from "../execution/on-complete.js";
 import { LoopOrchestrator } from "../orchestration/loop.js";
 import { LoopEvaluator } from "../orchestration/evaluator.js";
 import { Scheduler } from "../orchestration/scheduler.js";
@@ -562,9 +563,41 @@ async function cmdScheduleResume(ctx: CommandContext): Promise<number> {
   return ok ? 0 : 1;
 }
 
+// --- On-Complete (Stop Hook) ---
+
+async function cmdOnComplete(ctx: CommandContext): Promise<number> {
+  const sessionId = getArg(ctx.args, "session-id");
+  if (!sessionId) {
+    process.stderr.write("Usage: bridge-cli on-complete --session-id <session_id>\n");
+    return 1;
+  }
+
+  const task = ctx.db.getRunningTask(sessionId);
+  if (!task) {
+    process.stderr.write(`[on-complete] No running task for session ${sessionId}\n`);
+    return 0; // Not an error — task may have been killed already
+  }
+
+  const dispatcher = new Dispatcher(ctx.bridgeHome);
+  const handler = new CompletionHandler(ctx.bridgeHome, ctx.db, dispatcher);
+
+  // Try to read the result file produced by claude CLI
+  const resultFile = dispatcher.getResultFile(sessionId, task.id);
+  const result = await handler.parseResultFile(resultFile);
+
+  await handler.handleCompletion(
+    sessionId,
+    task.id,
+    result ?? { exitCode: 1, summary: null, costUsd: null, durationMs: null, numTurns: null },
+  );
+
+  return 0;
+}
+
 // --- Command Registry ---
 
 export const COMMAND_HANDLERS: Record<string, CommandHandler> = {
+  "on-complete": cmdOnComplete,
   "create-agent": cmdCreateAgent,
   "delete-agent": cmdDeleteAgent,
   "list-agents": cmdListAgents,
@@ -590,6 +623,7 @@ export const COMMAND_HANDLERS: Record<string, CommandHandler> = {
 };
 
 const COMMAND_DESCRIPTIONS: Record<string, string> = {
+  "on-complete": "Handle task completion (stop hook callback)",
   "create-agent": "Create a new agent",
   "delete-agent": "Delete an agent",
   "list-agents": "List all agents",

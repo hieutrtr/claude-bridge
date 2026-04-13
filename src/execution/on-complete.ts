@@ -6,13 +6,14 @@
  */
 
 import { existsSync, readFileSync } from "fs";
-import type { ICompletionHandler, CompletionResult } from "./interfaces.js";
+import type { ICompletionHandler, CompletionResult, IDispatcher } from "./interfaces.js";
 import type { IDatabase } from "../data/interfaces.js";
 
 export class CompletionHandler implements ICompletionHandler {
   constructor(
     private homeDir: string,
     private db: IDatabase,
+    private dispatcher?: IDispatcher,
   ) {}
 
   async parseResultFile(resultFile: string): Promise<CompletionResult | null> {
@@ -69,11 +70,33 @@ export class CompletionHandler implements ICompletionHandler {
       this.db.createNotification(taskId, task.channel, task.channel_chat_id, message);
     }
 
-    // Try to dequeue next task
+    // Try to dequeue and dispatch next task
     const next = this.db.dequeueNextTask(sessionId);
-    if (next) {
-      // Mark as pending for the dispatcher to pick up
-      // The actual dispatch will be handled by the scheduler or watcher
+    if (next && this.dispatcher) {
+      const agent = this.db.getAgentBySession(sessionId);
+      if (agent) {
+        try {
+          this.db.updateAgentState(sessionId, "running");
+          this.db.updateTask(next.id, {
+            status: "running",
+            started_at: new Date().toISOString(),
+          });
+          const pid = await this.dispatcher.dispatch(
+            next,
+            agent.agent_file,
+            agent.project_dir,
+            { model: agent.model },
+          );
+          this.db.updateTask(next.id, { pid });
+        } catch (err) {
+          this.db.updateTask(next.id, {
+            status: "failed",
+            error_message: `Dispatch failed: ${err}`,
+            completed_at: new Date().toISOString(),
+          });
+          this.db.updateAgentState(sessionId, "idle");
+        }
+      }
     }
   }
 
