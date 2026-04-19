@@ -161,11 +161,28 @@ CREATE TABLE IF NOT EXISTS schedules (
 );
 
 CREATE INDEX IF NOT EXISTS idx_schedules_next_run ON schedules(next_run_at, enabled);
+
+CREATE TABLE IF NOT EXISTS wiki_operations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation TEXT NOT NULL,
+    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    duration_ms INTEGER,
+    cost_usd REAL DEFAULT 0.0,
+    sources_count INTEGER,
+    pages_changed TEXT,
+    agent_filter TEXT,
+    exit_code INTEGER,
+    stderr TEXT,
+    last_source_mtime REAL
+);
+
+
 CREATE INDEX IF NOT EXISTS idx_loops_status ON loops(status);
 CREATE INDEX IF NOT EXISTS idx_loops_agent ON loops(agent);
 CREATE INDEX IF NOT EXISTS idx_loop_iterations_loop ON loop_iterations(loop_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status);
 CREATE INDEX IF NOT EXISTS idx_permissions_status ON permissions(status);
+CREATE INDEX IF NOT EXISTS idx_wiki_ops_operation ON wiki_operations(operation, exit_code);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);

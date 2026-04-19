@@ -361,6 +361,18 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["name_or_id"],
       },
     },
+    {
+      name: "wiki_query",
+      description: "Answer a knowledge question from the Bridge Wiki with inline [Source: ...] citations. Use BEFORE answering factual/procedural questions from Telegram users — the wiki contains synthesized insights across all registered agents. Returns JSON with answer, sources_cited, cost_usd, empty (true if no wiki content matches).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          question: { type: "string", description: "The question to answer (non-empty)" },
+          top_k: { type: "number", description: "Max wiki pages to retrieve (default 5)" },
+        },
+        required: ["question"],
+      },
+    },
   ],
 }));
 
@@ -528,6 +540,21 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             text: JSON.stringify({ pending_count: pending.length, messages }),
           }],
         };
+      }
+
+      case "wiki_query": {
+        const { question, top_k } = args as { question: string; top_k?: number };
+        if (!question || !question.trim()) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ error: "question cannot be empty" }) }],
+            isError: true,
+          };
+        }
+        const cliArgs = ["query", "--json", question];
+        if (top_k !== undefined) cliArgs.push("--top-k", String(top_k));
+        // Synthesis via `claude -p` can take 30-90s for larger wikis.
+        const output = bridgeCli(BRIDGE_SRC_PATH, "wiki", cliArgs, { timeoutMs: 300_000 });
+        return { content: [{ type: "text", text: output }] };
       }
 
       case "download_attachment": {

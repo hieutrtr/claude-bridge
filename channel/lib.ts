@@ -408,9 +408,14 @@ export async function processOutbound(
 
 // --- Bridge CLI ---
 
-export function bridgeCli(srcPath: string, command: string, args: string[] = []): string {
+export function bridgeCli(
+  srcPath: string,
+  command: string,
+  args: string[] = [],
+  options: { timeoutMs?: number } = {}
+): string {
   // Use execFileSync (not shell string) to prevent command injection via args
-  const execOpts = { timeout: 30000, encoding: "utf8" as const };
+  const execOpts = { timeout: options.timeoutMs ?? 30000, encoding: "utf8" as const };
 
   // Always forward CLAUDE_BRIDGE_HOME so bridge-cli targets the correct instance DB
   const bridgeEnv: NodeJS.ProcessEnv = { ...process.env };

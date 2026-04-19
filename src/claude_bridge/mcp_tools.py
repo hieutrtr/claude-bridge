@@ -31,6 +31,32 @@ def _get_bridge_config() -> dict:
     return {}
 
 
+def tool_wiki_query(db: BridgeDB, question: str, top_k: int = 5) -> str:
+    """Answer a question from the Bridge Wiki. Returns JSON string.
+
+    Empty / whitespace-only question returns an error payload. Otherwise
+    delegates to `wiki.query()` and projects the result into the standard
+    MCP JSON shape.
+    """
+    if not question or not question.strip():
+        return json.dumps({"error": "question cannot be empty"})
+    from . import wiki
+    try:
+        top_k_int = max(1, int(top_k))
+    except (TypeError, ValueError):
+        top_k_int = 5
+    result = wiki.query(question.strip(), top_k=top_k_int, db=db)
+    return json.dumps({
+        "answer": result["answer"],
+        "sources_cited": result["sources_cited"],
+        "pages_retrieved": result["pages_retrieved"],
+        "cost_usd": result["cost_usd"],
+        "duration_ms": result["duration_ms"],
+        "empty": result["empty"],
+        "exit_code": result["exit_code"],
+    })
+
+
 def tool_agents(db: BridgeDB) -> str:
     """List all agents with state and project."""
     agents = db.list_agents()

@@ -41,6 +41,7 @@ TOOL_NAMES = [
     "bridge_schedule_list",
     "bridge_schedule_pause",
     "bridge_schedule_resume",
+    "wiki_query",
 ]
 
 
@@ -314,6 +315,30 @@ def create_server(db: BridgeDB | None = None, msg_db: MessageDB | None = None) -
             name_or_id: Schedule name or numeric ID.
         """
         return mcp_tools.tool_schedule_resume(_db(), name_or_id)
+
+    # --- Wiki Tools ---
+
+    @server.tool()
+    def wiki_query(question: str, top_k: int = 5) -> str:
+        """Answer a question from the Bridge Wiki with inline citations.
+
+        Use this BEFORE answering knowledge questions from Telegram users —
+        the wiki contains synthesized insights across all registered agents.
+
+        Args:
+            question: The question to answer (non-empty).
+            top_k: Max wiki pages to retrieve and synthesize from (default 5).
+
+        Returns a JSON string with keys:
+            answer           — synthesized answer with [Source: foo.md] citations
+            sources_cited    — unique page names referenced in the answer
+            pages_retrieved  — candidate pages the retriever considered
+            cost_usd         — synthesis cost
+            duration_ms      — synthesis wall-clock
+            empty            — True if the wiki has no matching content
+            exit_code        — 0 on success, non-zero if claude -p failed
+        """
+        return mcp_tools.tool_wiki_query(_db(), question, top_k)
 
     return server
 
