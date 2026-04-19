@@ -69,18 +69,27 @@ export class Dispatcher implements IDispatcher {
     const tasksDir = join(this.homeDir, "workspaces", task.session_id, "tasks");
     mkdirSync(tasksDir, { recursive: true });
 
-    // Build claude command arguments
+    // Build claude command arguments.
+    //
+    // `claude -p --output-format json` writes the result JSON to stdout. There
+    // is no --output-file flag; stdout must be redirected to resultFile so the
+    // Stop hook's parseResultFile can read it.
+    //
+    // --dangerously-skip-permissions is required for background subprocess mode:
+    // without a TTY there is no way to answer permission prompts, so the task
+    // would hang indefinitely on the first tool call.
     const args = [
-      "-p", task.prompt,
       "--agent", agentFileName,
       "--session-id", sessionUuid,
       "--output-format", "json",
-      "--output-file", resultFile,
+      "--dangerously-skip-permissions",
     ];
 
     if (options?.model) {
       args.push("--model", options.model);
     }
+
+    args.push("-p", task.prompt);
 
     // Build environment
     const env: Record<string, string> = {
@@ -89,13 +98,14 @@ export class Dispatcher implements IDispatcher {
       ...options?.env,
     };
 
-    // Open stderr file for writing
+    // Open result + stderr files for writing
+    const stdoutFd = openSync(resultFile, "w");
     const stderrFd = openSync(stderrFile, "w");
 
     // Spawn detached process
     const proc = Bun.spawn(["claude", ...args], {
       cwd: projectDir,
-      stdout: "ignore",
+      stdout: stdoutFd,
       stderr: stderrFd,
       env,
     });
