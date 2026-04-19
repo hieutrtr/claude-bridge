@@ -50,6 +50,7 @@ export function sessionRunning(name?: string): boolean {
 export function startSession(
   command: string[],
   bridgeHome?: string,
+  cwd?: string,
 ): [boolean, string] {
   const sessionName = getSessionName(bridgeHome);
   const logPath = getLogPath(bridgeHome);
@@ -64,8 +65,9 @@ export function startSession(
 
   try {
     const cmd = command.map(shellQuote).join(" ");
+    const cwdFlag = cwd ? ` -c '${cwd.replace(/'/g, "'\\''")}'` : "";
     execSync(
-      `tmux new-session -d -s ${sessionName} '${cmd}'`,
+      `tmux new-session -d -s ${sessionName}${cwdFlag} '${cmd}'`,
       { stdio: "pipe" },
     );
 

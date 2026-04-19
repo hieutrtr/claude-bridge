@@ -59,7 +59,7 @@ export function generateAgentMd(
   bridgeHome?: string,
 ): string {
   const home = bridgeHome ?? join(homedir(), ".claude-bridge");
-  const stopHookCmd = `CLAUDE_BRIDGE_HOME=${home} bridge-cli on-complete --session-id ${sessionId}`;
+  const stopHookCmd = `CLAUDE_BRIDGE_HOME=${home} bridge on-complete --session-id ${sessionId}`;
 
   return AGENT_TEMPLATE
     .replace(/{session_id}/g, sessionId)
@@ -133,7 +133,7 @@ export function installStopHook(
     } catch { /* start fresh */ }
   }
 
-  const hookCmd = `CLAUDE_BRIDGE_HOME=${home} bridge-cli on-complete --session-id ${sessionId}`;
+  const hookCmd = `CLAUDE_BRIDGE_HOME=${home} bridge on-complete --session-id ${sessionId}`;
 
   // Ensure hooks.stop array exists and contains our hook
   if (!settings["hooks"]) settings["hooks"] = {};

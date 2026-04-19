@@ -1,576 +1,306 @@
 # Claude Bridge
 
-🇬🇧 English: [README_en.md](README_en.md)
+Dispatch Claude Code sessions from Telegram (and, in the future, Discord or Slack). Claude Bridge lets a single bot agent fan work out across multiple Claude Code agents — one per project — each running in an isolated git worktree, each with its own persistent session, cost history, and Auto Memory. You drive the whole thing from chat: create agents, dispatch tasks, run goal loops until a condition is met, schedule recurring work, and get push notifications back when tasks finish.
 
-**Biến Claude Code thành đội ngũ AI làm việc 24/7 — điều khiển từ Telegram, không cần mở terminal.**
-
-> Tạo nhiều agent, phân công dự án, dispatch task, theo dõi tiến độ — tất cả từ điện thoại.
-
-[![Version](https://img.shields.io/badge/version-1.0.0--beta-blue)](https://github.com/hieutrtr/claude-bridge/releases)
-[![Tests](https://img.shields.io/badge/tests-541%20passing-brightgreen)](tests/)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-
----
-
-## Tại sao cần Claude Bridge?
-
-Claude Code rất mạnh — nhưng bị giam trong một session trên laptop. Claude Bridge phá vỡ giới hạn đó: tạo nhiều agent, mỗi agent phụ trách một dự án, điều phối tất cả từ điện thoại. Dispatch task, theo dõi chạy, duyệt kết quả, chạy vòng lặp tự động — không cần chạm vào terminal.
-
----
-
-## Tính năng nổi bật
-
-| | Tính năng | Mô tả |
-|---|---------|-------------|
-| 🤖 | **Điều phối đa agent** | Tạo và quản lý nhiều Claude Code agents từ Telegram |
-| 🔄 | **Goal Loop** *(MỚI v0.3.0)* | Tự động lặp task đến khi đạt mục tiêu — command, file, LLM judge, hoặc duyệt thủ công |
-| 📱 | **Telegram Control** | Dispatch, theo dõi, phê duyệt từ điện thoại — bất kỳ lúc nào, bất kỳ đâu |
-| 🏗️ | **Worktree Isolation** | Mỗi task chạy trong git worktree riêng biệt, không xung đột |
-| 🔌 | **MCP Native** | Tích hợp Claude Code qua Model Context Protocol — push thông báo, không polling |
-| 🛡️ | **Bảo mật** | Bảo vệ bằng bot token, danh sách trắng người dùng, xác nhận trước khi chạy |
-| 🐳 | **Daemon Mode** | Chạy như dịch vụ nền với systemd/launchd |
-| 📊 | **Theo dõi chi phí** | Thống kê chi phí từng task và từng vòng lặp |
-
----
-
-## Demo nhanh
-
-**Dispatch task cho agent:**
-```
-/create backend ~/projects/my-api "Phát triển API"
-dispatch backend thêm phân trang vào endpoint /users
-# → Agent chạy trong worktree riêng → Telegram thông báo khi xong ✓
-```
-
-**Vòng lặp đến khi test pass (Goal Loop):**
-```
-loop backend sửa toàn bộ test thất bại cho đến khi pytest pass max 5
-# → Dispatch → đánh giá → thử lại → thông báo kèm tóm tắt chi phí
-```
-
-**Đội nhóm đa agent:**
-```
-/create-team fullstack --lead backend --members frontend
-/team-dispatch fullstack "xây dựng trang hồ sơ người dùng với API và UI"
-# → agent backend + frontend phối hợp, bạn xem từng kết quả trên Telegram
-```
-
----
-
-## Cơ chế hoạt động
+## How it works
 
 ```
-Bạn (Telegram)
-  │
-  ▼
-Channel Server (TypeScript)        Polls Telegram qua grammy
-  │                                Push message vào Claude session
-  │ mcp.notification (push)        Retry nếu chưa ack trong 30s
-  ▼
-Claude Code session (Bridge Bot)   Message đến dưới dạng thẻ <channel>
-  │                                CLAUDE.md xử lý intent
-  │ bridge_dispatch(agent, prompt) reply(chat_id, text) gửi phản hồi
-  ▼
-claude --agent --worktree -p "task" Mỗi task = Claude Code agent riêng biệt
-  │
-  ▼
-Stop hook → on-complete.ts         Cập nhật SQLite, xếp hàng thông báo
-                                   Channel server giao đến Telegram
+  Telegram user
+       |
+       v
+  Bridge Bot            <-- Claude Code session with Telegram MCP
+       |                    (parses intent, calls MCP tools)
+       |  bridge_dispatch(agent, prompt)
+       v
+  bridge (CLI)          <-- TypeScript CLI + MCP server
+       |
+       v
+  claude --agent <bridge--agent> --session-id <uuid> -p "<task>"
+       |
+       v  (Stop hook fires on exit)
+  bridge on-complete --session-id ...
+       |
+       v
+  SQLite updated --> Notifier --> Telegram
 ```
 
-## Bắt đầu nhanh
+- Built on native Claude Code: `--agent`, `--session-id`, `isolation: worktree`, Auto Memory, Stop hooks, prompt caching.
+- Each session is a pairing of one agent and one project directory (e.g. `backend` + `~/projects/my-api` -> session id `backend--my-api`).
+- Tasks spawn via `Bun.spawn` with a detached process group; completion is detected by the Stop hook, with a 30 s `ProcessWatcher` fallback for missed hooks and a 6 h timeout ceiling.
+- All state lives in SQLite (`bridge.db` for tasks/agents/loops/schedules, `messages.db` for channel I/O), with WAL so the stop hook and the long-lived bridge process can share the database safely.
+- The MCP server (`src/mcp/server.ts`) is what Claude Code talks to; launching it via `StartupOrchestrator` also starts the watcher and the 5 s notification delivery loop.
+
+## Features
+
+**Task dispatch**
+- One-shot dispatch to a named agent, auto-queued when the agent is busy.
+- Worktree isolation per task (handled by Claude Code natively, declared in agent frontmatter).
+- Deterministic session UUID per `(session_id, task_id)` so Claude Code's own session continuity applies across related invocations.
+- Model override per agent (`sonnet`, `opus`, `haiku`).
+
+**Goal loops**
+- Repeat a task until a done-condition is met. Condition types: `command:`, `file_exists:`, `file_contains:`, `llm_judge:`, `manual:`.
+- Cost ceiling (`--max-cost`), max iterations, max consecutive failures.
+- Two modes — `bridge` (one task per iteration, observable) and `agent` (agent self-retries inside a single task). `--type auto` picks for you.
+- Human-in-the-loop: `loop-approve` / `loop-reject --feedback ...` for `manual:` conditions.
+
+**Schedules**
+- Fixed-interval recurring tasks (`--every <minutes>`).
+- Exponential backoff on errors; auto-disabled after 5 consecutive failures.
+- Note: `cron_expr` exists in the schema but the current scheduler only uses `interval_minutes`.
+
+**Multi-channel**
+- Telegram: live (formatter + direct Bot API delivery via `Notifier`).
+- Discord / Slack: adapter and formatter stubs in `src/channel/discord` and `src/channel/slack` — planned, not yet functional.
+
+**Operations**
+- Permission relay via the `PreToolUse` hook (`src/infra/permissions.ts`) — approve / deny tool calls from the bot with a 300 s default timeout.
+- Cost tracking per task, per loop, and per agent (`bridge cost`).
+- Auto Memory inspection (`bridge memory <agent>`).
+- Daemon integration: `bridge install` registers a launchd plist or systemd user unit so the bot survives reboots.
+- Multi-instance isolation via `CLAUDE_BRIDGE_HOME` — separate DB, config, workspaces, daemon service name.
+
+## Requirements
+
+- [Bun](https://bun.sh) — runtime, package manager, and test runner.
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — `claude` must be on your `PATH`.
+- macOS (launchd) or Linux (systemd user unit) — the daemon templates target these two.
+- A Telegram bot token from [@BotFather](https://t.me/BotFather) if you want the Telegram channel.
+- `tmux` when `bridge` falls back to a persistent session (no OS daemon installed).
+
+## Installation
 
 ```bash
-git clone https://github.com/hieutrtr/claude-bridge.git ~/projects/claude-bridge
-cd ~/projects/claude-bridge
+git clone https://github.com/hieutrtr/claude-bridge.git
+cd claude-bridge
 bun install
+bun link             # make `bridge` available on your PATH
+bun run build        # bundles src/index.ts to dist/index.js
 ```
 
-Sau đó chạy wizard thiết lập:
+The `package.json` `bin` entry publishes a single binary:
 
 ```bash
-bun run src/cli/index.ts setup
+bridge               # dispatches all commands: create-agent, dispatch, loop, start, ...
 ```
 
-Wizard sẽ hỏi bot token Telegram, tạo project bridge-bot, deploy channel server, và cài watcher cron. Hoàn tất trong dưới 2 phút.
-
-> **Cài đặt thủ công** (nếu muốn từng bước): xem [Hướng dẫn cài đặt](#hướng-dẫn-cài-đặt) bên dưới.
-
-## Yêu cầu hệ thống
-
-| Thứ | Để làm gì |
-|------|-----|
-| [Bun](https://bun.sh) | Runtime (TypeScript) |
-| [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) | Chạy `claude --version` để kiểm tra |
-| Tài khoản Telegram | Bạn gửi lệnh từ điện thoại |
-
-## Hướng dẫn cài đặt
-
-### Bước 1: Clone và cài đặt
-
-```bash
-git clone https://github.com/hieutrtr/claude-bridge.git ~/projects/claude-bridge
-cd ~/projects/claude-bridge
-bun install
-```
-
-Lệnh `bridge-cli` có thể chạy bằng `bun run src/cli/index.ts` hoặc link vào PATH:
+Link it into your `PATH` during development:
 
 ```bash
 bun link
-```
-
-### Bước 2: Build (tuỳ chọn)
-
-```bash
-bun run build
-```
-
-Lệnh này đóng gói thành `dist/index.js`.
-
-### Bước 3: Tạo Telegram bot
-
-1. Mở Telegram, tìm [@BotFather](https://t.me/BotFather)
-2. Gửi `/newbot`, làm theo hướng dẫn
-3. Sao chép bot token
-
-### Bước 4: Chạy wizard thiết lập
-
-```bash
-bridge-cli setup
-```
-
-Wizard sẽ:
-1. Hỏi bot token → lưu vào `~/.claude-bridge/config.json`
-2. Hỏi thư mục bridge-bot → tạo `CLAUDE.md` + `.mcp.json`
-3. Deploy channel server vào `~/.claude-bridge/channel/dist/`
-4. Cài watcher cron (chạy mỗi phút)
-5. In ra lệnh khởi động
-
-Hoặc không cần tương tác:
-```bash
-bridge-cli setup --token "<your-token>" --bot-dir ~/projects/bridge-bot --no-prompt
-```
-
-### Bước 5: Khởi động Bridge Bot
-
-```bash
-cd ~/projects/bridge-bot
-claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions
-```
-
-### Bước 6: Ghép đôi tài khoản Telegram
-
-Bước này liên kết Telegram user ID của bạn với Bridge Bot để chỉ bạn mới điều khiển được.
-
-**Quy trình:**
-1. Nhắn tin cho bot trên Telegram (bất kỳ tin gì — "hello" là ổn)
-2. Channel server nhận tin và hiện **mã 6 chữ số** trong session Claude Code
-3. Bạn nhập lệnh pair **ngay trong session Claude Code đó** (không phải terminal khác)
-4. Bridge giới hạn truy cập chỉ với tài khoản Telegram của bạn
-
-**Sơ đồ luồng:**
-```
-Điện thoại (Telegram)
-  │  DM: "hello"
-  ▼
-Channel Server (đang chạy trong Claude Code session)
-  │  in ra: "Pairing request from @yourhandle — code: 482931"
-  ▼
-Bạn gõ trong Claude Code session:
-  /telegram:access pair 482931
-  /telegram:access policy allowlist
-  │
-  ▼
-Bridge phản hồi trên Telegram: "✅ Đã ghép đôi. Gửi /help để bắt đầu."
-```
-
-**Nơi chạy lệnh:**
-Các lệnh `/telegram:access` được gõ **trực tiếp trong session Claude Code tương tác** — cùng cửa sổ terminal nơi bạn đã chạy:
-```bash
-claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions
-```
-Đây **không phải** `bridge-cli`, và **không phải** terminal khác. Chính Claude session đang đóng vai bot.
-
-**Các bước chi tiết:**
-
-1. Giữ nguyên Claude Code session từ Bước 5
-2. Mở Telegram và nhắn tin cho bot (vd: "hello")
-3. Theo dõi Claude Code session — sau vài giây sẽ thấy mã ghép đôi 6 chữ số
-4. Trong session đó, gõ:
-   ```
-   /telegram:access pair <mã-6-chữ-số>
-   ```
-5. Sau đó giới hạn truy cập:
-   ```
-   /telegram:access policy allowlist
-   ```
-6. Telegram xác nhận: "✅ Đã ghép đôi và hạn chế truy cập."
-
-**Xử lý sự cố:**
-
-| Vấn đề | Nguyên nhân có thể | Cách khắc phục |
-|---------|-------------|-----|
-| Bot không trả lời DM | Token sai hoặc channel server chưa chạy | `bridge-cli doctor` — kiểm tra token và trạng thái server |
-| Không thấy mã pair trong session | Channel server chưa khởi động | Xem lỗi trong output Claude session; chạy lại Bước 5 |
-| Lỗi "Invalid code" | Mã hết hạn (timeout 30s) | Nhắn thêm tin trên Telegram để lấy mã mới |
-| "Permission denied" sau khi pair | Chưa đặt policy allowlist | Chạy `/telegram:access policy allowlist` lại |
-| Cần ghép đôi lại (điện thoại/tài khoản mới) | Pair cũ còn hiệu lực | Trong Claude session: `/telegram:access reset` rồi pair lại |
-
-### Bước 7: Kiểm tra
-
-```bash
-bridge-cli doctor
-```
-
-Tất cả check phải pass. Gửi `/help` cho bot trên Telegram.
-
-## Thiết lập đa người dùng (Multi-User Setup)
-
-Claude Bridge hiện tại hỗ trợ **một người dùng mỗi instance**. Mỗi instance có Telegram bot, database và thư mục cấu hình riêng biệt.
-
-Để hỗ trợ nhiều người dùng, chạy các instance riêng biệt với môi trường được cô lập:
-
-### Yêu cầu cho mỗi instance
-
-| Thứ | Lý do |
-|------|-----|
-| `CLAUDE_BRIDGE_HOME` riêng biệt | Cô lập cả hai SQLite database (`bridge.db`, `messages.db`) và `config.json` |
-| Telegram bot token riêng biệt | Tránh Telegram poller offset race — nếu dùng chung, cả hai poller sẽ nhân đôi mỗi tin nhắn |
-| Agent name hoặc project path riêng biệt | Tránh collision file agent `.md` và workspace path dưới `~/.claude/agents/` |
-| Chỉ một watcher cron mỗi `CLAUDE_BRIDGE_HOME` | Tránh hoàn thành task kép và gửi thông báo Telegram trùng lặp |
-
-### Ví dụ thiết lập
-
-```bash
-# Tạo bot cho mỗi người dùng qua @BotFather, sau đó:
-
-# User Alice
-CLAUDE_BRIDGE_HOME=~/.claude-bridge-alice \
-  bridge-cli setup --token "token-alice" --bot-dir ~/projects/bridge-bot-alice --no-prompt
-
-# User Bob
-CLAUDE_BRIDGE_HOME=~/.claude-bridge-bob \
-  bridge-cli setup --token "token-bob" --bot-dir ~/projects/bridge-bot-bob --no-prompt
-```
-
-Khởi động mỗi instance (tên tmux session tự động unique theo `CLAUDE_BRIDGE_HOME`):
-
-```bash
-# Instance cho Alice — tmux session: claude-bridge-{hash}
-CLAUDE_BRIDGE_HOME=~/.claude-bridge-alice bridge start
-
-# Instance cho Bob — tmux session: claude-bridge-{hash}
-CLAUDE_BRIDGE_HOME=~/.claude-bridge-bob bridge start
-```
-
-Dừng/kiểm tra trạng thái:
-
-```bash
-CLAUDE_BRIDGE_HOME=~/.claude-bridge-alice bridge stop
-CLAUDE_BRIDGE_HOME=~/.claude-bridge-alice bridge status
-```
-
-### Những gì vẫn dùng chung giữa các instance
-
-Dù có `CLAUDE_BRIDGE_HOME` riêng biệt, những thứ sau vẫn dùng chung:
-
-- **Stop hook routing** — nếu hai instance đăng ký agent trong **cùng một thư mục project**, lần `bridge-cli setup` thứ hai sẽ ghi đè Stop hook trong `.claude/settings.local.json`. Dùng project path riêng biệt để tránh.
-- **File agent `.md`** — lưu tại `~/.claude/agents/bridge--{agent}--{project}.md`. Collision xảy ra nếu hai instance dùng cùng agent name và cùng project directory basename. Dùng agent name hoặc project path khác nhau.
-
-### Hỗ trợ đa người dùng trên một bot (tương lai)
-
-Dùng chung **một Telegram bot** cho nhiều người dùng cần Phase 2 (chưa triển khai). v0.4.0 đã thêm `chat_id` / `user_id` vào toàn bộ dispatch chain — infrastructure routing đã có, nhưng per-user agent isolation và access control cho shared bot chưa được implement.
-
----
-
-## Cách dùng
-
-### Tạo agent
-
-Từ Telegram:
-```
-/create backend ~/projects/my-api "Phát triển API"
-```
-
-Hoặc ngôn ngữ tự nhiên:
-```
-tạo agent tên backend cho ~/projects/my-api, phụ trách phát triển API
-```
-
-### Dispatch task
-
-```
-dispatch backend thêm phân trang vào endpoint /users
-```
-
-Agent làm việc trong git worktree riêng biệt. Khi xong, bạn nhận thông báo Telegram.
-
-### Kiểm tra trạng thái
-
-```
-/status              — tất cả task đang chạy
-/agents              — danh sách tất cả agents
-/history backend     — lịch sử task kèm chi phí
-/kill backend        — dừng task đang chạy
-```
-
-### Đội nhóm agents
-
-```
-/create backend ~/projects/api "Phát triển API"
-/create frontend ~/projects/web "React UI"
-/create-team fullstack --lead backend --members frontend
-/team-dispatch fullstack "xây dựng trang hồ sơ người dùng với API và UI"
-```
-
-### Goal Loop
-
-Goal Loop dispatch task liên tục đến khi điều kiện hoàn thành được đáp ứng. Lý tưởng cho chu kỳ sửa lỗi, sinh code, và những việc cần nhiều lần thử.
-
-#### Bắt đầu nhanh
-
-```bash
-# Sửa test — lặp đến khi pytest pass (tối đa 5 lần)
-bridge-cli loop backend "Sửa toàn bộ test thất bại" \
-    --done-when "command:pytest tests/" \
-    --max 5
-
-# Tạo báo cáo — lặp đến khi file tồn tại
-bridge-cli loop vn-trader "Tạo bản tin thị trường buổi sáng" \
-    --done-when "file_exists:output/morning-brief.md" \
-    --max 3
-
-# Tái cấu trúc — nhờ Claude đánh giá khi code sẵn sàng
-bridge-cli loop backend "Tái cấu trúc module auth cho production" \
-    --done-when "llm_judge:Code có test đầy đủ, xử lý lỗi và docs" \
-    --max 8 --type bridge
-
-# Human-in-the-loop — dừng chờ duyệt giữa các vòng lặp
-bridge-cli loop backend "Viết API spec" \
-    --done-when "manual:kiểm tra spec trước khi tiếp tục" \
-    --max 5
-```
-
-#### Điều kiện hoàn thành
-
-| Định dạng | Mô tả | Ví dụ |
-|--------|-------------|---------|
-| `command:CMD` | Chạy CMD, hoàn thành khi exit code 0 | `command:pytest tests/` |
-| `file_exists:PATH` | Hoàn thành khi file tồn tại | `file_exists:output/report.md` |
-| `file_contains:PATH:TEXT` | Hoàn thành khi file chứa text | `file_contains:result.txt:SUCCESS` |
-| `llm_judge:RUBRIC` | Claude đánh giá theo tiêu chí | `llm_judge:Tất cả test pass và code có docs` |
-| `manual[:MSG]` | Dừng chờ người duyệt sau mỗi vòng | `manual:kiểm tra trước khi tiếp tục` |
-
-#### Loại vòng lặp
-
-Bridge tự động chọn loại vòng lặp phù hợp:
-
-- **Agent loop** — Bridge dispatch một task duy nhất, agent tự retry bên trong.
-  Nhanh, không overhead. Dùng cho điều kiện `command`/`file_exists`/`file_contains`
-  với `--max <= 5`.
-- **Bridge loop** — Bridge dispatch một task mỗi vòng, đánh giá, và đưa phản hồi
-  vào vòng tiếp theo. Quan sát được, theo dõi chi phí, có thông báo.
-  Luôn dùng cho điều kiện `manual`/`llm_judge` hoặc `--max > 5`.
-
-Ghi đè bằng `--type bridge|agent|auto` (mặc định: `bridge`).
-
-#### Từ Telegram
-
-Ngôn ngữ tự nhiên:
-```
-loop backend sửa test cho đến khi pytest pass
-loop vn-trader tạo brief đến khi file output/brief.md tồn tại max 5
-stop loop 42
-loop status
-approve
-reject: test auth vẫn đang fail
-```
-
-#### Dashboard loop
-
-```bash
-bridge-cli loop-list             # tất cả loop gần đây
-bridge-cli loop-list --active    # chỉ loop đang chạy
-bridge-cli loop-list backend     # lọc theo agent
-bridge-cli loop-history 42       # toàn bộ lịch sử vòng lặp #42
-bridge-cli loop-status --loop-id 42
-```
-
-#### Quản lý loop
-
-```bash
-bridge-cli loop-cancel 42        # huỷ loop đang chạy
-bridge-cli loop-approve 42       # duyệt loop với điều kiện manual
-bridge-cli loop-reject 42 --feedback "test vẫn fail ở module X"
-```
-
-## Khởi động lại
-
-```bash
-cd ~/projects/bridge-bot
-claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions
-```
-
-## Toàn bộ lệnh
-
-### Lệnh Telegram
-
-| Lệnh | Mô tả |
-|---------|-------------|
-| `/create <name> <path> "<purpose>"` | Đăng ký agent mới |
-| `/delete <name>` | Xoá agent |
-| `/agents` | Liệt kê tất cả agents |
-| `/dispatch <agent> "<task>"` | Gửi task (xếp hàng nếu bận) |
-| `/status [agent]` | Hiện task đang chạy |
-| `/kill <agent>` | Dừng task đang chạy |
-| `/history <agent>` | Lịch sử task kèm chi phí |
-| `/queue [agent]` | Xem hàng đợi task |
-| `/cancel <task_id>` | Huỷ task đang xếp hàng |
-| `/set-model <agent> <model>` | Đổi model (sonnet/opus/haiku) |
-| `/cost [agent]` | Tóm tắt chi phí |
-| `/create-team <name> --lead <a> --members <b,c>` | Tạo đội nhóm |
-| `/team-dispatch <team> "<task>"` | Dispatch đến đội nhóm |
-| `/team-status <team>` | Tiến độ đội nhóm |
-
-### Lệnh CLI
-
-| Lệnh | Mô tả |
-|---------|-------------|
-| `bridge-cli setup` | Wizard thiết lập tương tác |
-| `bridge-cli doctor` | Kiểm tra sức khoẻ cài đặt |
-| `bridge-cli doctor --fix` | Tự động sửa các vấn đề |
-| `bridge-cli uninstall` | Xoá data, config, cron |
-| `bridge-cli setup-cron` | Cài watcher cron |
-| `bridge-cli remove-cron` | Xoá watcher cron |
-| `bridge-cli --version` | In version |
-
-**Lệnh Loop:**
-
-| Lệnh | Mô tả |
-|---------|-------------|
-| `bridge-cli loop <agent> <goal> --done-when <cond>` | Bắt đầu goal loop |
-| `bridge-cli loop-list [agent] [--active] [--limit N]` | Liệt kê tất cả loops (dashboard) |
-| `bridge-cli loop-history <loop-id>` | Lịch sử đầy đủ vòng lặp |
-| `bridge-cli loop-status [agent] [--loop-id ID]` | Xem trạng thái loop |
-| `bridge-cli loop-cancel <loop-id>` | Huỷ loop đang chạy |
-| `bridge-cli loop-approve <loop-id>` | Duyệt loop điều kiện manual |
-| `bridge-cli loop-reject <loop-id> [--feedback TEXT]` | Từ chối và tiếp tục loop |
-
-## Kiến trúc
-
-### Luồng hoạt động đầu cuối
-
-```mermaid
-sequenceDiagram
-    participant You as Bạn (Telegram)
-    participant CS as Channel Server<br/>(TypeScript/Bun)
-    participant Bot as Bridge Bot<br/>(Claude Code session)
-    participant CLI as bridge-cli
-    participant Agent as Claude Code Agent<br/>(isolated worktree)
-    participant DB as SQLite<br/>(~/.claude-bridge/)
-
-    You->>CS: DM: "dispatch backend thêm auth"
-    CS->>Bot: MCP push notification
-    Bot->>CLI: bridge_dispatch("backend", "thêm auth")
-    CLI->>DB: tạo task #42 (pending)
-    CLI->>Agent: claude --agent --session-id backend--api -p "thêm auth"
-    DB-->>CLI: task đang chạy (PID 1234)
-    Note over Agent: Làm việc trong git worktree<br/>Đọc/ghi bản sao riêng biệt
-    Agent->>CLI: Stop hook → on-complete.ts
-    CLI->>DB: task #42 → done, cost=$0.12
-    CLI->>CS: xếp hàng thông báo
-    CS->>You: "✓ Task #42 (backend) — xong trong 3p 14s"
-```
-
-### Bản đồ thành phần
-
-```
-~/.claude-bridge/
-├── config.json        Bot token, cài đặt
-├── bridge.db          SQLite: agents, tasks, teams
-├── messages.db        SQLite: hàng đợi tin nhắn
-├── channel/dist/      Channel server đã deploy
-├── watcher.log        Output của cron
-└── workspaces/        Kết quả task theo agent
-
-~/projects/bridge-bot/
-├── CLAUDE.md          Quy tắc routing của Bridge Bot
-└── .mcp.json          Cấu hình channel server
-
-~/.claude/agents/
-└── bridge--*.md       Định nghĩa agents
-```
-
-Xem tài liệu kiến trúc chi tiết tại [specs/MVP.md](specs/MVP.md).
-
-### Chi tiết kỹ thuật
-
-| Thứ | Chi tiết |
-|------|--------|
-| Channel server | TypeScript/Bun, push qua `notifications/claude/channel` |
-| Giao nhận tin | Push + retry 30s (tối đa 5 lần) |
-| Hàng đợi thông báo | Ngăn stdio interleaving khi gọi tool |
-| Stop hook | Trong `.claude/settings.local.json` của project (không phải frontmatter) |
-| Session UUID | Unique mỗi task: `uuid5(session_id + task_id)` |
-| Worktree | Mỗi task trong `git worktree` riêng biệt |
-| Hàng đợi | Tự động xếp hàng khi bận, tự dequeue khi xong |
-
-## Chạy từ source
-
-```bash
-git clone https://github.com/hieutrtr/claude-bridge.git ~/projects/claude-bridge
-cd ~/projects/claude-bridge
-bun install
-
-# Chạy bất kỳ lệnh CLI nào
-bun run src/cli/index.ts setup
-bun run src/cli/index.ts list-agents
-bun run src/cli/index.ts dispatch backend "fix bug"
-```
-
-## Phát triển
-
-```bash
-# Cài dependencies
-bun install
-
-# Chạy toàn bộ test (541 test, 36 files)
-bun test
-
-# Typecheck
-bun run typecheck    # hoặc: tsc --noEmit
-
-# Build
-bun run build
-
-# Chạy bất kỳ lệnh CLI nào
+# or run directly without linking:
 bun run src/cli/index.ts <command>
 ```
 
-## Xử lý sự cố
-
-### Chẩn đoán nhanh
+### Run as a daemon (recommended for production)
 
 ```bash
-bridge-cli doctor        # kiểm tra tất cả thành phần
-bridge-cli doctor --fix  # tự sửa những gì có thể
+bridge install --auto-start   # installs launchd (macOS) or systemd user unit (Linux) and starts it
+bridge daemon-status          # platform, daemon state, session pid/uptime, log path
+bridge uninstall              # remove the daemon
 ```
 
-### Các vấn đề thường gặp
+With a daemon installed, `bridge start / stop / restart` drive the OS service. Without one, they fall back to a managed tmux session.
 
-| Triệu chứng | Nguyên nhân có thể | Cách khắc phục |
-|---------|-------------|-----|
-| Bot không phản hồi DM Telegram | Token sai hoặc channel server chưa chạy | `bridge-cli doctor` — kiểm tra token và server; diệt zombie: `ps aux \| grep "bun.*server"` |
-| Stop hook không kích hoạt | Path sai hoặc chưa setup | `bridge-cli doctor --fix` hoặc chạy lại `bridge-cli setup` |
-| Task bị kẹt ở trạng thái "running" | Stop hook không bao giờ chạy (crash/reboot) | Watcher cron tự sửa trong vòng 1 phút; hoặc chạy `bridge-cli watcher` thủ công |
-| Nhiều bot xung đột | Session bot cũ vẫn đang poll cùng token | Diệt cái cũ: `ps aux \| grep claude`, rồi `bridge start` |
-| Thông báo kép | Bug reporting (đã sửa ở 0.2.0) | Nâng cấp: `pip install -U claude-agent-bridge` |
-| `bun run build` thất bại | Phiên bản Node/bun không khớp | Kiểm tra: `bun --version` (cần ≥1.0); cài lại: `curl -fsSL https://bun.sh/install \| bash` |
-| `bridge start` thất bại im lặng | Config thiếu hoặc bot_dir sai | Xem logs: `bridge logs`; chạy lại `bridge-cli setup` |
-| Reset toàn bộ | State bị corrupt hoặc cần migration | `bridge-cli uninstall --force` rồi `bridge-cli setup` từ đầu |
-| Stop hook không kích hoạt | Debug thông báo hoàn thành bị mất | Kiểm tra `~/.claude/logs/` hoặc thêm `echo "hook fired"` vào hook command |
-| Bot không phản hồi sau pair | Policy chưa đặt thành allowlist | Trong Claude session: `/telegram:access policy allowlist` |
-| `bridge-cli` không tìm thấy | Chưa link hoặc PATH sai | `bun link` trong thư mục project hoặc dùng `bun run src/cli/index.ts` |
-| Agent task thất bại ngay lập tức | Claude CLI không trong PATH | `which claude` — nếu thiếu, cài lại Claude Code; `bridge-cli doctor` hiện lỗi chính xác |
-| Lỗi worktree: đã tồn tại | Task trước crash giữa chừng | `git worktree prune` trong thư mục project |
+## Setup
+
+Claude Bridge needs a home directory (`~/.claude-bridge` by default, or `$CLAUDE_BRIDGE_HOME`) and a bridge-bot project directory containing `CLAUDE.md`, `.mcp.json`, and `.claude/agents/`. Use `bridge setup-bot` — it scaffolds everything and writes `config.json` for you.
+
+```bash
+# Interactive: prompts for a Telegram bot token (press Enter to skip)
+bridge setup-bot ~/projects/bridge-bot
+
+# Non-interactive
+bridge setup-bot ~/projects/bridge-bot \
+    --telegram-token "123456:ABC-your-bot-token" \
+    --no-prompt
+```
+
+Flags:
+
+- `--telegram-token TOKEN` — store the token in `~/.claude-bridge/config.json`.
+- `--no-prompt` — never read from stdin; fail if required values are missing.
+- `--force` — overwrite a non-empty bot directory.
+
+Then launch the bot:
+
+```bash
+bridge start       # uses the daemon if installed, else a tmux session
+bridge status      # agents + running tasks
+bridge logs -f     # tail ~/.claude-bridge/bridge.log
+```
+
+> **Upgrading from a previous version?** The Stop hook command changed from `bridge-cli on-complete` to `bridge on-complete`. Regenerate any existing agent `.md` files: `bridge delete-agent <name> && bridge create-agent <name> <path> --purpose ...`. If `bridge daemon-status` shows the plist points at an old `bot_dir`, run `bridge uninstall && bridge install` to regenerate.
+
+## Usage
+
+All commands below are handlers registered in `src/cli/index.ts`. Run `bridge --help` for the complete list.
+
+### Agents
+
+```bash
+bridge create-agent backend ~/projects/my-api --purpose "API development" --model sonnet
+bridge list-agents
+bridge status                 # global: agents + running tasks
+bridge status backend         # single agent detail
+bridge set-model backend opus
+bridge delete-agent backend
+```
+
+### Tasks
+
+```bash
+bridge dispatch backend "add pagination to /users"
+bridge history backend --limit 20
+bridge cost                   # all agents, all time
+bridge cost backend --period week
+bridge kill backend           # SIGTERM -> SIGKILL the running task
+bridge memory backend         # dump Auto Memory for this project
+```
+
+### Loops
+
+```bash
+# Repeat until tests pass (max 5 iterations)
+bridge loop backend "Fix all failing tests" \
+    --done-when "command:bun test" \
+    --max 5
+
+# Repeat until a file exists
+bridge loop vn-trader "Generate morning market brief" \
+    --done-when "file_exists:output/morning-brief.md"
+
+# LLM-judged completion
+bridge loop backend "Refactor auth module to production quality" \
+    --done-when "llm_judge:Code has tests, error handling, and docs" \
+    --max 8 --type bridge --max-cost 5.00
+
+# Human-in-the-loop
+bridge loop backend "Draft API spec" --done-when "manual:review before continuing"
+
+bridge loop-list --active
+bridge loop-list backend --limit 20
+bridge loop-status --loop-id abc12345
+bridge loop-history abc12345
+bridge loop-cancel abc12345
+bridge loop-approve abc12345
+bridge loop-reject abc12345 --feedback "still failing in module X"
+```
+
+### Schedules
+
+```bash
+bridge schedule-add backend "Sweep linter warnings" --every 60 --name nightly-lint
+bridge schedule-list
+bridge schedule-list --agent backend --all
+bridge schedule-pause nightly-lint
+bridge schedule-resume nightly-lint
+bridge schedule-remove nightly-lint
+```
+
+### Lifecycle
+
+| Command                    | Purpose                                                       |
+| -------------------------- | ------------------------------------------------------------- |
+| `bridge setup-bot <dir>`   | Scaffold the bot directory (CLAUDE.md, .mcp.json, agents dir) |
+| `bridge start`             | Launch the bot (daemon if installed, else tmux)               |
+| `bridge stop`              | Stop the bot                                                  |
+| `bridge restart`           | Stop + start                                                  |
+| `bridge install [--auto-start]` | Install launchd plist or systemd user unit               |
+| `bridge uninstall`         | Uninstall the daemon                                          |
+| `bridge attach`            | Attach to the running bot tmux session (Ctrl-b d to detach)   |
+| `bridge daemon-status`     | Platform, daemon installed/running, session PID, uptime, log  |
+| `bridge doctor`            | Diagnose setup and report `[ok]` / `[warn]` / `[fail]` checks |
+| `bridge logs [--tail N] [-f]` | Tail `~/.claude-bridge/bridge.log`                         |
+
+### Stop hook
+
+```bash
+bridge on-complete --session-id backend--my-api
+```
+
+This is wired into each agent's `.claude/settings.local.json` by `cli/agent-md.ts` — you normally do not invoke it by hand. It updates the task row, enqueues a notification, and auto-dequeues the next queued task for the same session.
+
+## From Telegram
+
+Once the bot agent is paired with your Telegram chat, you can drive everything from DMs. The bot's `CLAUDE.md` routes natural language to MCP tool calls; you can also be explicit.
+
+Examples:
+
+```
+dispatch backend add pagination to /users
+loop backend fix failing tests until bun test passes, max 5
+status
+history backend
+stop loop abc12345
+```
+
+The most useful MCP tools (defined in `src/mcp/tools.ts`):
+
+| Tool                     | Purpose                                             |
+| ------------------------ | --------------------------------------------------- |
+| `bridge_dispatch`        | Send a task to an agent                             |
+| `bridge_status`          | Running tasks, optionally filtered by agent         |
+| `bridge_agents`          | List all registered agents                          |
+| `bridge_history`         | Per-agent task history with costs                   |
+| `bridge_kill`            | Kill the running task on an agent                   |
+| `bridge_loop`            | Start a goal loop                                   |
+| `bridge_loop_status`     | Inspect loop progress                               |
+| `bridge_schedule_add`    | Register a recurring task                           |
+| `bridge_reply`           | Post a message back to the user                     |
+| `bridge_get_notifications` | Drain pending task-completion notifications       |
+
+The complete registry (24 tools) lives in `TOOL_NAMES` / `TOOL_DEFINITIONS` in `src/mcp/tools.ts`.
+
+## Multi-instance
+
+Each instance is isolated by `CLAUDE_BRIDGE_HOME`. The config provider, SQLite databases (`bridge.db`, `messages.db`), workspaces directory, and generated daemon service name all derive from it.
+
+```bash
+# Default instance
+bridge list-agents                                         # ~/.claude-bridge
+
+# Separate instance named "tam"
+CLAUDE_BRIDGE_HOME=~/.claude-bridge-tam bridge setup-bot ~/projects/bridge-bot-tam
+CLAUDE_BRIDGE_HOME=~/.claude-bridge-tam bridge list-agents
+CLAUDE_BRIDGE_HOME=~/.claude-bridge-tam bridge create-agent \
+    backend ~/projects/other-api --purpose "Separate workspace"
+```
+
+Give each instance its own Telegram bot token so their pollers do not race each other, and use distinct agent names or project basenames so the generated `.claude/agents/bridge--*.md` files do not collide.
+
+## Project structure
+
+```
+src/
+  cli/             bridge dispatcher (index.ts), setup-bot, agent-md generator, Auto Memory reader
+  data/            SQLite stores, SessionManager, interfaces
+  execution/       Dispatcher, CompletionHandler, ProcessWatcher, Notifier
+  orchestration/   LoopOrchestrator, LoopEvaluator, Scheduler
+  mcp/             MCP server, tool registry, native tool handlers
+  infra/           StartupOrchestrator, daemon (launchd/systemd), tmux helpers, permission relay
+  channel/         Telegram (formatter live), Discord/Slack (stubs)
+  config.ts        CLAUDE_BRIDGE_HOME resolution, config.json loader
+  types.ts         Domain model (Agent, Task, Loop, Schedule, ...)
+  index.ts         Public API barrel
+
+tests/             Bun test suite (wave1/ ... wave7/ + coverage/)
+docs/              Deep docs (see ARCHITECTURE.md)
+legacy/            Old Python/JS implementation — reference only, deprecated
+```
+
+## Development
+
+```bash
+bun install
+bun test                            # full suite
+bun test tests/wave1                # single directory
+bun run typecheck                   # tsc --noEmit
+bun run build                       # bundle to dist/index.js
+```
+
+For the detailed layer-by-layer architecture, data model, runtime flows (dispatch, stop hook, loop iteration, schedule tick, MCP call, startup), and extension points, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## License
+
+MIT — see `package.json`. A standalone `LICENSE` file has not been added to the repository yet.

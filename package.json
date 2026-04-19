@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Multi-session Claude Code dispatch — official plugin for Claude Code",
   "bin": {
-    "bridge-cli": "./src/cli/index.ts"
+    "bridge": "./src/cli/index.ts"
   },
   "scripts": {
     "start": "bun run src/index.ts",

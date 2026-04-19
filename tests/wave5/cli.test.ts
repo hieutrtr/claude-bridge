@@ -26,7 +26,7 @@ function makeCtx(args: string[]): CommandContext {
 }
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), "bridge-cli-"));
+  tmpDir = mkdtempSync(join(tmpdir(), "bridge-"));
   db = new BridgeDatabase(join(tmpDir, "bridge.db"));
   output = [];
   errOutput = [];

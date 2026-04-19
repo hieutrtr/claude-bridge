@@ -101,10 +101,10 @@ describe("W1.1: Plugin Metadata & Structure", () => {
       expect(pkg["name"]).toBe("claude-bridge");
     });
 
-    test("has bin entry for bridge-cli", () => {
+    test("has bin entry for bridge", () => {
       const bin = pkg["bin"] as Record<string, string>;
       expect(bin).toBeDefined();
-      expect(bin["bridge-cli"]).toBeDefined();
+      expect(bin["bridge"]).toBeDefined();
     });
 
     test("has test script using bun test", () => {

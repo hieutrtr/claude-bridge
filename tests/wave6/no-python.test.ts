@@ -51,7 +51,7 @@ describe("W6.4: Python Removal Verification", () => {
     expect(pythonCalls).toEqual([]);
   });
 
-  test("no bridge-cli Python references in subprocess calls", () => {
+  test("no bridge Python references in subprocess calls", () => {
     const bridgeCliCalls: string[] = [];
     for (const file of tsFiles) {
       const content = readFileSync(file, "utf-8");
@@ -59,9 +59,9 @@ describe("W6.4: Python Removal Verification", () => {
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i]!;
         if (line.trim().startsWith("//") || line.trim().startsWith("*")) continue;
-        // bridge-cli as Python invocation (not as the TS CLI)
+        // bridge as Python invocation (not as the TS CLI)
         if (
-          line.includes('"bridge-cli"') &&
+          line.includes('"bridge"') &&
           (line.includes("spawn") || line.includes("exec"))
         ) {
           // This is OK — it's the TS CLI calling itself

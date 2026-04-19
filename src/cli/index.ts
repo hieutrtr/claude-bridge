@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * CLI Entry Point — bridge-cli command dispatcher.
+ * CLI Entry Point — bridge command dispatcher.
  *
  * Replaces Python's cli.py.
  * Uses manual arg parsing (no external deps).
@@ -9,6 +9,7 @@
 import { join } from "path";
 import { homedir } from "os";
 import { existsSync, readFileSync, writeFileSync } from "fs";
+import { execSync } from "child_process";
 import { BridgeDatabase } from "../data/db.js";
 import { SessionManager } from "../data/session.js";
 import { Dispatcher } from "../execution/dispatcher.js";
@@ -18,6 +19,28 @@ import { LoopEvaluator } from "../orchestration/evaluator.js";
 import { Scheduler } from "../orchestration/scheduler.js";
 import { generateAgentMd, writeAgentMd, deleteAgentMd } from "./agent-md.js";
 import { formatMemoryReport } from "./memory.js";
+import { cmdSetupBot } from "./setup-bot.js";
+import { cmdDoctor } from "./doctor.js";
+import {
+  getLogPath,
+  getSessionName,
+  getSessionPid,
+  getSessionUptime,
+  sessionRunning,
+  startSession,
+  stopSession,
+  validateConfig,
+} from "../infra/bridge-cmd.js";
+import { getLaunchdLabel } from "../infra/daemon.js";
+import {
+  getDaemonStatus,
+  getPlatform,
+  installDaemon,
+  isDaemonInstalled,
+  startDaemon,
+  stopDaemon,
+  uninstallDaemon,
+} from "../infra/daemon.js";
 import type { BridgeConfig } from "../types.js";
 
 // --- Config ---
@@ -85,7 +108,7 @@ async function cmdCreateAgent(ctx: CommandContext): Promise<number> {
   const model = getArg(ctx.args, "model") ?? "sonnet";
 
   if (!name || !path) {
-    process.stderr.write("Usage: bridge-cli create-agent <name> <path> --purpose <purpose>\n");
+    process.stderr.write("Usage: bridge create-agent <name> <path> --purpose <purpose>\n");
     return 1;
   }
 
@@ -126,7 +149,7 @@ async function cmdCreateAgent(ctx: CommandContext): Promise<number> {
 async function cmdDeleteAgent(ctx: CommandContext): Promise<number> {
   const name = getPositional(ctx.args, 0);
   if (!name) {
-    process.stderr.write("Usage: bridge-cli delete-agent <name>\n");
+    process.stderr.write("Usage: bridge delete-agent <name>\n");
     return 1;
   }
 
@@ -200,7 +223,7 @@ async function cmdDispatch(ctx: CommandContext): Promise<number> {
   const messageId = getArg(ctx.args, "message-id");
 
   if (!name || !prompt) {
-    process.stderr.write("Usage: bridge-cli dispatch <agent> <prompt>\n");
+    process.stderr.write("Usage: bridge dispatch <agent> <prompt>\n");
     return 1;
   }
 
@@ -243,7 +266,7 @@ async function cmdDispatch(ctx: CommandContext): Promise<number> {
 async function cmdKill(ctx: CommandContext): Promise<number> {
   const name = getPositional(ctx.args, 0);
   if (!name) {
-    process.stderr.write("Usage: bridge-cli kill <agent>\n");
+    process.stderr.write("Usage: bridge kill <agent>\n");
     return 1;
   }
 
@@ -280,7 +303,7 @@ async function cmdHistory(ctx: CommandContext): Promise<number> {
   const limit = parseInt(getArg(ctx.args, "limit") ?? "10", 10);
 
   if (!name) {
-    process.stderr.write("Usage: bridge-cli history <agent> [--limit N]\n");
+    process.stderr.write("Usage: bridge history <agent> [--limit N]\n");
     return 1;
   }
 
@@ -323,7 +346,7 @@ async function cmdSetModel(ctx: CommandContext): Promise<number> {
   const model = getPositional(ctx.args, 1);
 
   if (!name || !model) {
-    process.stderr.write("Usage: bridge-cli set-model <agent> <model>\n");
+    process.stderr.write("Usage: bridge set-model <agent> <model>\n");
     return 1;
   }
 
@@ -347,7 +370,7 @@ async function cmdSetModel(ctx: CommandContext): Promise<number> {
 async function cmdMemory(ctx: CommandContext): Promise<number> {
   const name = getPositional(ctx.args, 0);
   if (!name) {
-    process.stderr.write("Usage: bridge-cli memory <agent>\n");
+    process.stderr.write("Usage: bridge memory <agent>\n");
     return 1;
   }
 
@@ -373,7 +396,7 @@ async function cmdLoop(ctx: CommandContext): Promise<number> {
   const maxCost = getArg(ctx.args, "max-cost");
 
   if (!name || !goal || !doneWhen) {
-    process.stderr.write("Usage: bridge-cli loop <agent> <goal> --done-when <condition>\n");
+    process.stderr.write("Usage: bridge loop <agent> <goal> --done-when <condition>\n");
     return 1;
   }
 
@@ -423,7 +446,7 @@ async function cmdLoopStatus(ctx: CommandContext): Promise<number> {
 async function cmdLoopCancel(ctx: CommandContext): Promise<number> {
   const loopId = getPositional(ctx.args, 0);
   if (!loopId) {
-    process.stderr.write("Usage: bridge-cli loop-cancel <loop_id>\n");
+    process.stderr.write("Usage: bridge loop-cancel <loop_id>\n");
     return 1;
   }
   const evaluator = new LoopEvaluator();
@@ -436,7 +459,7 @@ async function cmdLoopCancel(ctx: CommandContext): Promise<number> {
 async function cmdLoopApprove(ctx: CommandContext): Promise<number> {
   const loopId = getPositional(ctx.args, 0);
   if (!loopId) {
-    process.stderr.write("Usage: bridge-cli loop-approve <loop_id>\n");
+    process.stderr.write("Usage: bridge loop-approve <loop_id>\n");
     return 1;
   }
   const evaluator = new LoopEvaluator();
@@ -450,7 +473,7 @@ async function cmdLoopReject(ctx: CommandContext): Promise<number> {
   const loopId = getPositional(ctx.args, 0);
   const feedback = getArg(ctx.args, "feedback") ?? "";
   if (!loopId) {
-    process.stderr.write("Usage: bridge-cli loop-reject <loop_id> [--feedback <text>]\n");
+    process.stderr.write("Usage: bridge loop-reject <loop_id> [--feedback <text>]\n");
     return 1;
   }
   const evaluator = new LoopEvaluator();
@@ -479,7 +502,7 @@ async function cmdLoopList(ctx: CommandContext): Promise<number> {
 async function cmdLoopHistory(ctx: CommandContext): Promise<number> {
   const loopId = getPositional(ctx.args, 0);
   if (!loopId) {
-    process.stderr.write("Usage: bridge-cli loop-history <loop_id>\n");
+    process.stderr.write("Usage: bridge loop-history <loop_id>\n");
     return 1;
   }
   const loop = ctx.db.getLoop(loopId);
@@ -507,7 +530,7 @@ async function cmdScheduleAdd(ctx: CommandContext): Promise<number> {
   const once = getFlag(ctx.args, "once");
 
   if (!agent || !prompt || !every) {
-    process.stderr.write("Usage: bridge-cli schedule-add <agent> <prompt> --every <minutes>\n");
+    process.stderr.write("Usage: bridge schedule-add <agent> <prompt> --every <minutes>\n");
     return 1;
   }
 
@@ -523,7 +546,7 @@ async function cmdScheduleAdd(ctx: CommandContext): Promise<number> {
 async function cmdScheduleRemove(ctx: CommandContext): Promise<number> {
   const nameOrId = getPositional(ctx.args, 0);
   if (!nameOrId) {
-    process.stderr.write("Usage: bridge-cli schedule-remove <name_or_id>\n");
+    process.stderr.write("Usage: bridge schedule-remove <name_or_id>\n");
     return 1;
   }
   const ok = ctx.db.removeSchedule(nameOrId);
@@ -549,7 +572,7 @@ async function cmdScheduleList(ctx: CommandContext): Promise<number> {
 
 async function cmdSchedulePause(ctx: CommandContext): Promise<number> {
   const nameOrId = getPositional(ctx.args, 0);
-  if (!nameOrId) { process.stderr.write("Usage: bridge-cli schedule-pause <name_or_id>\n"); return 1; }
+  if (!nameOrId) { process.stderr.write("Usage: bridge schedule-pause <name_or_id>\n"); return 1; }
   const ok = ctx.db.pauseSchedule(nameOrId);
   console.log(ok ? `Paused "${nameOrId}"` : `Not found: "${nameOrId}"`);
   return ok ? 0 : 1;
@@ -557,7 +580,7 @@ async function cmdSchedulePause(ctx: CommandContext): Promise<number> {
 
 async function cmdScheduleResume(ctx: CommandContext): Promise<number> {
   const nameOrId = getPositional(ctx.args, 0);
-  if (!nameOrId) { process.stderr.write("Usage: bridge-cli schedule-resume <name_or_id>\n"); return 1; }
+  if (!nameOrId) { process.stderr.write("Usage: bridge schedule-resume <name_or_id>\n"); return 1; }
   const ok = ctx.db.resumeSchedule(nameOrId);
   console.log(ok ? `Resumed "${nameOrId}"` : `Not found: "${nameOrId}"`);
   return ok ? 0 : 1;
@@ -568,7 +591,7 @@ async function cmdScheduleResume(ctx: CommandContext): Promise<number> {
 async function cmdOnComplete(ctx: CommandContext): Promise<number> {
   const sessionId = getArg(ctx.args, "session-id");
   if (!sessionId) {
-    process.stderr.write("Usage: bridge-cli on-complete --session-id <session_id>\n");
+    process.stderr.write("Usage: bridge on-complete --session-id <session_id>\n");
     return 1;
   }
 
@@ -592,6 +615,205 @@ async function cmdOnComplete(ctx: CommandContext): Promise<number> {
   );
 
   return 0;
+}
+
+// --- Daemon / Session Lifecycle ---
+
+/**
+ * Best-effort macOS check: is this label currently loaded in launchd?
+ * Returns false on non-macOS or when launchctl is unavailable.
+ */
+function plistLoaded(bridgeHome: string): boolean {
+  if (process.platform !== "darwin") return false;
+  try {
+    const label = getLaunchdLabel(bridgeHome);
+    const out = execSync(`launchctl list 2>/dev/null`, { stdio: "pipe" }).toString();
+    return out.split("\n").some((line) => line.trim().endsWith(label));
+  } catch {
+    return false;
+  }
+}
+
+async function cmdStart(ctx: CommandContext): Promise<number> {
+  const botDir = ctx.config.bot_dir;
+  if (!botDir) {
+    process.stderr.write("Run `bridge setup-bot <dir>` first\n");
+    return 1;
+  }
+
+  const errors = validateConfig(ctx.config);
+  if (errors.length > 0) {
+    for (const e of errors) process.stderr.write(`  - ${e}\n`);
+    return 1;
+  }
+
+  if (isDaemonInstalled(ctx.bridgeHome)) {
+    const [ok, msg] = startDaemon(ctx.bridgeHome);
+    if (ok) {
+      console.log(msg);
+      return 0;
+    }
+    // Detect the common "already loaded / stuck" failure modes.
+    const lower = msg.toLowerCase();
+    const looksStuck =
+      lower.includes("input/output error") ||
+      lower.includes("already") ||
+      lower.includes("bootstrap");
+    if (looksStuck) {
+      const status = getDaemonStatus(ctx.bridgeHome);
+      if (status === "running" || status === "active") {
+        console.log("Daemon already running.");
+        return 0;
+      }
+      if (plistLoaded(ctx.bridgeHome)) {
+        process.stderr.write(msg + "\n");
+        process.stderr.write(
+          "Daemon plist is stale or stuck. Try: `bridge uninstall && bridge install` to reset.\n",
+        );
+        return 1;
+      }
+    }
+    process.stderr.write(msg + "\n");
+    return 1;
+  }
+
+  // Direct tmux invocation — tmux's -c sets session cwd so claude loads bot_dir's
+  // .mcp.json and CLAUDE.md. Passing CLAUDE_BRIDGE_HOME via env avoids shell-wrapper
+  // quoting bugs.
+  const command = [
+    "env",
+    `CLAUDE_BRIDGE_HOME=${ctx.bridgeHome}`,
+    "claude",
+    "--dangerously-load-development-channels",
+    "server:bridge",
+    "--dangerously-skip-permissions",
+  ];
+  const [ok, msg] = startSession(command, ctx.bridgeHome, botDir);
+  if (ok) {
+    // Auto-confirm claude's "Loading development channels" warning prompt.
+    try {
+      const sessionName = getSessionName(ctx.bridgeHome);
+      execSync(`sleep 3 && tmux send-keys -t ${sessionName} Enter`, { stdio: "pipe" });
+    } catch {
+      /* best-effort */
+    }
+    console.log(msg);
+    return 0;
+  }
+  process.stderr.write(msg + "\n");
+  return 1;
+}
+
+async function cmdStop(ctx: CommandContext): Promise<number> {
+  if (isDaemonInstalled(ctx.bridgeHome)) {
+    const [ok, msg] = stopDaemon(ctx.bridgeHome);
+    (ok ? console.log : (s: string) => process.stderr.write(s + "\n"))(msg);
+    return ok ? 0 : 1;
+  }
+  const [ok, msg] = stopSession(ctx.bridgeHome);
+  (ok ? console.log : (s: string) => process.stderr.write(s + "\n"))(msg);
+  return ok ? 0 : 1;
+}
+
+async function cmdRestart(ctx: CommandContext): Promise<number> {
+  // Best-effort stop; ignore "not running" errors
+  try {
+    await cmdStop(ctx);
+  } catch {
+    /* ignore */
+  }
+  return await cmdStart(ctx);
+}
+
+async function cmdInstall(ctx: CommandContext): Promise<number> {
+  const botDir = ctx.config.bot_dir;
+  if (!botDir) {
+    process.stderr.write("Run `bridge setup-bot <dir>` first\n");
+    return 1;
+  }
+
+  const [ok, msg] = installDaemon(botDir, ctx.bridgeHome);
+  if (!ok) {
+    process.stderr.write(msg + "\n");
+    return 1;
+  }
+  console.log(msg);
+
+  if (getFlag(ctx.args, "auto-start")) {
+    const [startedOk, startMsg] = startDaemon(ctx.bridgeHome);
+    (startedOk ? console.log : (s: string) => process.stderr.write(s + "\n"))(startMsg);
+    return startedOk ? 0 : 1;
+  }
+
+  console.log("Run `bridge start` to launch");
+  return 0;
+}
+
+async function cmdUninstall(ctx: CommandContext): Promise<number> {
+  const [ok, msg] = uninstallDaemon(ctx.bridgeHome);
+  (ok ? console.log : (s: string) => process.stderr.write(s + "\n"))(msg);
+  return ok ? 0 : 1;
+}
+
+async function cmdDaemonStatus(ctx: CommandContext): Promise<number> {
+  const platform = getPlatform();
+  const installed = isDaemonInstalled(ctx.bridgeHome);
+  const sessionName = getSessionName(ctx.bridgeHome);
+  const running = sessionRunning(sessionName);
+  const logPath = getLogPath(ctx.bridgeHome);
+
+  console.log(`Platform:         ${platform}`);
+  console.log(`Daemon installed: ${installed ? "yes" : "no"}`);
+  if (installed) {
+    console.log(`Daemon status:    ${getDaemonStatus(ctx.bridgeHome)}`);
+  }
+  console.log(`Session:          ${sessionName}`);
+  console.log(`Session running:  ${running ? "yes" : "no"}`);
+  if (running) {
+    const pid = getSessionPid(ctx.bridgeHome);
+    const uptime = getSessionUptime(ctx.bridgeHome);
+    if (pid !== null) console.log(`Session PID:      ${pid}`);
+    if (uptime !== null) console.log(`Session uptime:   ${uptime}`);
+  }
+  console.log(`Log path:         ${logPath}`);
+  return 0;
+}
+
+async function cmdAttach(ctx: CommandContext): Promise<number> {
+  const sessionName = getSessionName(ctx.bridgeHome);
+  if (!sessionRunning(sessionName)) {
+    process.stderr.write("No session running. Run `bridge start` first.\n");
+    return 1;
+  }
+  try {
+    execSync(`tmux attach -t ${sessionName}`, { stdio: "inherit" });
+    return 0;
+  } catch {
+    // tmux exits non-zero on user detach (Ctrl-b d) or interrupt; treat as success.
+    return 0;
+  }
+}
+
+async function cmdLogs(ctx: CommandContext): Promise<number> {
+  const tail = parseInt(getArg(ctx.args, "tail") ?? "50", 10);
+  const follow = getFlag(ctx.args, "follow") || ctx.args.includes("-f");
+  const logPath = getLogPath(ctx.bridgeHome);
+
+  if (!existsSync(logPath)) {
+    console.log(`No log file yet at ${logPath}`);
+    return 0;
+  }
+
+  const followFlag = follow ? "-f" : "";
+  try {
+    execSync(`tail -n ${tail} ${followFlag} ${logPath}`, { stdio: "inherit" });
+    return 0;
+  } catch (err) {
+    // tail -f exits non-zero if user interrupts with Ctrl-C; treat as clean exit.
+    if (follow) return 0;
+    process.stderr.write(`Failed to read log: ${(err as Error).message}\n`);
+    return 1;
+  }
 }
 
 // --- Command Registry ---
@@ -620,6 +842,16 @@ export const COMMAND_HANDLERS: Record<string, CommandHandler> = {
   "schedule-list": cmdScheduleList,
   "schedule-pause": cmdSchedulePause,
   "schedule-resume": cmdScheduleResume,
+  "setup-bot": cmdSetupBot,
+  start: cmdStart,
+  stop: cmdStop,
+  restart: cmdRestart,
+  install: cmdInstall,
+  uninstall: cmdUninstall,
+  "daemon-status": cmdDaemonStatus,
+  logs: cmdLogs,
+  attach: cmdAttach,
+  doctor: cmdDoctor,
 };
 
 const COMMAND_DESCRIPTIONS: Record<string, string> = {
@@ -646,13 +878,75 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
   "schedule-list": "List schedules",
   "schedule-pause": "Pause a schedule",
   "schedule-resume": "Resume a schedule",
+  "setup-bot": "Scaffold the bridge bot directory (CLAUDE.md, .mcp.json)",
+  start: "Launch the bridge bot (daemon or tmux session)",
+  stop: "Stop the bridge bot",
+  restart: "Restart the bridge bot",
+  install: "Install OS daemon (launchd/systemd)",
+  uninstall: "Uninstall OS daemon",
+  "daemon-status": "Show daemon and session lifecycle status",
+  logs: "Tail bridge log file",
+  attach: "Attach to the running bot tmux session (Ctrl-b d to detach)",
+  doctor: "Diagnose bridge setup and report [ok]/[warn]/[fail] checks",
 };
 
+// Groups for --help output. Commands not in any group fall through to "Other".
+const COMMAND_GROUPS: Array<{ title: string; commands: string[] }> = [
+  {
+    title: "Agent lifecycle",
+    commands: ["create-agent", "delete-agent", "list-agents", "set-model", "memory", "status"],
+  },
+  {
+    title: "Task execution",
+    commands: ["dispatch", "kill", "history", "cost", "on-complete"],
+  },
+  {
+    title: "Loops",
+    commands: [
+      "loop", "loop-status", "loop-cancel", "loop-approve", "loop-reject",
+      "loop-list", "loop-history",
+    ],
+  },
+  {
+    title: "Schedules",
+    commands: [
+      "schedule-add", "schedule-remove", "schedule-list",
+      "schedule-pause", "schedule-resume",
+    ],
+  },
+  {
+    title: "Bot lifecycle",
+    commands: ["start", "stop", "restart", "attach", "daemon-status", "logs"],
+  },
+  {
+    title: "Setup / daemon",
+    commands: ["setup-bot", "install", "uninstall"],
+  },
+  {
+    title: "Diagnostics",
+    commands: ["doctor"],
+  },
+];
+
 function printUsage(): void {
-  console.log("Usage: bridge-cli <command> [options]\n");
-  console.log("Commands:");
-  for (const [cmd, desc] of Object.entries(COMMAND_DESCRIPTIONS)) {
-    console.log(`  ${cmd.padEnd(20)} ${desc}`);
+  console.log("Usage: bridge <command> [options]\n");
+  const printed = new Set<string>();
+  for (const group of COMMAND_GROUPS) {
+    console.log(`${group.title}:`);
+    for (const cmd of group.commands) {
+      const desc = COMMAND_DESCRIPTIONS[cmd];
+      if (desc === undefined) continue;
+      console.log(`  ${cmd.padEnd(20)} ${desc}`);
+      printed.add(cmd);
+    }
+    console.log("");
+  }
+  const other = Object.entries(COMMAND_DESCRIPTIONS).filter(([cmd]) => !printed.has(cmd));
+  if (other.length > 0) {
+    console.log("Other:");
+    for (const [cmd, desc] of other) {
+      console.log(`  ${cmd.padEnd(20)} ${desc}`);
+    }
   }
 }
 

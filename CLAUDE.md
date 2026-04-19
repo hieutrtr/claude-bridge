@@ -4,7 +4,7 @@ Multi-session Claude Code dispatch from Telegram. Each session = agent + project
 
 ## Architecture
 
-Bridge Bot (Claude Code + Telegram MCP) → bridge-cli → spawns `claude --agent --session-id --worktree -p "task"` → Stop hook fires on-complete → SQLite updated → Telegram notified.
+Bridge Bot (Claude Code + Telegram MCP) → `bridge` CLI → spawns `claude --agent --session-id --worktree -p "task"` → Stop hook fires `bridge on-complete` → SQLite updated → Telegram notified.
 
 Built on top of native Claude Code features: `--agent`, `--session-id`, `isolation: worktree`, Auto Memory, Stop hooks, prompt caching.
 
@@ -12,8 +12,9 @@ Built on top of native Claude Code features: `--agent`, `--session-id`, `isolati
 
 ```
 src/                     TypeScript source (Bun runtime)
-  cli/                   CLI entry point (bridge-cli command dispatcher)
-    index.ts             Main CLI dispatcher
+  cli/                   CLI entry point (bridge command dispatcher)
+    index.ts             Main CLI dispatcher + lifecycle commands
+    setup-bot.ts         `bridge setup-bot` scaffolder (CLAUDE.md, .mcp.json, agents dir, config.json)
     agent-md.ts          Agent .md file generator
     claude-md.ts         CLAUDE.md initialization
     memory.ts            Auto Memory reader
@@ -32,9 +33,10 @@ src/                     TypeScript source (Bun runtime)
     evaluator.ts         Loop evaluator
     scheduler.ts         Scheduled task runner
   infra/                 Infrastructure
-    daemon.ts            Daemon lifecycle
-    bridge-cmd.ts        Bridge shortcut command
+    daemon.ts            Daemon lifecycle (launchd/systemd)
+    bridge-cmd.ts        tmux session helpers + config validation
     permissions.ts       Permission relay
+    startup.ts           StartupOrchestrator (watcher + notify loop + MCP)
   mcp/                   MCP server
     server.ts            MCP server entry point
     tools.ts             Tool definitions
@@ -61,9 +63,21 @@ docs/                    Documentation
 
 - **Session = Agent + Project**: `backend` + `/projects/my-api` → session_id `backend--my-api`
 - **Agent .md files**: Generated in `{bot_dir}/.claude/agents/bridge--{session_id}.md` (project-level, per-instance isolated)
-- **Stop hook**: Agent frontmatter includes Stop hook → calls on-complete.ts → updates SQLite
+- **Stop hook**: Agent frontmatter includes Stop hook → calls `bridge on-complete` → updates SQLite
 - **Worktree isolation**: Each task runs in isolated git worktree (no concurrent corruption)
 - **Auto Memory**: Claude Code auto-learns patterns. Bridge reads via `/memory` command.
+
+## CLI commands
+
+The `bridge` binary groups commands by concern. Run `bridge --help` for the authoritative list.
+
+- **Agent lifecycle:** `create-agent`, `delete-agent`, `list-agents`, `set-model`, `memory`, `status`
+- **Task execution:** `dispatch`, `kill`, `history`, `cost`, `on-complete` (stop-hook callback)
+- **Loops:** `loop`, `loop-status`, `loop-cancel`, `loop-approve`, `loop-reject`, `loop-list`, `loop-history`
+- **Schedules:** `schedule-add`, `schedule-remove`, `schedule-list`, `schedule-pause`, `schedule-resume`
+- **Bot lifecycle:** `start`, `stop`, `restart`, `attach`, `daemon-status`, `logs`
+- **Setup / daemon:** `setup-bot`, `install`, `uninstall`
+- **Diagnostics:** `doctor`
 
 ## Multi-Instance Setup
 
@@ -73,21 +87,27 @@ Claude Bridge supports multiple isolated instances using `CLAUDE_BRIDGE_HOME`:
 ```bash
 bridge start              # Uses ~/.claude-bridge (default)
 bridge stop
-bridge status
+bridge status             # agents + running tasks
+bridge daemon-status      # platform, daemon state, session pid/uptime, log path
 ```
 
 **Additional instances (e.g., tam):**
 ```bash
 CLAUDE_BRIDGE_HOME=~/.claude-bridge-tam bridge start
 CLAUDE_BRIDGE_HOME=~/.claude-bridge-tam bridge stop
-CLAUDE_BRIDGE_HOME=~/.claude-bridge-tam bridge status
+CLAUDE_BRIDGE_HOME=~/.claude-bridge-tam bridge daemon-status
 ```
 
 ## Build & Test
 
+After `bun install`, the `bridge` binary declared in `package.json` (`bin`) is available on `PATH` (via `bun link` or your package manager's shim). For contributors working in the repo, the dev-invocation form `bun run src/cli/index.ts <command>` is equivalent.
+
 ```bash
 # Install dependencies
 bun install
+
+# Make 'bridge' available on PATH
+bun link
 
 # Run tests
 bun test
@@ -95,11 +115,14 @@ bun test
 # Typecheck
 bun run typecheck    # or: tsc --noEmit
 
-# Run CLI directly
-bun run src/cli/index.ts create-agent backend /path/to/project --purpose "API dev"
-bun run src/cli/index.ts dispatch backend "add pagination"
+# Run via the installed binary
+bridge create-agent backend /path/to/project --purpose "API dev"
+bridge dispatch backend "add pagination"
+bridge list-agents
+bridge status
+
+# Run directly from source (no link needed)
 bun run src/cli/index.ts list-agents
-bun run src/cli/index.ts status
 
 # Build
 bun run build
@@ -127,10 +150,13 @@ Bun runtime. Dependencies: `@modelcontextprotocol/sdk`, `grammy`, `zod`.
 # 1. Edit code in src/
 # 2. Run tests: bun test
 # 3. Typecheck: tsc --noEmit
-# 4. Re-setup bot dirs
-bun run src/cli/index.ts setup-bot ~/projects/bridge-bot
+# 4. Scaffold / re-scaffold the bot dir (interactive; prompts for Telegram token)
+bridge setup-bot ~/projects/bridge-bot
+#    or non-interactive:
+bridge setup-bot ~/projects/bridge-bot --telegram-token "$TELEGRAM_TOKEN" --no-prompt
+bridge doctor  # verify everything wired up
 # 5. Restart instances
-bridge stop && bridge start
+bridge restart
 # 6. Test on Telegram before pushing
 # 7. Commit, tag, push, release
 ```
@@ -138,7 +164,7 @@ bridge stop && bridge start
 ### Multi-instance
 - Main: CLAUDE_BRIDGE_HOME=~/.claude-bridge (default)
 - Tam: CLAUDE_BRIDGE_HOME=~/.claude-bridge-tam
-- Each instance has its own DB, agents, config
+- Each instance has its own DB, agents, config, and daemon service name
 
 ## Debugging Critical Bugs
 

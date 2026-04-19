@@ -7,6 +7,7 @@
 
 import { join } from "path";
 import { homedir } from "os";
+import { mkdirSync, writeFileSync } from "fs";
 import { BridgeDatabase } from "../data/db.js";
 import { MessageDatabase } from "../data/message-db.js";
 import { SessionManager } from "../data/session.js";
@@ -338,6 +339,73 @@ async function handleTool(
     case "bridge_schedule_resume": {
       const ok = db.resumeSchedule(String(args["name_or_id"]));
       return ok ? text("Schedule resumed") : error("Schedule not found");
+    }
+
+    // --- Channel / Push support ---
+    case "bridge_check_messages": {
+      const msgDb = new MessageDatabase(join(bridgeHome, "messages.db"));
+      try {
+        const pending = msgDb.getPendingInbound();
+        if (pending.length === 0) return text("No pending messages");
+        const messages = pending.map((m) => ({
+          tracking_id: m.id,
+          chat_id: m.chat_id,
+          user: m.username,
+          text: m.message_text,
+        }));
+        return text(JSON.stringify({ pending_count: pending.length, messages }));
+      } finally {
+        msgDb.close();
+      }
+    }
+
+    case "download_attachment": {
+      const fileId = args["file_id"] ? String(args["file_id"]) : "";
+      if (!fileId) return error("file_id is required");
+
+      const notifier = new Notifier(bridgeHome);
+      const token = notifier.getBotToken();
+      if (!token) return error("TELEGRAM_BOT_TOKEN not configured");
+
+      const inboxDir = join(bridgeHome, "inbox");
+      mkdirSync(inboxDir, { recursive: true });
+      try {
+        // Call getFile via plain HTTP (no grammy dep needed at handler level).
+        const getFileResp = await fetch(
+          `https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`,
+        );
+        if (!getFileResp.ok) return error(`getFile HTTP ${getFileResp.status}`);
+        const body = (await getFileResp.json()) as {
+          ok: boolean;
+          result?: { file_path?: string; file_unique_id?: string; file_size?: number };
+          description?: string;
+        };
+        if (!body.ok || !body.result?.file_path) {
+          return error(`getFile failed: ${body.description ?? "no file_path"}`);
+        }
+
+        const filePath = body.result.file_path;
+        const fileSize = body.result.file_size ?? 0;
+        const FILE_LIMIT = 20 * 1024 * 1024;
+        if (fileSize && fileSize > FILE_LIMIT) {
+          return error(`File too large (${(fileSize / 1024 / 1024).toFixed(1)}MB > 20MB)`);
+        }
+
+        const dlResp = await fetch(
+          `https://api.telegram.org/file/bot${token}/${filePath}`,
+        );
+        if (!dlResp.ok) return error(`download HTTP ${dlResp.status}`);
+        const buf = Buffer.from(await dlResp.arrayBuffer());
+        if (buf.length > FILE_LIMIT) return error("Downloaded file exceeds 20MB limit");
+
+        const ext = (filePath.split(".").pop() ?? "bin").replace(/[^a-zA-Z0-9]/g, "");
+        const uniqueId = (body.result.file_unique_id ?? fileId).replace(/[^a-zA-Z0-9_-]/g, "");
+        const localPath = join(inboxDir, `${Date.now()}-${uniqueId}.${ext}`);
+        writeFileSync(localPath, buf);
+        return text(localPath);
+      } catch (err) {
+        return error(`download error: ${(err as Error).message}`);
+      }
     }
 
     default:

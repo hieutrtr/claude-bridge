@@ -1,7 +1,7 @@
 /**
  * MCP Tool Definitions & Python CLI Fallback
  *
- * Wave 1: All tools shell out to `bridge-cli` (Python) via subprocess.
+ * Wave 1: All tools shell out to `bridge` (Python) via subprocess.
  * Wave 7: Tools will be reimplemented with native TS layers.
  */
 
@@ -49,6 +49,8 @@ export const TOOL_NAMES = [
   "bridge_schedule_list",
   "bridge_schedule_pause",
   "bridge_schedule_resume",
+  "bridge_check_messages",
+  "download_attachment",
 ] as const;
 
 // --- Tool Definitions ---
@@ -321,12 +323,28 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ["name_or_id"],
     },
   },
+  {
+    name: "bridge_check_messages",
+    description: "Check for pending inbound Telegram messages that push notifications may have missed. Safety net; call after each response.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "download_attachment",
+    description: "Download a Telegram file attachment by file_id. Returns the local file path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        file_id: { type: "string", description: "attachment_file_id from a channel message's meta" },
+      },
+      required: ["file_id"],
+    },
+  },
 ];
 
 // --- CLI Argument Builder ---
 
 /**
- * Convert MCP tool name + args into bridge-cli CLI arguments.
+ * Convert MCP tool name + args into bridge CLI arguments.
  * Used in Wave 1 Python fallback mode.
  */
 export function buildCliArgs(
@@ -431,6 +449,11 @@ export function buildCliArgs(
       return ["schedule", "pause", String(args["name_or_id"])];
     case "bridge_schedule_resume":
       return ["schedule", "resume", String(args["name_or_id"])];
+    case "bridge_check_messages":
+      return ["get-messages"];
+    case "download_attachment":
+      // No Python CLI fallback — grammy-only.
+      throw new Error("download_attachment has no CLI fallback (grammy-only)");
     default:
       throw new Error(`Unknown tool: ${toolName}`);
   }
@@ -439,7 +462,7 @@ export function buildCliArgs(
 // --- Python Fallback Handler ---
 
 /**
- * Execute a tool by shelling out to bridge-cli (Python).
+ * Execute a tool by shelling out to bridge (Python).
  * This is the Wave 1 fallback — replaced with native TS in later waves.
  */
 export async function executeTool(
@@ -449,7 +472,7 @@ export async function executeTool(
   const cliArgs = buildCliArgs(toolName, args);
 
   try {
-    const proc = Bun.spawn(["bridge-cli", ...cliArgs], {
+    const proc = Bun.spawn(["bridge", ...cliArgs], {
       stdout: "pipe",
       stderr: "pipe",
       env: { ...process.env },
@@ -461,7 +484,7 @@ export async function executeTool(
 
     if (exitCode !== 0) {
       return {
-        content: [{ type: "text", text: stderr || `bridge-cli exited with code ${exitCode}` }],
+        content: [{ type: "text", text: stderr || `bridge exited with code ${exitCode}` }],
         isError: true,
       };
     }
@@ -471,7 +494,7 @@ export async function executeTool(
     };
   } catch (err) {
     return {
-      content: [{ type: "text", text: `Failed to execute bridge-cli: ${err}` }],
+      content: [{ type: "text", text: `Failed to execute bridge: ${err}` }],
       isError: true,
     };
   }
