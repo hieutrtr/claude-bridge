@@ -82,9 +82,12 @@ bridge_home=${shSingleQuote(bridgeHome)}
 if ! tmux has-session -t "$session"; then
   tmux new-session -d -s "$session" -c "$botdir" "CLAUDE_BRIDGE_HOME=$bridge_home claude --dangerously-load-development-channels server:bridge --dangerously-skip-permissions"
   tmux pipe-pane -t "$session" "cat >> $logfile"
-  # Auto-confirm claude's "Loading development channels" warning prompt
-  # (default selection is "I am using this for local development").
+  # Auto-confirm two warning prompts in order:
+  #   1) "Loading development channels" (default: local development)
+  #   2) --dangerously-skip-permissions bypass-permissions acknowledgement
   sleep 3
+  tmux send-keys -t "$session" Enter
+  sleep 2
   tmux send-keys -t "$session" Enter
 fi
 # Keep this wrapper alive as long as the session exists so the supervisor

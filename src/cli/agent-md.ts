@@ -115,6 +115,22 @@ export function deleteAgentMd(
   return false;
 }
 
+/**
+ * Install a Stop hook that fires `bridge on-complete` when Claude Code
+ * finishes a task in `projectDir`.
+ *
+ * Claude Code's actual schema (from its plugin docs) is:
+ *
+ *   { "hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": "..." } ] } ] } }
+ *
+ * — event name is capitalized, and each group has a nested `hooks: [{ type, command }]`
+ * array. Earlier versions of this function emitted `{ hooks: { stop: [{ command }] } }`
+ * which Claude Code silently ignored, so tasks never triggered on-complete and got
+ * stranded until ProcessWatcher marked them failed.
+ *
+ * When upgrading an existing settings.local.json, we also rewrite any legacy
+ * lowercase `stop` entries and flat `{command}` shapes into the correct form.
+ */
 export function installStopHook(
   projectDir: string,
   sessionId: string,
@@ -135,17 +151,50 @@ export function installStopHook(
 
   const hookCmd = `CLAUDE_BRIDGE_HOME=${home} bridge on-complete --session-id ${sessionId}`;
 
-  // Ensure hooks.stop array exists and contains our hook
-  if (!settings["hooks"]) settings["hooks"] = {};
-  const hooks = settings["hooks"] as Record<string, unknown>;
-  if (!Array.isArray(hooks["stop"])) hooks["stop"] = [];
-  const stopHooks = hooks["stop"] as Array<Record<string, string>>;
-
-  // Check if hook already exists
-  const exists = stopHooks.some((h) => h["command"]?.includes("on-complete"));
-  if (!exists) {
-    stopHooks.push({ command: hookCmd });
+  if (!settings["hooks"] || typeof settings["hooks"] !== "object") {
+    settings["hooks"] = {};
   }
+  const hooks = settings["hooks"] as Record<string, unknown>;
+
+  // Migrate legacy lowercase `stop` entries, if any.
+  if (hooks["stop"] && !hooks["Stop"]) {
+    hooks["Stop"] = hooks["stop"];
+  }
+  delete hooks["stop"];
+
+  if (!Array.isArray(hooks["Stop"])) hooks["Stop"] = [];
+  const stopGroups = hooks["Stop"] as Array<Record<string, unknown>>;
+
+  // Rewrite legacy flat `{ command }` groups into the nested Claude Code shape.
+  for (let i = 0; i < stopGroups.length; i++) {
+    const group = stopGroups[i]!;
+    const flatCmd = typeof group["command"] === "string" ? (group["command"] as string) : null;
+    if (flatCmd && !Array.isArray(group["hooks"])) {
+      stopGroups[i] = { hooks: [{ type: "command", command: flatCmd }] };
+    }
+  }
+
+  // Remove any existing on-complete hook for this session — older installs
+  // pointed at the legacy Python `bridge-cli` binary which no longer exists.
+  // Other sessions' hooks are left alone. Drop groups that end up empty.
+  const sessionMarker = `--session-id ${sessionId}`;
+  for (let i = stopGroups.length - 1; i >= 0; i--) {
+    const group = stopGroups[i]!;
+    const inner = group["hooks"];
+    if (!Array.isArray(inner)) continue;
+    const innerArr = inner as Array<Record<string, unknown>>;
+    const filtered = innerArr.filter((h) => {
+      const cmd = typeof h["command"] === "string" ? (h["command"] as string) : "";
+      return !(cmd.includes("on-complete") && cmd.includes(sessionMarker));
+    });
+    if (filtered.length === 0) {
+      stopGroups.splice(i, 1);
+    } else {
+      group["hooks"] = filtered;
+    }
+  }
+
+  stopGroups.push({ hooks: [{ type: "command", command: hookCmd }] });
 
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
   return settingsPath;

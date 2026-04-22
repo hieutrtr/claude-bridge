@@ -51,6 +51,24 @@ export class BridgeDatabase implements IDatabase {
     this.db.exec("PRAGMA journal_mode=WAL");
     this.db.exec("PRAGMA foreign_keys=ON");
     this.initSchema();
+    this.runMigrations();
+  }
+
+  /**
+   * Apply additive schema changes on an existing DB. `CREATE TABLE IF NOT EXISTS`
+   * doesn't modify an existing table, so new columns must be added explicitly.
+   * Each migration is idempotent (checks `PRAGMA table_info` first).
+   */
+  private runMigrations(): void {
+    this.addColumnIfMissing("loops", "channel", "TEXT");
+    this.addColumnIfMissing("loops", "channel_chat_id", "TEXT");
+    this.addColumnIfMissing("loops", "user_id", "TEXT");
+  }
+
+  private addColumnIfMissing(table: string, column: string, decl: string): void {
+    const cols = this.db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (cols.some((c) => c.name === column)) return;
+    this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
   }
 
   private initSchema(): void {
@@ -150,7 +168,10 @@ export class BridgeDatabase implements IDatabase {
         started_at TEXT NOT NULL,
         finished_at TEXT,
         finish_reason TEXT,
-        current_task_id TEXT
+        current_task_id TEXT,
+        channel TEXT,
+        channel_chat_id TEXT,
+        user_id TEXT
       );
 
       CREATE TABLE IF NOT EXISTS loop_iterations (
@@ -511,12 +532,15 @@ export class BridgeDatabase implements IDatabase {
     maxIterations: number = 10,
     maxConsecutiveFailures: number = 3,
     maxCostUsd: number | null = null,
+    channel: string | null = null,
+    channelChatId: string | null = null,
+    userId: string | null = null,
   ): string {
     const loopId = crypto.randomUUID().slice(0, 8);
     this.db.run(
-      `INSERT INTO loops (loop_id, agent, project, goal, done_when, loop_type, max_iterations, max_consecutive_failures, max_cost_usd, started_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [loopId, agent, project, goal, doneWhen, loopType, maxIterations, maxConsecutiveFailures, maxCostUsd, utcnow()],
+      `INSERT INTO loops (loop_id, agent, project, goal, done_when, loop_type, max_iterations, max_consecutive_failures, max_cost_usd, started_at, channel, channel_chat_id, user_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [loopId, agent, project, goal, doneWhen, loopType, maxIterations, maxConsecutiveFailures, maxCostUsd, utcnow(), channel, channelChatId, userId],
     );
     return loopId;
   }

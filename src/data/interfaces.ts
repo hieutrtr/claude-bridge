@@ -106,6 +106,9 @@ export interface IDatabase {
     maxIterations?: number,
     maxConsecutiveFailures?: number,
     maxCostUsd?: number | null,
+    channel?: string | null,
+    channelChatId?: string | null,
+    userId?: string | null,
   ): string;
   getLoop(loopId: string): Loop | null;
   getActiveLoopForAgent(agent: string): Loop | null;

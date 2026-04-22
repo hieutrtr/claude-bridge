@@ -47,6 +47,9 @@ export interface ILoopOrchestrator {
       maxConsecutiveFailures?: number;
       loopType?: string;
       maxCostUsd?: number | null;
+      channel?: string;
+      channelChatId?: string;
+      userId?: string;
     },
   ): Promise<string>;
 

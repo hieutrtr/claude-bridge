@@ -8,7 +8,8 @@
 import { join } from "path";
 import { createHash } from "crypto";
 import { mkdirSync, openSync } from "fs";
-import type { Task } from "../types.js";
+import type { Agent, Task } from "../types.js";
+import type { IDatabase } from "../data/interfaces.js";
 import type { IDispatcher, DispatchOptions } from "./interfaces.js";
 
 export class Dispatcher implements IDispatcher {
@@ -148,5 +149,44 @@ export class Dispatcher implements IDispatcher {
     } catch {
       return false;
     }
+  }
+}
+
+/**
+ * Begin executing a pending task: flip agent to running, mark task running
+ * with started_at, spawn the claude subprocess, and record the pid. On spawn
+ * failure, mark the task failed and release the agent.
+ *
+ * Shared by the CLI `dispatch` command, MCP `bridge_dispatch` tool, and the
+ * stop-hook's auto-dequeue path so all three take the same bookkeeping steps.
+ */
+export async function startTask(
+  db: IDatabase,
+  dispatcher: IDispatcher,
+  task: Task,
+  agent: Agent,
+): Promise<number> {
+  db.updateAgentState(task.session_id, "running");
+  db.updateTask(task.id, {
+    status: "running",
+    started_at: new Date().toISOString(),
+  });
+  try {
+    const pid = await dispatcher.dispatch(
+      task,
+      agent.agent_file,
+      agent.project_dir,
+      { model: agent.model },
+    );
+    db.updateTask(task.id, { pid });
+    return pid;
+  } catch (err) {
+    db.updateTask(task.id, {
+      status: "failed",
+      error_message: `Dispatch failed: ${(err as Error).message}`,
+      completed_at: new Date().toISOString(),
+    });
+    db.updateAgentState(task.session_id, "idle");
+    throw err;
   }
 }

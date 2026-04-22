@@ -8,15 +8,33 @@ import { tmpdir } from "os";
 import { LoopOrchestrator } from "../../src/orchestration/loop.js";
 import { LoopEvaluator } from "../../src/orchestration/evaluator.js";
 import { BridgeDatabase } from "../../src/data/db.js";
+import type { IDispatcher } from "../../src/execution/interfaces.js";
+
+// Fake dispatcher: orchestrator tests exercise state-machine logic, not real
+// subprocess spawning. Each `dispatch` returns a synthetic pid and records the
+// call so tests can inspect it if needed.
+function makeFakeDispatcher(): IDispatcher & { calls: number } {
+  const disp = {
+    calls: 0,
+    async dispatch() { disp.calls++; return 12345 + disp.calls; },
+    async cancel() { return true; },
+    isRunning() { return false; },
+    sessionIdToUuid(sid: string) { return sid; },
+    getResultFile(sid: string, id: number) { return `/tmp/${sid}-${id}.result.json`; },
+    getStderrFile(sid: string, id: number) { return `/tmp/${sid}-${id}.stderr`; },
+  };
+  return disp;
+}
 
 function setup() {
   const tmpDir = mkdtempSync(join(tmpdir(), "bridge-loop-"));
   const db = new BridgeDatabase(join(tmpDir, "bridge.db"));
   const evaluator = new LoopEvaluator();
-  const orchestrator = new LoopOrchestrator(tmpDir, db, evaluator);
+  const dispatcher = makeFakeDispatcher();
+  const orchestrator = new LoopOrchestrator(tmpDir, db, evaluator, dispatcher);
   // Create test agent
-  db.createAgent("be", "/project", "be--project", "Backend dev");
-  return { tmpDir, db, evaluator, orchestrator };
+  db.createAgent("be", tmpDir, "be--project", "Backend dev");
+  return { tmpDir, db, evaluator, orchestrator, dispatcher };
 }
 
 function teardown(ctx: { tmpDir: string; db: BridgeDatabase }) {
@@ -76,6 +94,25 @@ describe("W4.2: LoopOrchestrator", () => {
       teardown(ctx);
     });
 
+    test("persists channel info and propagates to iteration tasks", async () => {
+      const ctx = setup();
+      const loopId = await ctx.orchestrator.startLoop("be", "goal", "command:true", {
+        channel: "telegram", channelChatId: "42", userId: "u1",
+      });
+      const loop = ctx.db.getLoop(loopId)!;
+      expect(loop.channel).toBe("telegram");
+      expect(loop.channel_chat_id).toBe("42");
+      expect(loop.user_id).toBe("u1");
+
+      // Iteration task should inherit the channel info
+      const iter = ctx.db.getLoopIterations(loopId)[0]!;
+      const taskId = parseInt(iter.task_id!, 10);
+      const task = ctx.db.getTask(taskId)!;
+      expect(task.channel_chat_id).toBe("42");
+      expect(task.user_id).toBe("u1");
+      teardown(ctx);
+    });
+
     test("respects maxCostUsd", async () => {
       const ctx = setup();
       const loopId = await ctx.orchestrator.startLoop("be", "goal", "command:true", {
@@ -120,6 +157,26 @@ describe("W4.2: LoopOrchestrator", () => {
       const loop = ctx.db.getLoop(loopId)!;
       expect(loop.current_iteration).toBe(2);
       expect(loop.status).toBe("running");
+      teardown(ctx);
+    });
+
+    test("emits end-of-loop notification when reaching terminal state", async () => {
+      const ctx = setup();
+      const loopId = await ctx.orchestrator.startLoop(
+        "be", "goal", "file_exists:nonexistent.txt",
+        { maxIterations: 1, channel: "telegram", channelChatId: "99" },
+      );
+      const iter = ctx.db.getLoopIterations(loopId)[0]!;
+      await ctx.orchestrator.onTaskComplete(loopId, iter.task_id!, "failed", 0.02);
+
+      const loop = ctx.db.getLoop(loopId)!;
+      expect(loop.status).toBe("failed");
+
+      const notifs = ctx.db.getPendingNotifications();
+      const loopEnd = notifs.find((n) => n.message.includes(`Loop ${loopId}`));
+      expect(loopEnd).toBeTruthy();
+      expect(loopEnd!.chat_id).toBe("99");
+      expect(loopEnd!.message).toContain("failed");
       teardown(ctx);
     });
 

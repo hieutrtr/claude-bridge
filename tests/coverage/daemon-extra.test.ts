@@ -80,6 +80,10 @@ describe("daemon.ts coverage", () => {
         expect(msg).toContain("Unsupported");
       }
 
+      // Required cleanup: installDaemon writes to real ~/Library/LaunchAgents
+      // (or ~/.config/systemd/user). Orphaned plists trigger macOS "Background
+      // Items Added" notifications on every system event.
+      uninstallDaemon(tmpDir);
       rmSync(tmpDir, { recursive: true, force: true });
       rmSync(botDir, { recursive: true, force: true });
     });
@@ -95,6 +99,7 @@ describe("daemon.ts coverage", () => {
         expect(ok).toBe(true);
       }
 
+      uninstallDaemon(tmpDir);
       rmSync(tmpDir, { recursive: true, force: true });
       rmSync(botDir, { recursive: true, force: true });
     });

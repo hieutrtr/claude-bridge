@@ -11,11 +11,11 @@ import { mkdirSync, writeFileSync } from "fs";
 import { BridgeDatabase } from "../data/db.js";
 import { MessageDatabase } from "../data/message-db.js";
 import { SessionManager } from "../data/session.js";
-import { Dispatcher } from "../execution/dispatcher.js";
+import { Dispatcher, startTask } from "../execution/dispatcher.js";
 import { LoopOrchestrator } from "../orchestration/loop.js";
 import { LoopEvaluator } from "../orchestration/evaluator.js";
 import { Notifier } from "../execution/notify.js";
-import { generateAgentMd, writeAgentMd } from "../cli/agent-md.js";
+import { generateAgentMd, writeAgentMd, installStopHook } from "../cli/agent-md.js";
 import type { ToolResult } from "./tools.js";
 
 function getBridgeHome(): string {
@@ -80,6 +80,9 @@ async function handleTool(
       const config = {};
       const botDir = (config as Record<string, unknown>)["bot_dir"] as string | undefined;
       writeAgentMd(sessionId, content, botDir);
+      // Install stop hook in the project's .claude/settings.local.json —
+      // Claude Code reads hooks from there, not from the agent .md frontmatter.
+      installStopHook(path, sessionId, bridgeHome);
       db.createAgent(name, path, sessionId, agentFile, purpose, model);
       return text(`Created agent "${name}" → ${sessionId}`);
     }
@@ -106,7 +109,17 @@ async function handleTool(
         db.updateTask(taskId, { status: "queued" });
         return text(`Task #${taskId} queued (agent busy)`);
       }
-      return text(`Task #${result.taskId} dispatched to ${agentName}`);
+
+      const taskId = result.taskId!;
+      const task = db.getTask(taskId);
+      if (!task) return error(`Task #${taskId} not found after create`);
+      const dispatcher = new Dispatcher(bridgeHome);
+      try {
+        await startTask(db, dispatcher, task, agent);
+      } catch (err) {
+        return error(`Dispatch failed: ${(err as Error).message}`);
+      }
+      return text(`Task #${taskId} dispatched to ${agentName}`);
     }
 
     case "bridge_status": {
@@ -209,7 +222,10 @@ async function handleTool(
     // --- Loop Operations ---
     case "bridge_loop": {
       const evaluator = new LoopEvaluator();
-      const orchestrator = new LoopOrchestrator(bridgeHome, db, evaluator);
+      const dispatcher = new Dispatcher(bridgeHome);
+      const orchestrator = new LoopOrchestrator(bridgeHome, db, evaluator, dispatcher);
+      const chatId = args["chat_id"] ? String(args["chat_id"]) : undefined;
+      const userId = args["user_id"] ? String(args["user_id"]) : undefined;
       const loopId = await orchestrator.startLoop(
         String(args["agent"]),
         String(args["goal"]),
@@ -218,6 +234,11 @@ async function handleTool(
           maxIterations: args["max_iterations"] ? Number(args["max_iterations"]) : undefined,
           loopType: args["loop_type"] ? String(args["loop_type"]) : undefined,
           maxCostUsd: args["max_cost_usd"] ? Number(args["max_cost_usd"]) : null,
+          // Bot agent always invokes via MCP with Telegram context; hardcode
+          // "telegram" when chat_id is present so Notifier routes correctly.
+          channel: chatId ? "telegram" : undefined,
+          channelChatId: chatId,
+          userId,
         },
       );
       return text(`Started loop ${loopId}`);
@@ -256,7 +277,8 @@ async function handleTool(
 
     case "bridge_loop_reject": {
       const evaluator = new LoopEvaluator();
-      const orchestrator = new LoopOrchestrator(bridgeHome, db, evaluator);
+      const dispatcher = new Dispatcher(bridgeHome);
+      const orchestrator = new LoopOrchestrator(bridgeHome, db, evaluator, dispatcher);
       const ok = await orchestrator.rejectLoop(
         String(args["loop_id"]),
         args["feedback"] ? String(args["feedback"]) : undefined,

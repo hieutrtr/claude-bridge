@@ -7,6 +7,8 @@
 
 import type { Loop, LoopIteration } from "../types.js";
 import type { IDatabase } from "../data/interfaces.js";
+import type { IDispatcher } from "../execution/interfaces.js";
+import { startTask } from "../execution/dispatcher.js";
 import type { ILoopOrchestrator, ILoopEvaluator, AgentLoopResult } from "./interfaces.js";
 
 const COST_WARNING_THRESHOLD = 0.80;
@@ -17,6 +19,7 @@ export class LoopOrchestrator implements ILoopOrchestrator {
     private homeDir: string,
     private db: IDatabase,
     private evaluator: ILoopEvaluator,
+    private dispatcher?: IDispatcher,
   ) {}
 
   async startLoop(
@@ -28,6 +31,9 @@ export class LoopOrchestrator implements ILoopOrchestrator {
       maxConsecutiveFailures?: number;
       loopType?: string;
       maxCostUsd?: number | null;
+      channel?: string;
+      channelChatId?: string;
+      userId?: string;
     },
   ): Promise<string> {
     // Validate done condition
@@ -53,7 +59,8 @@ export class LoopOrchestrator implements ILoopOrchestrator {
     const loopType = options?.loopType ?? this.decideLoopType(goal, doneCondition, null, maxIterations);
     const maxCostUsd = options?.maxCostUsd ?? null;
 
-    // Create loop
+    // Create loop — persist channel info so each iteration task inherits it and
+    // so end-of-loop notifications can be routed back to the originating user.
     const loopId = this.db.createLoop(
       agentName,
       agent.project_dir,
@@ -63,6 +70,9 @@ export class LoopOrchestrator implements ILoopOrchestrator {
       maxIterations,
       maxConsecutiveFailures,
       maxCostUsd,
+      options?.channel ?? null,
+      options?.channelChatId ?? null,
+      options?.userId ?? null,
     );
 
     // Dispatch first iteration
@@ -98,11 +108,12 @@ export class LoopOrchestrator implements ILoopOrchestrator {
 
     // Check cost limit
     if (loop.max_cost_usd !== null && newTotalCost >= loop.max_cost_usd) {
-      this.db.updateLoop(loopId, {
-        status: "failed",
-        finished_at: new Date().toISOString(),
-        finish_reason: `Exceeded cost limit: $${newTotalCost.toFixed(2)} >= $${loop.max_cost_usd.toFixed(2)}`,
-      });
+      this.finalizeLoop(
+        loop,
+        "failed",
+        `Exceeded cost limit: $${newTotalCost.toFixed(2)} >= $${loop.max_cost_usd.toFixed(2)}`,
+        newTotalCost,
+      );
       return;
     }
 
@@ -121,11 +132,12 @@ export class LoopOrchestrator implements ILoopOrchestrator {
 
     // Check consecutive failure limit
     if (consecutiveFailures >= loop.max_consecutive_failures) {
-      this.db.updateLoop(loopId, {
-        status: "failed",
-        finished_at: new Date().toISOString(),
-        finish_reason: `Too many consecutive failures (${consecutiveFailures})`,
-      });
+      this.finalizeLoop(
+        loop,
+        "failed",
+        `Too many consecutive failures (${consecutiveFailures})`,
+        newTotalCost,
+      );
       return;
     }
 
@@ -133,11 +145,14 @@ export class LoopOrchestrator implements ILoopOrchestrator {
     const condition = this.evaluator.parseDoneCondition(loop.done_when);
 
     if (condition.type === "manual") {
-      // Manual → pending approval
+      // Manual → pending approval (non-terminal; loop stays "running" until
+      // user decides via approveLoop/rejectLoop).
       this.db.updateLoop(loopId, { pending_approval: 1 });
       if (currentIter) {
         this.db.updateLoopIteration(currentIter.id, { done_check_passed: 0 });
       }
+      this.emitLoopNotification(loop,
+        `⏸ Loop ${loop.loop_id} pending approval at iter ${loop.current_iteration}/${loop.max_iterations}. Approve or reject to continue.`);
       return;
     }
 
@@ -152,22 +167,18 @@ export class LoopOrchestrator implements ILoopOrchestrator {
     }
 
     if (passed) {
-      // Done!
-      this.db.updateLoop(loopId, {
-        status: "done",
-        finished_at: new Date().toISOString(),
-        finish_reason: reason,
-      });
+      this.finalizeLoop(loop, "done", reason, newTotalCost);
       return;
     }
 
     // Check max iterations
     if (loop.current_iteration >= loop.max_iterations) {
-      this.db.updateLoop(loopId, {
-        status: "failed",
-        finished_at: new Date().toISOString(),
-        finish_reason: `Exceeded max iterations (${loop.max_iterations})`,
-      });
+      this.finalizeLoop(
+        loop,
+        "failed",
+        `Exceeded max iterations (${loop.max_iterations})`,
+        newTotalCost,
+      );
       return;
     }
 
@@ -176,18 +187,51 @@ export class LoopOrchestrator implements ILoopOrchestrator {
     await this.dispatchIteration(loopId, loop.current_iteration + 1, feedback);
   }
 
+  /**
+   * Mark the loop terminal and send an end-of-loop notification. Used for
+   * `done`, `failed`, and `cancelled` transitions — anywhere the loop is
+   * leaving the `running` state.
+   */
+  private finalizeLoop(
+    loop: Loop,
+    status: "done" | "failed" | "cancelled",
+    reason: string,
+    totalCostUsd?: number,
+  ): void {
+    this.db.updateLoop(loop.loop_id, {
+      status,
+      finished_at: new Date().toISOString(),
+      finish_reason: reason,
+    });
+    const emoji = status === "done" ? "✅" : status === "failed" ? "❌" : "🚫";
+    const cost = (totalCostUsd ?? loop.total_cost_usd);
+    const costStr = cost > 0 ? ` • $${cost.toFixed(2)}` : "";
+    this.emitLoopNotification(
+      loop,
+      `${emoji} Loop ${loop.loop_id} ${status} at iter ${loop.current_iteration}/${loop.max_iterations}${costStr}: ${reason}`,
+    );
+  }
+
+  /**
+   * Queue a notification for a loop state change. No-op if the loop has no
+   * channel/chat_id (loops started from CLI without --chat-id).
+   */
+  private emitLoopNotification(loop: Loop, message: string): void {
+    if (!loop.channel_chat_id || !loop.current_task_id) return;
+    const taskIdNum = parseInt(loop.current_task_id, 10);
+    if (Number.isNaN(taskIdNum)) return;
+    const channel = loop.channel ?? "telegram";
+    this.db.createNotification(taskIdNum, channel, loop.channel_chat_id, message);
+  }
+
   async cancelLoop(loopId: string): Promise<boolean> {
     const loop = this.db.getLoop(loopId);
     if (!loop || (loop.status !== "running" && loop.pending_approval !== 1)) {
       return false;
     }
 
-    this.db.updateLoop(loopId, {
-      status: "cancelled",
-      finished_at: new Date().toISOString(),
-      finish_reason: "Cancelled by user",
-      pending_approval: 0,
-    });
+    this.db.updateLoop(loopId, { pending_approval: 0 });
+    this.finalizeLoop(loop, "cancelled", "Cancelled by user");
     return true;
   }
 
@@ -197,12 +241,8 @@ export class LoopOrchestrator implements ILoopOrchestrator {
       return false;
     }
 
-    this.db.updateLoop(loopId, {
-      status: "done",
-      finished_at: new Date().toISOString(),
-      finish_reason: "Approved by user",
-      pending_approval: 0,
-    });
+    this.db.updateLoop(loopId, { pending_approval: 0 });
+    this.finalizeLoop(loop, "done", "Approved by user");
     return true;
   }
 
@@ -313,29 +353,53 @@ export class LoopOrchestrator implements ILoopOrchestrator {
     feedback: string | null,
   ): Promise<void> {
     const loop = this.db.getLoop(loopId)!;
+    const agent = this.db.getAgent(loop.agent);
+    if (!agent) throw new Error(`Loop ${loopId}: agent "${loop.agent}" not found`);
+
     const prompt = this.buildIterationPrompt(loop.goal, iterationNum, feedback, loop.loop_type, loop.done_when);
 
-    // Create task for this iteration
+    // Create task row for this iteration (uses agent's canonical session_id,
+    // not a reconstructed one, so it always matches). Inherit the loop's
+    // channel info so handleCompletion emits a per-iteration notification.
     const taskId = this.db.createTask({
-      session_id: `${loop.agent}--${loop.project.split("/").pop() ?? loop.project}`,
+      session_id: agent.session_id,
       prompt,
+      task_type: "loop",
+      channel: loop.channel ?? undefined,
+      channel_chat_id: loop.channel_chat_id ?? undefined,
+      user_id: loop.user_id ?? undefined,
     });
 
-    // Create iteration record
     this.db.createLoopIteration(loopId, iterationNum, prompt);
-
-    // Update iteration with task_id
     const iterations = this.db.getLoopIterations(loopId);
     const thisIter = iterations.find((it) => it.iteration_num === iterationNum);
     if (thisIter) {
       this.db.updateLoopIteration(thisIter.id, { task_id: String(taskId) });
     }
 
-    // Update loop state
     this.db.updateLoop(loopId, {
       current_iteration: iterationNum,
       current_task_id: String(taskId),
     });
+
+    // Actually spawn claude. Without this, the task row sits `pending` forever
+    // and the loop never makes progress — this was the original loop bug.
+    if (!this.dispatcher) {
+      throw new Error("LoopOrchestrator: dispatcher not configured — cannot run iterations");
+    }
+    const task = this.db.getTask(taskId);
+    if (!task) throw new Error(`Task #${taskId} vanished after create`);
+    try {
+      await startTask(this.db, this.dispatcher, task, agent);
+    } catch (err) {
+      // startTask already marked the task failed; mark the loop too and
+      // notify the channel (re-read to pick up current_task_id just set above).
+      const fresh = this.db.getLoop(loopId);
+      if (fresh) {
+        this.finalizeLoop(fresh, "failed", `Dispatch failed: ${(err as Error).message}`);
+      }
+      throw err;
+    }
   }
 
   private buildIterationPrompt(

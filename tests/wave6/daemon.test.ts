@@ -10,6 +10,7 @@ import {
   getServiceName,
   getLaunchdLabel,
   installDaemon,
+  uninstallDaemon,
   isDaemonInstalled,
 } from "../../src/infra/daemon.js";
 
@@ -62,6 +63,10 @@ describe("W6.1: DaemonManager", () => {
         expect(ok).toBe(false);
       }
 
+      // Must uninstall — installDaemon writes into real ~/Library/LaunchAgents
+      // (or ~/.config/systemd/user) and macOS flags every leftover plist via
+      // the "Background Items Added" notification.
+      uninstallDaemon(tmpDir);
       rmSync(tmpDir, { recursive: true, force: true });
       rmSync(botDir, { recursive: true, force: true });
     });

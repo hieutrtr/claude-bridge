@@ -2,7 +2,7 @@
  * W5.1-W5.2: CLI Command Tests
  */
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync } from "fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { BridgeDatabase } from "../../src/data/db.js";
@@ -15,6 +15,7 @@ let output: string[];
 let errOutput: string[];
 let originalLog: typeof console.log;
 let originalStderr: typeof process.stderr.write;
+let originalPath: string | undefined;
 
 function makeCtx(args: string[]): CommandContext {
   return {
@@ -34,11 +35,19 @@ beforeEach(() => {
   originalStderr = process.stderr.write;
   console.log = (...args: unknown[]) => output.push(args.map(String).join(" "));
   process.stderr.write = ((s: string) => { errOutput.push(s); return true; }) as typeof process.stderr.write;
+
+  // Shim `claude` so dispatch doesn't hit the real binary.
+  const shim = join(tmpDir, "claude");
+  writeFileSync(shim, "#!/bin/sh\nexit 0\n");
+  chmodSync(shim, 0o755);
+  originalPath = process.env["PATH"];
+  process.env["PATH"] = `${tmpDir}:${originalPath ?? ""}`;
 });
 
 afterEach(() => {
   console.log = originalLog;
   process.stderr.write = originalStderr;
+  if (originalPath !== undefined) process.env["PATH"] = originalPath;
   db.close();
   rmSync(tmpDir, { recursive: true, force: true });
 });
@@ -120,14 +129,14 @@ describe("W5.1: Core Commands", () => {
 
   describe("dispatch", () => {
     test("dispatches task to idle agent", async () => {
-      db.createAgent("be", "/p", "be--p", "f");
+      db.createAgent("be", tmpDir, "be--p", "f");
       const code = await COMMAND_HANDLERS["dispatch"]!(makeCtx(["be", "add pagination"]));
       expect(code).toBe(0);
       expect(output.join("\n")).toContain("dispatched");
     });
 
     test("queues task for busy agent", async () => {
-      db.createAgent("be", "/p", "be--p", "f");
+      db.createAgent("be", tmpDir, "be--p", "f");
       // Create a running task so atomicCheckAndCreateTask sees agent as busy
       const runningId = db.createTask({ session_id: "be--p", prompt: "existing" });
       db.updateTask(runningId, { status: "running" });

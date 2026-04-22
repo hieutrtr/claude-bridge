@@ -102,6 +102,9 @@ export interface Loop {
   finished_at: string | null;
   finish_reason: string | null;
   current_task_id: string | null;
+  channel: string | null;
+  channel_chat_id: string | null;
+  user_id: string | null;
 }
 
 export interface LoopIteration {

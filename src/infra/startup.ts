@@ -8,11 +8,16 @@ import { join } from "path";
 import { homedir } from "os";
 import { BridgeDatabase } from "../data/db.js";
 import { ProcessWatcher } from "../execution/watcher.js";
+import { Dispatcher } from "../execution/dispatcher.js";
 import { Notifier } from "../execution/notify.js";
+import { LoopOrchestrator } from "../orchestration/loop.js";
+import { LoopEvaluator } from "../orchestration/evaluator.js";
 import { startServer } from "../mcp/server.js";
 
-const WATCHER_INTERVAL_MS = 30_000; // 30 seconds
-const NOTIFICATION_INTERVAL_MS = 5_000; // 5 seconds
+// Watcher is the primary completion path (see watcher.ts for why the stop hook
+// can't read the result). 5s keeps end-to-end completion latency low.
+const WATCHER_INTERVAL_MS = 5_000;
+const NOTIFICATION_INTERVAL_MS = 5_000;
 
 export class StartupOrchestrator {
   private watcher: ProcessWatcher | null = null;
@@ -26,10 +31,20 @@ export class StartupOrchestrator {
     const dbPath = join(this.homeDir, "bridge.db");
     this.db = new BridgeDatabase(dbPath);
 
-    // Start process watcher
-    this.watcher = new ProcessWatcher(this.homeDir, this.db);
+    // Start process watcher — dispatcher + orchestrator callback are required
+    // so the watcher can parse the result file, advance goal loops, and/or
+    // dequeue follow-up tasks in one shot when claude exits.
+    const dispatcher = new Dispatcher(this.homeDir);
+    const orchestrator = new LoopOrchestrator(
+      this.homeDir, this.db, new LoopEvaluator(), dispatcher,
+    );
+    this.watcher = new ProcessWatcher(
+      this.homeDir, this.db, dispatcher,
+      (loopId, taskId, summary, cost) =>
+        orchestrator.onTaskComplete(loopId, String(taskId), summary, cost),
+    );
     this.watcher.start(WATCHER_INTERVAL_MS);
-    process.stderr.write("[startup] ProcessWatcher started (30s interval)\n");
+    process.stderr.write(`[startup] ProcessWatcher started (${WATCHER_INTERVAL_MS / 1000}s interval)\n`);
 
     // Start notification processing loop
     this.startNotificationLoop();

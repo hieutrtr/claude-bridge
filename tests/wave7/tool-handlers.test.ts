@@ -2,7 +2,7 @@
  * W7.1: Native MCP Tool Handlers Tests
  */
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync, chmodSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { BridgeDatabase } from "../../src/data/db.js";
@@ -11,12 +11,20 @@ import { executeToolNative } from "../../src/mcp/tool-handlers.js";
 let tmpDir: string;
 let db: BridgeDatabase;
 let originalEnv: string | undefined;
+let originalPath: string | undefined;
 
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "bridge-mcp-"));
   db = new BridgeDatabase(join(tmpDir, "bridge.db"));
   originalEnv = process.env["CLAUDE_BRIDGE_HOME"];
   process.env["CLAUDE_BRIDGE_HOME"] = tmpDir;
+
+  // Shim `claude` so Dispatcher.dispatch() succeeds without the real CLI.
+  const shim = join(tmpDir, "claude");
+  writeFileSync(shim, "#!/bin/sh\nexit 0\n");
+  chmodSync(shim, 0o755);
+  originalPath = process.env["PATH"];
+  process.env["PATH"] = `${tmpDir}:${originalPath ?? ""}`;
 });
 
 afterEach(() => {
@@ -26,6 +34,7 @@ afterEach(() => {
   } else {
     delete process.env["CLAUDE_BRIDGE_HOME"];
   }
+  if (originalPath !== undefined) process.env["PATH"] = originalPath;
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -47,7 +56,7 @@ describe("W7.1: Native MCP Tool Handlers", () => {
 
   describe("bridge_dispatch", () => {
     test("dispatches task to idle agent", async () => {
-      db.createAgent("be", "/p", "be--p", "f");
+      db.createAgent("be", tmpDir, "be--p", "f");
       const result = await executeToolNative("bridge_dispatch", {
         agent: "be",
         prompt: "add tests",
@@ -57,7 +66,7 @@ describe("W7.1: Native MCP Tool Handlers", () => {
     });
 
     test("queues task when agent busy", async () => {
-      db.createAgent("be", "/p", "be--p", "f");
+      db.createAgent("be", tmpDir, "be--p", "f");
       const taskId = db.createTask({ session_id: "be--p", prompt: "existing" });
       db.updateTask(taskId, { status: "running" });
 
@@ -110,7 +119,7 @@ describe("W7.1: Native MCP Tool Handlers", () => {
 
   describe("bridge_loop", () => {
     test("starts a loop", async () => {
-      db.createAgent("be", "/p", "be--p", "f");
+      db.createAgent("be", tmpDir, "be--p", "f");
       const result = await executeToolNative("bridge_loop", {
         agent: "be",
         goal: "Fix tests",

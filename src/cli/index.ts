@@ -12,12 +12,12 @@ import { existsSync, readFileSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
 import { BridgeDatabase } from "../data/db.js";
 import { SessionManager } from "../data/session.js";
-import { Dispatcher } from "../execution/dispatcher.js";
+import { Dispatcher, startTask } from "../execution/dispatcher.js";
 import { CompletionHandler } from "../execution/on-complete.js";
 import { LoopOrchestrator } from "../orchestration/loop.js";
 import { LoopEvaluator } from "../orchestration/evaluator.js";
 import { Scheduler } from "../orchestration/scheduler.js";
-import { generateAgentMd, writeAgentMd, deleteAgentMd } from "./agent-md.js";
+import { generateAgentMd, writeAgentMd, deleteAgentMd, installStopHook } from "./agent-md.js";
 import { formatMemoryReport } from "./memory.js";
 import { cmdSetupBot } from "./setup-bot.js";
 import { cmdDoctor } from "./doctor.js";
@@ -137,12 +137,20 @@ async function cmdCreateAgent(ctx: CommandContext): Promise<number> {
   const botDir = ctx.config.bot_dir ?? undefined;
   const filePath = writeAgentMd(sessionId, content, botDir);
 
+  // Install stop hook in the project dir's .claude/settings.local.json.
+  // Claude Code ignores the `hooks:` key in agent .md frontmatter; the real
+  // wiring must live in settings.json(.local). Without this, `bridge
+  // on-complete` never fires and tasks stay `running` until ProcessWatcher
+  // marks them failed.
+  const hookPath = installStopHook(resolvedPath, sessionId, ctx.bridgeHome);
+
   // Register in DB
   ctx.db.createAgent(name, resolvedPath, sessionId, agentFile, purpose);
   if (model !== "sonnet") ctx.db.updateAgentModel(sessionId, model);
 
   console.log(`Created agent "${name}" → ${sessionId}`);
   console.log(`Agent file: ${filePath}`);
+  console.log(`Stop hook: ${hookPath}`);
   return 0;
 }
 
@@ -255,9 +263,23 @@ async function cmdDispatch(ctx: CommandContext): Promise<number> {
     });
     ctx.db.updateTask(taskId, { status: "queued" });
     console.log(`Task #${taskId} queued (agent busy)`);
-  } else {
-    console.log(`Task #${result.taskId} dispatched to ${name}`);
+    return 0;
   }
+
+  const taskId = result.taskId!;
+  const task = ctx.db.getTask(taskId);
+  if (!task) {
+    process.stderr.write(`Task #${taskId} vanished after create\n`);
+    return 1;
+  }
+  const dispatcher = new Dispatcher(ctx.bridgeHome);
+  try {
+    await startTask(ctx.db, dispatcher, task, agent);
+  } catch (err) {
+    process.stderr.write(`Dispatch failed: ${(err as Error).message}\n`);
+    return 1;
+  }
+  console.log(`Task #${taskId} dispatched to ${name}`);
   return 0;
 }
 
@@ -394,6 +416,9 @@ async function cmdLoop(ctx: CommandContext): Promise<number> {
   const maxFailures = parseInt(getArg(ctx.args, "max-failures") ?? "3", 10);
   const loopType = getArg(ctx.args, "type");
   const maxCost = getArg(ctx.args, "max-cost");
+  const channel = getArg(ctx.args, "channel");
+  const chatId = getArg(ctx.args, "chat-id");
+  const userId = getArg(ctx.args, "user-id");
 
   if (!name || !goal || !doneWhen) {
     process.stderr.write("Usage: bridge loop <agent> <goal> --done-when <condition>\n");
@@ -401,13 +426,17 @@ async function cmdLoop(ctx: CommandContext): Promise<number> {
   }
 
   const evaluator = new LoopEvaluator();
-  const orchestrator = new LoopOrchestrator(ctx.bridgeHome, ctx.db, evaluator);
+  const dispatcher = new Dispatcher(ctx.bridgeHome);
+  const orchestrator = new LoopOrchestrator(ctx.bridgeHome, ctx.db, evaluator, dispatcher);
 
   const loopId = await orchestrator.startLoop(name, goal, doneWhen, {
     maxIterations: maxIter,
     maxConsecutiveFailures: maxFailures,
     loopType: loopType ?? undefined,
     maxCostUsd: maxCost ? parseFloat(maxCost) : null,
+    channel: channel ?? undefined,
+    channelChatId: chatId ?? undefined,
+    userId: userId ?? undefined,
   });
 
   console.log(`Started loop ${loopId}`);
@@ -477,7 +506,8 @@ async function cmdLoopReject(ctx: CommandContext): Promise<number> {
     return 1;
   }
   const evaluator = new LoopEvaluator();
-  const orchestrator = new LoopOrchestrator(ctx.bridgeHome, ctx.db, evaluator);
+  const dispatcher = new Dispatcher(ctx.bridgeHome);
+  const orchestrator = new LoopOrchestrator(ctx.bridgeHome, ctx.db, evaluator, dispatcher);
   const ok = await orchestrator.rejectLoop(loopId, feedback);
   console.log(ok ? `Rejected loop ${loopId}` : `Loop ${loopId} not pending approval`);
   return ok ? 0 : 1;
@@ -597,23 +627,32 @@ async function cmdOnComplete(ctx: CommandContext): Promise<number> {
 
   const task = ctx.db.getRunningTask(sessionId);
   if (!task) {
-    process.stderr.write(`[on-complete] No running task for session ${sessionId}\n`);
-    return 0; // Not an error — task may have been killed already
+    // Task may have been killed or already finalized by the watcher.
+    return 0;
   }
 
+  // IMPORTANT: Claude Code runs the Stop hook INSIDE the claude process,
+  // blocking claude from exiting until this hook returns. claude's stdout is
+  // block-buffered when redirected to a file, so it won't be flushed until
+  // process exit — meaning the result file is empty/partial during the hook.
+  //
+  // Optimistic fast path: if claude happened to flush early, finalize now
+  // (including loop advancement). Otherwise no-op and let ProcessWatcher
+  // finalize after claude exits.
   const dispatcher = new Dispatcher(ctx.bridgeHome);
-  const handler = new CompletionHandler(ctx.bridgeHome, ctx.db, dispatcher);
-
-  // Try to read the result file produced by claude CLI
+  const orchestrator = new LoopOrchestrator(
+    ctx.bridgeHome, ctx.db, new LoopEvaluator(), dispatcher,
+  );
+  const handler = new CompletionHandler(
+    ctx.bridgeHome, ctx.db, dispatcher,
+    (loopId, taskId, summary, cost) =>
+      orchestrator.onTaskComplete(loopId, String(taskId), summary, cost),
+  );
   const resultFile = dispatcher.getResultFile(sessionId, task.id);
   const result = await handler.parseResultFile(resultFile);
-
-  await handler.handleCompletion(
-    sessionId,
-    task.id,
-    result ?? { exitCode: 1, summary: null, costUsd: null, durationMs: null, numTurns: null },
-  );
-
+  if (result !== null) {
+    await handler.handleCompletion(sessionId, task.id, result);
+  }
   return 0;
 }
 
@@ -690,10 +729,15 @@ async function cmdStart(ctx: CommandContext): Promise<number> {
   ];
   const [ok, msg] = startSession(command, ctx.bridgeHome, botDir);
   if (ok) {
-    // Auto-confirm claude's "Loading development channels" warning prompt.
+    // Auto-confirm two warning prompts in order:
+    //   1) "Loading development channels"
+    //   2) "--dangerously-skip-permissions" bypass-permissions acknowledgement
     try {
       const sessionName = getSessionName(ctx.bridgeHome);
-      execSync(`sleep 3 && tmux send-keys -t ${sessionName} Enter`, { stdio: "pipe" });
+      execSync(
+        `sleep 3 && tmux send-keys -t ${sessionName} Enter && sleep 2 && tmux send-keys -t ${sessionName} Enter`,
+        { stdio: "pipe" },
+      );
     } catch {
       /* best-effort */
     }

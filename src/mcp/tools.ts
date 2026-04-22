@@ -169,6 +169,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         max_iterations: { type: "number", description: "Max iterations (default 10)" },
         loop_type: { type: "string", description: "Loop type: bridge, agent, or auto" },
         max_cost_usd: { type: "number", description: "Optional cost ceiling in USD" },
+        chat_id: { type: "string", description: "Channel chat_id to send per-iteration and end-of-loop notifications to" },
+        user_id: { type: "string", description: "Originating user id (optional, for audit)" },
       },
       required: ["agent", "goal", "done_when"],
     },

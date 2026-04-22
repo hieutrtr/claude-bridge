@@ -8,12 +8,26 @@
 import { existsSync, readFileSync } from "fs";
 import type { ICompletionHandler, CompletionResult, IDispatcher } from "./interfaces.js";
 import type { IDatabase } from "../data/interfaces.js";
+import { startTask } from "./dispatcher.js";
+
+/**
+ * Callback fired when a completed task belongs to an active loop. Decouples
+ * CompletionHandler from LoopOrchestrator so the execution layer doesn't
+ * import from orchestration. Callers wire this explicitly.
+ */
+export type LoopCompletionCallback = (
+  loopId: string,
+  taskId: number,
+  resultSummary: string,
+  costUsd: number,
+) => Promise<void>;
 
 export class CompletionHandler implements ICompletionHandler {
   constructor(
     private homeDir: string,
     private db: IDatabase,
     private dispatcher?: IDispatcher,
+    private onLoopTaskComplete?: LoopCompletionCallback,
   ) {}
 
   async parseResultFile(resultFile: string): Promise<CompletionResult | null> {
@@ -23,10 +37,15 @@ export class CompletionHandler implements ICompletionHandler {
       const raw = readFileSync(resultFile, "utf-8");
       const data = JSON.parse(raw) as Record<string, unknown>;
 
+      // claude's --output-format json uses `total_cost_usd`; older/legacy
+      // payloads may use `cost_usd`. Accept either.
+      const cost = (data["total_cost_usd"] as number | undefined)
+        ?? (data["cost_usd"] as number | undefined)
+        ?? null;
       return {
         exitCode: data["is_error"] ? 1 : 0,
         summary: (data["result"] as string | undefined) ?? null,
-        costUsd: (data["cost_usd"] as number | undefined) ?? null,
+        costUsd: cost,
         durationMs: (data["duration_ms"] as number | undefined) ?? null,
         numTurns: (data["num_turns"] as number | undefined) ?? null,
       };
@@ -70,31 +89,39 @@ export class CompletionHandler implements ICompletionHandler {
       this.db.createNotification(taskId, task.channel, task.channel_chat_id, message);
     }
 
-    // Try to dequeue and dispatch next task
-    const next = this.db.dequeueNextTask(sessionId);
-    if (next && this.dispatcher) {
-      const agent = this.db.getAgentBySession(sessionId);
-      if (agent) {
+    // If this task belonged to an active goal loop, let the orchestrator
+    // decide the next step. The orchestrator may dispatch the next iteration
+    // (which spawns a new task and flips the agent back to `running`), finish
+    // the loop, or pause for manual approval.
+    const agent = this.db.getAgentBySession(sessionId);
+    let loopHandled = false;
+    if (agent && this.onLoopTaskComplete) {
+      const loop = this.db.getActiveLoopForAgent(agent.name);
+      if (loop && loop.current_task_id === String(taskId)) {
         try {
-          this.db.updateAgentState(sessionId, "running");
-          this.db.updateTask(next.id, {
-            status: "running",
-            started_at: new Date().toISOString(),
-          });
-          const pid = await this.dispatcher.dispatch(
-            next,
-            agent.agent_file,
-            agent.project_dir,
-            { model: agent.model },
+          await this.onLoopTaskComplete(
+            loop.loop_id,
+            taskId,
+            result.summary ?? "",
+            result.costUsd ?? 0,
           );
-          this.db.updateTask(next.id, { pid });
+          loopHandled = true;
         } catch (err) {
-          this.db.updateTask(next.id, {
-            status: "failed",
-            error_message: `Dispatch failed: ${err}`,
-            completed_at: new Date().toISOString(),
-          });
-          this.db.updateAgentState(sessionId, "idle");
+          process.stderr.write(`[on-complete] loop callback failed: ${err}\n`);
+        }
+      }
+    }
+
+    // Only dequeue if no loop took the agent. When the loop dispatches the
+    // next iteration it claims the agent itself; dequeuing on top would
+    // double-dispatch.
+    if (!loopHandled) {
+      const next = this.db.dequeueNextTask(sessionId);
+      if (next && this.dispatcher && agent) {
+        try {
+          await startTask(this.db, this.dispatcher, next, agent);
+        } catch {
+          /* startTask already recorded the failure */
         }
       }
     }

@@ -2,7 +2,7 @@
  * W5.3: AgentMdGenerator Tests
  */
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import {
@@ -66,15 +66,18 @@ describe("W5.3: AgentMdGenerator", () => {
   });
 
   describe("installStopHook", () => {
-    test("creates settings file with stop hook", () => {
+    test("creates settings file with stop hook in Claude Code schema", () => {
       const tmpDir = mkdtempSync(join(tmpdir(), "bridge-hook-"));
       const settingsPath = installStopHook(tmpDir, "be--myapi", "/home/bridge");
       expect(existsSync(settingsPath)).toBe(true);
 
       const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-      expect(settings.hooks.stop).toBeDefined();
-      expect(settings.hooks.stop.length).toBe(1);
-      expect(settings.hooks.stop[0].command).toContain("on-complete");
+      expect(settings.hooks.Stop).toBeDefined();
+      expect(settings.hooks.Stop.length).toBe(1);
+      const inner = settings.hooks.Stop[0].hooks;
+      expect(Array.isArray(inner)).toBe(true);
+      expect(inner[0].type).toBe("command");
+      expect(inner[0].command).toContain("on-complete");
       rmSync(tmpDir, { recursive: true, force: true });
     });
 
@@ -85,7 +88,27 @@ describe("W5.3: AgentMdGenerator", () => {
 
       const settingsPath = join(tmpDir, ".claude", "settings.local.json");
       const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-      expect(settings.hooks.stop.length).toBe(1);
+      expect(settings.hooks.Stop.length).toBe(1);
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    test("migrates legacy lowercase stop entry", () => {
+      const tmpDir = mkdtempSync(join(tmpdir(), "bridge-hook-"));
+      const settingsDir = join(tmpDir, ".claude");
+      mkdirSync(settingsDir, { recursive: true });
+      writeFileSync(
+        join(settingsDir, "settings.local.json"),
+        JSON.stringify({
+          hooks: { stop: [{ command: "bridge on-complete --session-id be--myapi" }] },
+        }),
+        "utf-8",
+      );
+
+      installStopHook(tmpDir, "be--myapi");
+
+      const settings = JSON.parse(readFileSync(join(settingsDir, "settings.local.json"), "utf-8"));
+      expect(settings.hooks.stop).toBeUndefined();
+      expect(settings.hooks.Stop.length).toBe(1);
       rmSync(tmpDir, { recursive: true, force: true });
     });
   });

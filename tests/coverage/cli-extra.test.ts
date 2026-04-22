@@ -3,7 +3,7 @@
  * Covers: main(), loop commands, schedule commands, arg parsing helpers
  */
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { BridgeDatabase } from "../../src/data/db.js";
@@ -24,6 +24,7 @@ let errOutput: string[];
 let originalLog: typeof console.log;
 let originalStderr: typeof process.stderr.write;
 let originalEnv: string | undefined;
+let originalPath: string | undefined;
 
 function makeCtx(args: string[]): CommandContext {
   return {
@@ -49,6 +50,12 @@ beforeEach(() => {
   originalStderr = process.stderr.write;
   originalEnv = process.env["CLAUDE_BRIDGE_HOME"];
   process.env["CLAUDE_BRIDGE_HOME"] = tmpDir;
+  // Shim `claude` so CLI dispatch/loop commands don't need the real binary.
+  const shim = join(tmpDir, "claude");
+  writeFileSync(shim, "#!/bin/sh\nexit 0\n");
+  chmodSync(shim, 0o755);
+  originalPath = process.env["PATH"];
+  process.env["PATH"] = `${tmpDir}:${originalPath ?? ""}`;
   console.log = (...args: unknown[]) => output.push(args.map(String).join(" "));
   process.stderr.write = ((s: string) => {
     errOutput.push(s);
@@ -64,6 +71,7 @@ afterEach(() => {
   } else {
     delete process.env["CLAUDE_BRIDGE_HOME"];
   }
+  if (originalPath !== undefined) process.env["PATH"] = originalPath;
   db.close();
   rmSync(tmpDir, { recursive: true, force: true });
 });
@@ -149,7 +157,7 @@ describe("cli/index.ts coverage", () => {
     });
 
     test("starts loop with valid args", async () => {
-      db.createAgent("be", "/p", "be--p", "f");
+      db.createAgent("be", tmpDir, "be--p", "f");
       const code = await COMMAND_HANDLERS["loop"]!(makeCtx([
         "be", "Fix tests", "--done-when", "command:true",
         "--max", "5", "--type", "iterate",
@@ -167,7 +175,7 @@ describe("cli/index.ts coverage", () => {
     });
 
     test("shows specific loop by id", async () => {
-      db.createAgent("be", "/p", "be--p", "f");
+      db.createAgent("be", tmpDir, "be--p", "f");
       // Start a loop to get a loop_id
       const code1 = await COMMAND_HANDLERS["loop"]!(makeCtx([
         "be", "Fix tests", "--done-when", "command:true",

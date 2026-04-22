@@ -79,7 +79,18 @@ describe("W7.4: E2E Integration", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "bridge-e2e-"));
     const db = new BridgeDatabase(join(tmpDir, "bridge.db"));
     const evaluator = new LoopEvaluator();
-    const orchestrator = new LoopOrchestrator(tmpDir, db, evaluator);
+    // Fake dispatcher — this test exercises the orchestrator state machine,
+    // not real claude spawning.
+    const fakeDispatcher = {
+      calls: 0,
+      async dispatch() { fakeDispatcher.calls++; return 9000 + fakeDispatcher.calls; },
+      async cancel() { return true; },
+      isRunning() { return false; },
+      sessionIdToUuid(sid: string) { return sid; },
+      getResultFile(sid: string, id: number) { return `/tmp/${sid}-${id}.result.json`; },
+      getStderrFile(sid: string, id: number) { return `/tmp/${sid}-${id}.stderr`; },
+    };
+    const orchestrator = new LoopOrchestrator(tmpDir, db, evaluator, fakeDispatcher);
 
     // Setup agent — session_id must match what dispatchIteration creates
     // dispatchIteration uses: `${agent}--${basename(project)}`
