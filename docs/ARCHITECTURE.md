@@ -30,14 +30,15 @@ High-level flow:
   +----------+   +-----+   +-----+   +------------+   +-------------+
   | Bot/User |-->| MCP |-->| CLI |-->| Dispatcher |-->| Claude Code |
   +----------+   +-----+   +-----+   +------------+   +------+------+
-                                                             |
+                                                             | exit +
+                                                             | result.json
                                                              v
-                                                      +-------------+
-                                                      | Stop hook   |
-                                                      | (on-complete|
-                                                      +------+------+
-                                                             |
-                                                             v
+                                                      +----------------+
+                                                      | ProcessWatcher |
+                                                      | (5s, primary)  |
+                                                      +--------+-------+
+                                                               |
+                                                               v
                                                       +-------------+
                                                       |  SQLite     |<--+
                                                       +------+------+   |
@@ -79,12 +80,23 @@ Owns both SQLite files and the session-id derivation rules.
   (MD5 of `session_id[:task_id]`), sets `--agent`, `--session-id`,
   `--output-format json`, `--output-file <path>`, and opens the stderr file.
   Also implements `cancel()` (SIGTERM → wait → SIGKILL) and `isRunning()`.
-- `CompletionHandler` (`execution/on-complete.ts`) — the stop-hook callback.
-  Parses the result file, updates the task row, flips agent state back to
-  `idle`, enqueues a notification if the task came from a channel, and
-  auto-dequeues the next task for the same session.
-- `ProcessWatcher` (`execution/watcher.ts`) — a 30s polling fallback. Marks
-  dead processes as `failed` (stop hook missed) and tasks running longer than
+- `CompletionHandler` (`execution/on-complete.ts`) — the completion processor
+  shared by the watcher and the stop hook. Parses the result file, updates the
+  task row, flips agent state back to `idle`, enqueues a notification if the
+  task came from a channel, calls the loop-completion callback if the task
+  belongs to an active goal loop, and auto-dequeues the next task for the same
+  session (unless the loop already claimed the agent). `startTask` in
+  `execution/dispatcher.ts` is the shared spawn helper the CLI, MCP, and the
+  dequeue path all funnel through so every dispatch takes the same bookkeeping
+  steps.
+- `ProcessWatcher` (`execution/watcher.ts`) — **primary completion path**,
+  polling every 5s. Claude Code runs the Stop hook inside the claude process
+  (blocking it from exiting), but claude's stdout is block-buffered when
+  redirected to a file so the result file is empty/partial *during* the hook.
+  The watcher runs after claude has exited and stdout is flushed, so it can
+  parse the result file and finalize the task via `CompletionHandler`. The
+  stop hook stays wired as an optimistic fast-path (no-op if the result file
+  isn't ready yet). The watcher also marks tasks running longer than
   `DEFAULT_TIMEOUT_MINUTES` (360 = 6h) as `timeout`.
 - `Notifier` (`execution/notify.ts`) — posts task completion to Telegram via
   the Bot API. Reads the token from `config.json` or `TELEGRAM_BOT_TOKEN`.
@@ -96,9 +108,22 @@ Owns both SQLite files and the session-id derivation rules.
   task execution. `startLoop` validates the done condition, records the loop,
   and dispatches iteration 1. `onTaskComplete` accumulates cost, evaluates the
   done condition, and either finishes the loop, fails it (cost ceiling,
-  consecutive failures, max iterations), pauses for manual approval, or
-  dispatches the next iteration with truncated feedback. Also decides loop
-  type (`bridge` vs `agent`) and formats display output.
+  consecutive failures, max iterations, plan exhausted), pauses for manual
+  approval, or dispatches the next iteration with truncated feedback. Also
+  decides loop type (`bridge` vs `agent`), emits per-iteration and end-of-loop
+  channel notifications via `finalizeLoop`, and formats display output.
+  - **Plan-first mode (default)**: iter 1 asks the agent for a structured
+    JSON plan (`{ steps: [{id, title, description, verification?}] }`)
+    instead of attempting the goal. The plan is parsed (fenced ```json```
+    block, fallback to first balanced `{...}` containing `"steps"`),
+    validated, renumbered, capped at `max_iterations - 1` steps, and stored
+    in `loops.plan`. Iters 2..N+1 each execute exactly one step with a
+    focused prompt ("Current step X/N: …"). The planning iter skips
+    done-check and failure counting. Parse failure falls back to legacy
+    single-shot execution (or fails the loop if no iters remain). Plan
+    exhausted + done condition unmet → fail. Opt out with
+    `planFirst: false`. Plan-first forces `loop_type = bridge` (an `agent`
+    loop can't split for per-step reports).
 - `LoopEvaluator` (`orchestration/evaluator.ts`) — parses done-condition
   strings (`type:args`) and evaluates `command`, `file_exists`,
   `file_contains`, `llm_judge`, and `manual` condition types. `command` shells
@@ -156,8 +181,12 @@ Owns both SQLite files and the session-id derivation rules.
 ### `infra/` — process & service lifecycle
 
 - `infra/startup.ts` — `StartupOrchestrator` wires the three background
-  pieces: `ProcessWatcher` (30s), a notification delivery loop (5s), and the
-  MCP server (blocking on stdio). `stop()` tears everything down cleanly.
+  pieces: `ProcessWatcher` (5s — primary completion path, see
+  `execution/`), a notification delivery loop (5s), and the MCP server
+  (blocking on stdio). The watcher is constructed with a `Dispatcher` and a
+  loop-completion callback so it can finalize tasks, advance goal loops, and
+  dequeue follow-up tasks in a single sweep. `stop()` tears everything down
+  cleanly.
 - `infra/daemon.ts` — generates and installs `launchd` plists (macOS) or
   systemd user units (Linux) that launch the bridge inside a tmux session
   with `CLAUDE_BRIDGE_HOME` set. Driven by `bridge install` /
@@ -222,9 +251,14 @@ All types live in `src/types.ts`. Field names mirror the SQLite schema.
 - **Loop** — `{ loop_id, agent, project, goal, done_when, loop_type, status,
   max_iterations, max_consecutive_failures, current_iteration,
   consecutive_failures, total_cost_usd, max_cost_usd, pending_approval,
-  started_at, finished_at, finish_reason, current_task_id }`.
+  started_at, finished_at, finish_reason, current_task_id, channel,
+  channel_chat_id, user_id, plan, plan_enabled }`.
   `status ∈ {running, paused, done, failed, timeout, cancelled}`. `loop_id`
-  is an 8-char UUID slice.
+  is an 8-char UUID slice. `channel/channel_chat_id/user_id` route
+  per-iteration and end-of-loop notifications back to the originator. `plan`
+  is the JSON-serialized `LoopPlan` when plan-first mode is active;
+  `plan_enabled = 1` marks the loop as plan-first (flipped to 0 if plan
+  parsing falls back to legacy execution).
 - **LoopIteration** — per-iteration record with `task_id`, `prompt`,
   `result_summary`, `done_check_passed`, `cost_usd`, timestamps, `status`.
 - **Schedule** — `{ id, name, agent_name, prompt, interval_minutes, cron_expr,
@@ -274,25 +308,40 @@ is returned; the caller then creates a `queued` task with a tail `position`.
 Otherwise a `pending` task is inserted inside the same transaction, ensuring
 two concurrent callers cannot both create a running task.
 
-### 4b. Stop hook / on-complete
+### 4b. Task completion (watcher-primary)
+
+Claude Code runs the Stop hook *before* exiting, so claude's stdout hasn't
+been flushed to the result file yet — the hook can't read the result. The
+`ProcessWatcher` polling loop is the primary completion path; the stop hook
+remains wired as an optimistic fast-path that no-ops if the file isn't ready.
 
 ```
- Claude Code exits
+ Claude Code writes result.json on exit (stdout flush)
    |
    v
- stop hook:  bridge on-complete --session-id <sid>
-   |
-   v
- cmdOnComplete:
-   - find running task for session
-   - resultFile = homeDir/workspaces/<sid>/tasks/<taskId>.result.json
-   - parseResultFile -> { exitCode, summary, costUsd, durationMs, numTurns }
-   - CompletionHandler.handleCompletion(sid, taskId, result)
-       - db.updateTask(status=done|failed, metrics, completed_at)
-       - db.updateAgentState(sid, "idle")
-       - if channel_chat_id: db.createNotification(...)
-       - next = db.dequeueNextTask(sid)
-       - if next: dispatcher.dispatch(next) + updateTask(pid)
+ ProcessWatcher tick (every 5s):
+   for task in db.getRunningTasks():
+     if !pidAlive(task.pid):
+       resultFile = dispatcher.getResultFile(sid, taskId)
+       parsed    = CompletionHandler.parseResultFile(resultFile)
+       if parsed:
+         CompletionHandler.handleCompletion(sid, taskId, parsed)
+             - db.updateTask(status=done|failed, metrics, completed_at)
+             - db.updateAgentState(sid, "idle")
+             - if channel_chat_id: db.createNotification(...)
+             - if task belongs to active loop:
+                 orchestrator.onTaskComplete(loop_id, ...)   (may dispatch next iter)
+             - else if loop didn't claim agent:
+                 next = db.dequeueNextTask(sid)
+                 if next: startTask(db, dispatcher, next, agent)
+       else:
+         db.updateTask(status=failed, error_message=..., completed_at)
+
+ Stop hook (optimistic fast-path, fires while claude is still running):
+   bridge on-complete --session-id <sid>
+     - find running task; try parseResultFile
+     - if result is already flushed (rare): handleCompletion as above
+     - otherwise: no-op and let the watcher finalize after exit
 ```
 
 The deterministic UUID from `Dispatcher.sessionIdToUuid(sessionId, taskId)`
@@ -307,30 +356,46 @@ so Claude Code's own session continuity applies.
    |
    |--validate done condition
    |--check for active loop (one-per-agent)
-   |--db.createLoop(...)                 -> loop_id
+   |--if planFirst (default) && loop_type=="agent": force bridge
+   |--db.createLoop(..., plan_enabled = planFirst ? 1 : 0)   -> loop_id
    |--dispatchIteration(loop_id, 1, null)
-          |--createTask, createLoopIteration
-          |--updateLoop(current_iteration=1, current_task_id=taskId)
+          |--buildPrompt picks one of:
+          |     - planning prompt  (plan_enabled==1 && iter==1 && !plan)
+          |     - plan-exec prompt (plan stored, step = iter-2)
+          |     - legacy prompt    (plan_enabled==0)
+          |--createTask (task_type=loop, inherits channel/chat_id/user_id)
+          |--createLoopIteration, updateLoop(current_iteration=1, current_task_id)
+          |--startTask(db, dispatcher, task, agent)   <-- actually spawns claude
 
- on task complete (called by CompletionHandler via the stop path):
+ on task complete (called by CompletionHandler after the watcher parses
+ the result file, not by the stop hook directly):
    onTaskComplete(loop_id, task_id, summary, cost)
-     - record iteration summary & cost
-     - accumulate total_cost_usd
-     - if max_cost_usd exceeded          -> status=failed
+     - record iteration summary & cost, accumulate total_cost_usd
+     - if max_cost_usd exceeded             -> finalizeLoop(failed, "cost")
+     - if this was the planning iter:
+         parse plan from summary (fenced ```json``` or balanced {"steps":...})
+           - on success: persist plan, emit plan notification, dispatch iter 2
+           - on failure: plan_enabled=0, notify fallback, dispatch iter 2 (legacy)
+                         (or finalizeLoop(failed) if no iters left)
+         return  (planning iter skips done-check and failure counting)
      - if task failed:
          consecutive_failures++
-         if >= max_consecutive_failures  -> status=failed
+         if >= max_consecutive_failures     -> finalizeLoop(failed)
      - condition = parseDoneCondition(done_when)
-     - if condition.type == "manual"     -> pending_approval=1
+     - if condition.type == "manual"        -> pending_approval=1, notify
      - else: evaluator.evaluate(...)
-         - if passed                     -> status=done
-         - else if current_iteration >= max_iterations -> status=failed
+         - if passed                        -> finalizeLoop(done)
+         - if plan exhausted (cur_iter >= plan.steps.length + 1) -> finalizeLoop(failed)
+         - if current_iteration >= max_iterations                -> finalizeLoop(failed)
          - else dispatchIteration(loop_id, current+1, feedback)
 ```
 
-Feedback is generated from the last 2 iterations' summaries, each truncated to
-half of `MAX_FEEDBACK_CHARS` (2000). Manual/rejected loops rely on the
-caller invoking `approveLoop` / `rejectLoop` (CLI or MCP).
+Feedback is generated from the last 2 iterations' summaries, each truncated
+to half of `MAX_FEEDBACK_CHARS` (2000). `finalizeLoop` is the single exit
+that sets terminal status, `finished_at`, `finish_reason`, and emits an
+end-of-loop notification to `channel_chat_id` (if set). Manual/rejected
+loops rely on the caller invoking `approveLoop` / `rejectLoop` (CLI or
+MCP).
 
 ### 4d. Schedule execution
 
@@ -384,7 +449,7 @@ makes this a file open, not a schema init. `handleTool` may additionally open
    v
  StartupOrchestrator.start()
    |--new BridgeDatabase(homeDir/bridge.db)
-   |--ProcessWatcher.start(30_000)       <-- sweeps dead PIDs, 6h timeouts
+   |--ProcessWatcher.start(5_000)        <-- primary completion path + 6h timeouts
    |--startNotificationLoop(5_000)       <-- drains pending notifications via Notifier
    |--startServer()                      <-- connects MCP over stdio (blocking)
 ```
@@ -413,13 +478,15 @@ real git worktree is Claude Code's business.
 `db.transaction(...).exclusive()`. Queue dequeue uses a similar pattern in
 `dequeueNextTask` so position shifts are atomic.
 
-**Reliability.** Two safety nets cover missed stop hooks:
+**Reliability.** The watcher is the reliable completion path (see §4b), not
+a safety net. It covers two additional failure modes:
 
-1. `ProcessWatcher` (30s interval). If the spawned `claude` process is gone
-   but the task is still `running`, the task is marked `failed` with
-   `"Process <pid> died unexpectedly"` and the agent flips to `idle`.
-2. A 6h task timeout. Tasks whose `started_at` is older than
-   `DEFAULT_TIMEOUT_MINUTES` (360) get status `timeout` and a `SIGTERM`.
+1. Dead process without a valid result. If `claude` exited without writing
+   a parseable result file, the watcher marks the task `failed` with
+   `"Process <pid> died without writing a result"` and flips the agent to
+   `idle`.
+2. Runaway tasks. `started_at` older than `DEFAULT_TIMEOUT_MINUTES` (360 =
+   6h) gets status `timeout` and a `SIGTERM`.
 
 Notifications use the same pattern: the 5s loop retries any row with
 `status='pending'`, flipping it to `sent` or `failed`.
@@ -468,8 +535,8 @@ type should not emit a pass/fail by itself (like `manual`), also update
 | `src/data/interfaces.ts`               | Data-layer contracts                                        |
 | `src/data/index.ts`                    | Data-layer barrel                                           |
 | `src/execution/dispatcher.ts`          | `Dispatcher` — `Bun.spawn` of `claude`, cancel, UUIDs       |
-| `src/execution/on-complete.ts`         | `CompletionHandler` — stop-hook callback & auto-dequeue     |
-| `src/execution/watcher.ts`             | `ProcessWatcher` — 30s dead-process / timeout sweeper       |
+| `src/execution/on-complete.ts`         | `CompletionHandler` — shared completion processor (watcher + stop hook) + loop callback + auto-dequeue |
+| `src/execution/watcher.ts`             | `ProcessWatcher` — 5s primary completion path + 6h timeouts |
 | `src/execution/notify.ts`              | `Notifier` — Telegram API delivery + message formatting     |
 | `src/execution/interfaces.ts`          | Execution-layer contracts                                   |
 | `src/execution/index.ts`               | Execution-layer barrel                                      |
