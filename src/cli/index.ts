@@ -419,6 +419,7 @@ async function cmdLoop(ctx: CommandContext): Promise<number> {
   const channel = getArg(ctx.args, "channel");
   const chatId = getArg(ctx.args, "chat-id");
   const userId = getArg(ctx.args, "user-id");
+  const noPlan = getFlag(ctx.args, "no-plan");
 
   if (!name || !goal || !doneWhen) {
     process.stderr.write("Usage: bridge loop <agent> <goal> --done-when <condition>\n");
@@ -437,6 +438,7 @@ async function cmdLoop(ctx: CommandContext): Promise<number> {
     channel: channel ?? undefined,
     channelChatId: chatId ?? undefined,
     userId: userId ?? undefined,
+    planFirst: !noPlan,
   });
 
   console.log(`Started loop ${loopId}`);

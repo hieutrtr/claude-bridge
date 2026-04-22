@@ -105,6 +105,21 @@ export interface Loop {
   channel: string | null;
   channel_chat_id: string | null;
   user_id: string | null;
+  plan: string | null;
+  plan_enabled: number;
+}
+
+/** Parsed plan stored JSON-serialized in `Loop.plan`. */
+export interface LoopPlan {
+  steps: LoopPlanStep[];
+  truncated?: boolean;
+}
+
+export interface LoopPlanStep {
+  id: number;
+  title: string;
+  description: string;
+  verification?: string;
 }
 
 export interface LoopIteration {

@@ -109,6 +109,7 @@ export interface IDatabase {
     channel?: string | null,
     channelChatId?: string | null,
     userId?: string | null,
+    planEnabled?: boolean,
   ): string;
   getLoop(loopId: string): Loop | null;
   getActiveLoopForAgent(agent: string): Loop | null;

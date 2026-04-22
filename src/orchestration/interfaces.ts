@@ -50,6 +50,13 @@ export interface ILoopOrchestrator {
       channel?: string;
       channelChatId?: string;
       userId?: string;
+      /**
+       * If true (default), iter 1 produces a structured plan (JSON sub-tasks)
+       * and iters 2..N+1 execute one sub-task each. If parsing the plan fails,
+       * the loop falls back to legacy single-shot execution. Set false to skip
+       * planning entirely and have iter 1 attempt the full goal directly.
+       */
+      planFirst?: boolean;
     },
   ): Promise<string>;
 

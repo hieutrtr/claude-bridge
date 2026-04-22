@@ -171,6 +171,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         max_cost_usd: { type: "number", description: "Optional cost ceiling in USD" },
         chat_id: { type: "string", description: "Channel chat_id to send per-iteration and end-of-loop notifications to" },
         user_id: { type: "string", description: "Originating user id (optional, for audit)" },
+        plan_first: { type: "boolean", description: "Plan-first mode (default true). Iter 1 produces a JSON plan; iters 2..N+1 execute one sub-task each. Set false to skip planning and attempt the goal in iter 1." },
       },
       required: ["agent", "goal", "done_when"],
     },

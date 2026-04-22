@@ -37,6 +37,22 @@ function setup() {
   return { tmpDir, db, evaluator, orchestrator, dispatcher };
 }
 
+// Most existing tests were written when iter 1 = execution. Plan-first is now
+// the default, so these tests explicitly opt out via this wrapper. Plan-first
+// behavior is covered in its own describe block below.
+function startLegacyLoop(
+  orchestrator: LoopOrchestrator,
+  agent: string,
+  goal: string,
+  cond: string,
+  opts: Parameters<LoopOrchestrator["startLoop"]>[3] = {},
+): Promise<string> {
+  return orchestrator.startLoop(agent, goal, cond, {
+    ...opts,
+    planFirst: opts.planFirst ?? false,
+  });
+}
+
 function teardown(ctx: { tmpDir: string; db: BridgeDatabase }) {
   ctx.db.close();
   rmSync(ctx.tmpDir, { recursive: true, force: true });
@@ -46,7 +62,7 @@ describe("W4.2: LoopOrchestrator", () => {
   describe("startLoop", () => {
     test("creates loop and first iteration", async () => {
       const ctx = setup();
-      const loopId = await ctx.orchestrator.startLoop(
+      const loopId = await startLegacyLoop(ctx.orchestrator, 
         "be",
         "Fix all tests",
         "command:true",
@@ -72,23 +88,23 @@ describe("W4.2: LoopOrchestrator", () => {
     test("validates done condition", async () => {
       const ctx = setup();
       await expect(
-        ctx.orchestrator.startLoop("be", "goal", "invalid_type:args"),
+        startLegacyLoop(ctx.orchestrator, "be", "goal", "invalid_type:args"),
       ).rejects.toThrow();
       teardown(ctx);
     });
 
     test("rejects if agent has active loop", async () => {
       const ctx = setup();
-      await ctx.orchestrator.startLoop("be", "goal1", "command:true");
+      await startLegacyLoop(ctx.orchestrator, "be", "goal1", "command:true");
       await expect(
-        ctx.orchestrator.startLoop("be", "goal2", "command:true"),
+        startLegacyLoop(ctx.orchestrator, "be", "goal2", "command:true"),
       ).rejects.toThrow();
       teardown(ctx);
     });
 
     test("respects maxConsecutiveFailures default", async () => {
       const ctx = setup();
-      const loopId = await ctx.orchestrator.startLoop("be", "goal", "command:true");
+      const loopId = await startLegacyLoop(ctx.orchestrator, "be", "goal", "command:true");
       const loop = ctx.db.getLoop(loopId)!;
       expect(loop.max_consecutive_failures).toBe(3);
       teardown(ctx);
@@ -96,7 +112,7 @@ describe("W4.2: LoopOrchestrator", () => {
 
     test("persists channel info and propagates to iteration tasks", async () => {
       const ctx = setup();
-      const loopId = await ctx.orchestrator.startLoop("be", "goal", "command:true", {
+      const loopId = await startLegacyLoop(ctx.orchestrator, "be", "goal", "command:true", {
         channel: "telegram", channelChatId: "42", userId: "u1",
       });
       const loop = ctx.db.getLoop(loopId)!;
@@ -115,7 +131,7 @@ describe("W4.2: LoopOrchestrator", () => {
 
     test("respects maxCostUsd", async () => {
       const ctx = setup();
-      const loopId = await ctx.orchestrator.startLoop("be", "goal", "command:true", {
+      const loopId = await startLegacyLoop(ctx.orchestrator, "be", "goal", "command:true", {
         maxCostUsd: 1.5,
       });
       const loop = ctx.db.getLoop(loopId)!;
@@ -127,7 +143,7 @@ describe("W4.2: LoopOrchestrator", () => {
   describe("onTaskComplete", () => {
     test("marks loop done when condition passes", async () => {
       const ctx = setup();
-      const loopId = await ctx.orchestrator.startLoop("be", "goal", "manual:");
+      const loopId = await startLegacyLoop(ctx.orchestrator, "be", "goal", "manual:");
 
       // Simulate task completion with manual approval behavior
       // For manual conditions, onTaskComplete should set pending_approval
@@ -144,7 +160,7 @@ describe("W4.2: LoopOrchestrator", () => {
 
     test("dispatches next iteration when condition fails", async () => {
       const ctx = setup();
-      const loopId = await ctx.orchestrator.startLoop(
+      const loopId = await startLegacyLoop(ctx.orchestrator, 
         "be", "goal", "file_exists:nonexistent.txt",
         { maxIterations: 5 },
       );
@@ -162,7 +178,7 @@ describe("W4.2: LoopOrchestrator", () => {
 
     test("emits end-of-loop notification when reaching terminal state", async () => {
       const ctx = setup();
-      const loopId = await ctx.orchestrator.startLoop(
+      const loopId = await startLegacyLoop(ctx.orchestrator, 
         "be", "goal", "file_exists:nonexistent.txt",
         { maxIterations: 1, channel: "telegram", channelChatId: "99" },
       );
@@ -182,7 +198,7 @@ describe("W4.2: LoopOrchestrator", () => {
 
     test("marks loop failed when max iterations exceeded", async () => {
       const ctx = setup();
-      const loopId = await ctx.orchestrator.startLoop(
+      const loopId = await startLegacyLoop(ctx.orchestrator, 
         "be", "goal", "file_exists:nonexistent.txt",
         { maxIterations: 1 },
       );
@@ -200,7 +216,7 @@ describe("W4.2: LoopOrchestrator", () => {
 
     test("tracks consecutive failures", async () => {
       const ctx = setup();
-      const loopId = await ctx.orchestrator.startLoop(
+      const loopId = await startLegacyLoop(ctx.orchestrator, 
         "be", "goal", "file_exists:nonexistent.txt",
         { maxIterations: 10, maxConsecutiveFailures: 2 },
       );
@@ -232,7 +248,7 @@ describe("W4.2: LoopOrchestrator", () => {
 
     test("accumulates cost", async () => {
       const ctx = setup();
-      const loopId = await ctx.orchestrator.startLoop(
+      const loopId = await startLegacyLoop(ctx.orchestrator, 
         "be", "goal", "file_exists:nonexistent.txt",
         { maxIterations: 5 },
       );
@@ -247,7 +263,7 @@ describe("W4.2: LoopOrchestrator", () => {
 
     test("stops on cost limit", async () => {
       const ctx = setup();
-      const loopId = await ctx.orchestrator.startLoop(
+      const loopId = await startLegacyLoop(ctx.orchestrator, 
         "be", "goal", "file_exists:nonexistent.txt",
         { maxIterations: 100, maxCostUsd: 0.10 },
       );
@@ -265,7 +281,7 @@ describe("W4.2: LoopOrchestrator", () => {
   describe("cancelLoop", () => {
     test("cancels a running loop", async () => {
       const ctx = setup();
-      const loopId = await ctx.orchestrator.startLoop("be", "goal", "command:true");
+      const loopId = await startLegacyLoop(ctx.orchestrator, "be", "goal", "command:true");
 
       const result = await ctx.orchestrator.cancelLoop(loopId);
       expect(result).toBe(true);
@@ -277,7 +293,7 @@ describe("W4.2: LoopOrchestrator", () => {
 
     test("returns false for non-running loop", async () => {
       const ctx = setup();
-      const loopId = await ctx.orchestrator.startLoop("be", "goal", "command:true");
+      const loopId = await startLegacyLoop(ctx.orchestrator, "be", "goal", "command:true");
       ctx.db.updateLoop(loopId, { status: "done" });
 
       const result = await ctx.orchestrator.cancelLoop(loopId);
@@ -289,7 +305,7 @@ describe("W4.2: LoopOrchestrator", () => {
   describe("approveLoop", () => {
     test("approves a pending loop", async () => {
       const ctx = setup();
-      const loopId = await ctx.orchestrator.startLoop("be", "goal", "manual:");
+      const loopId = await startLegacyLoop(ctx.orchestrator, "be", "goal", "manual:");
 
       // Simulate reaching pending_approval state
       ctx.db.updateLoop(loopId, { pending_approval: 1, status: "running" });
@@ -305,7 +321,7 @@ describe("W4.2: LoopOrchestrator", () => {
 
     test("returns false when not pending", async () => {
       const ctx = setup();
-      const loopId = await ctx.orchestrator.startLoop("be", "goal", "command:true");
+      const loopId = await startLegacyLoop(ctx.orchestrator, "be", "goal", "command:true");
 
       const result = await ctx.orchestrator.approveLoop(loopId);
       expect(result).toBe(false);
@@ -316,7 +332,7 @@ describe("W4.2: LoopOrchestrator", () => {
   describe("rejectLoop", () => {
     test("rejects pending loop and dispatches next iteration", async () => {
       const ctx = setup();
-      const loopId = await ctx.orchestrator.startLoop(
+      const loopId = await startLegacyLoop(ctx.orchestrator, 
         "be", "goal", "manual:",
         { maxIterations: 5 },
       );
@@ -377,6 +393,8 @@ describe("W4.2: LoopOrchestrator", () => {
         consecutive_failures: 0, total_cost_usd: 0.05, max_cost_usd: null,
         pending_approval: 0, started_at: "2024-01-01", finished_at: null,
         finish_reason: null, current_task_id: null,
+        channel: null, channel_chat_id: null, user_id: null,
+        plan: null, plan_enabled: 0,
       }];
       const result = ctx.orchestrator.formatLoopList(loops);
       expect(result).toContain("Fix tests");
@@ -395,6 +413,8 @@ describe("W4.2: LoopOrchestrator", () => {
         consecutive_failures: 0, total_cost_usd: 0.10, max_cost_usd: null,
         pending_approval: 0, started_at: "2024-01-01", finished_at: "2024-01-02",
         finish_reason: "done", current_task_id: null,
+        channel: null, channel_chat_id: null, user_id: null,
+        plan: null, plan_enabled: 0,
       };
       const iterations = [{
         id: 1, loop_id: "abc", iteration_num: 1, task_id: "1",
@@ -427,10 +447,184 @@ describe("W4.2: LoopOrchestrator", () => {
 
     test("returns loop for existing loop", async () => {
       const ctx = setup();
-      const loopId = await ctx.orchestrator.startLoop("be", "goal", "command:true");
+      const loopId = await startLegacyLoop(ctx.orchestrator, "be", "goal", "command:true");
       const result = await ctx.orchestrator.getLoopStatus(loopId);
       expect(result).not.toBeNull();
       expect(result!.loop_id).toBe(loopId);
+      teardown(ctx);
+    });
+  });
+
+  describe("plan-first mode (default)", () => {
+    const planJson = JSON.stringify({
+      steps: [
+        { id: 1, title: "Write model", description: "Create the Order model", verification: "file exists" },
+        { id: 2, title: "Write API", description: "POST /orders endpoint", verification: "200 on test" },
+        { id: 3, title: "Write tests", description: "Unit + integration", verification: "bun test passes" },
+      ],
+    });
+    const planSummary = `Here's the plan:\n\n\`\`\`json\n${planJson}\n\`\`\`\n\nReady to execute.`;
+
+    test("planFirst is the default", async () => {
+      const ctx = setup();
+      const loopId = await ctx.orchestrator.startLoop(
+        "be", "Build order system", "command:true", { maxIterations: 5 },
+      );
+      const loop = ctx.db.getLoop(loopId)!;
+      expect(loop.plan_enabled).toBe(1);
+      // Iter 1 prompt should be the planning prompt, not execution.
+      const iter = ctx.db.getLoopIterations(loopId)[0]!;
+      expect(iter.prompt).toContain("PLANNING ONLY");
+      expect(iter.prompt).toContain("fenced JSON block");
+      teardown(ctx);
+    });
+
+    test("forces bridge loop type when planFirst + loopType=agent both requested", async () => {
+      const ctx = setup();
+      const loopId = await ctx.orchestrator.startLoop(
+        "be", "goal", "command:true",
+        { maxIterations: 5, loopType: "agent", planFirst: true },
+      );
+      expect(ctx.db.getLoop(loopId)!.loop_type).toBe("bridge");
+      teardown(ctx);
+    });
+
+    test("parses plan from fenced JSON and dispatches execution iter 2", async () => {
+      const ctx = setup();
+      const loopId = await ctx.orchestrator.startLoop(
+        "be", "Build order system", "file_exists:never.txt", { maxIterations: 10 },
+      );
+      const iter1 = ctx.db.getLoopIterations(loopId)[0]!;
+
+      // Planning iter completes with a well-formed plan
+      await ctx.orchestrator.onTaskComplete(loopId, iter1.task_id!, planSummary, 0.02);
+
+      const loop = ctx.db.getLoop(loopId)!;
+      expect(loop.plan).not.toBeNull();
+      const parsed = JSON.parse(loop.plan!);
+      expect(parsed.steps.length).toBe(3);
+
+      // Should have advanced to iter 2 (first execution step)
+      expect(loop.current_iteration).toBe(2);
+      const iter2 = ctx.db.getLoopIterations(loopId).find((it) => it.iteration_num === 2)!;
+      expect(iter2.prompt).toContain("Current step (1/3): Write model");
+      expect(iter2.prompt).toContain("Focus on THIS step only");
+      teardown(ctx);
+    });
+
+    test("done-condition is NOT evaluated on planning iter", async () => {
+      const ctx = setup();
+      // file_exists:never.txt → always fails, but planning iter should skip
+      // the check and dispatch iter 2, not mark the loop failed.
+      const loopId = await ctx.orchestrator.startLoop(
+        "be", "goal", "file_exists:never.txt", { maxIterations: 5 },
+      );
+      const iter1 = ctx.db.getLoopIterations(loopId)[0]!;
+      await ctx.orchestrator.onTaskComplete(loopId, iter1.task_id!, planSummary, 0.01);
+      const loop = ctx.db.getLoop(loopId)!;
+      expect(loop.status).toBe("running");
+      expect(loop.consecutive_failures).toBe(0);
+      teardown(ctx);
+    });
+
+    test("caps plan at maxIterations-1 and marks truncated", async () => {
+      const ctx = setup();
+      const bigPlan = {
+        steps: Array.from({ length: 8 }, (_, i) => ({
+          id: i + 1,
+          title: `Step ${i + 1}`,
+          description: `Do step ${i + 1}`,
+        })),
+      };
+      const summary = `\`\`\`json\n${JSON.stringify(bigPlan)}\n\`\`\``;
+      const loopId = await ctx.orchestrator.startLoop(
+        "be", "goal", "file_exists:never.txt", { maxIterations: 4 },
+      );
+      const iter1 = ctx.db.getLoopIterations(loopId)[0]!;
+      await ctx.orchestrator.onTaskComplete(loopId, iter1.task_id!, summary, 0.01);
+
+      const loop = ctx.db.getLoop(loopId)!;
+      const plan = JSON.parse(loop.plan!);
+      expect(plan.steps.length).toBe(3); // maxIterations(4) - 1
+      expect(plan.truncated).toBe(true);
+      teardown(ctx);
+    });
+
+    test("falls back to legacy execution when plan parse fails", async () => {
+      const ctx = setup();
+      const loopId = await ctx.orchestrator.startLoop(
+        "be", "goal", "file_exists:never.txt", { maxIterations: 5 },
+      );
+      const iter1 = ctx.db.getLoopIterations(loopId)[0]!;
+      // No JSON block → parser returns null → fallback
+      await ctx.orchestrator.onTaskComplete(loopId, iter1.task_id!, "I forgot to output JSON.", 0.01);
+
+      const loop = ctx.db.getLoop(loopId)!;
+      expect(loop.plan_enabled).toBe(0);
+      expect(loop.plan).toBeNull();
+      expect(loop.status).toBe("running");
+      expect(loop.current_iteration).toBe(2);
+      teardown(ctx);
+    });
+
+    test("fails loop when plan parse fails and no iterations left", async () => {
+      const ctx = setup();
+      const loopId = await ctx.orchestrator.startLoop(
+        "be", "goal", "file_exists:never.txt", { maxIterations: 1 },
+      );
+      const iter1 = ctx.db.getLoopIterations(loopId)[0]!;
+      await ctx.orchestrator.onTaskComplete(loopId, iter1.task_id!, "no plan here", 0.01);
+
+      const loop = ctx.db.getLoop(loopId)!;
+      expect(loop.status).toBe("failed");
+      expect(loop.finish_reason).toContain("Plan parse failed");
+      teardown(ctx);
+    });
+
+    test("fails when plan exhausted but done condition still not satisfied", async () => {
+      const ctx = setup();
+      const twoStepPlan = JSON.stringify({
+        steps: [
+          { id: 1, title: "A", description: "do a" },
+          { id: 2, title: "B", description: "do b" },
+        ],
+      });
+      const loopId = await ctx.orchestrator.startLoop(
+        "be", "goal", "file_exists:never.txt", { maxIterations: 10 },
+      );
+      // Iter 1 planning
+      const iter1 = ctx.db.getLoopIterations(loopId)[0]!;
+      await ctx.orchestrator.onTaskComplete(
+        loopId, iter1.task_id!,
+        `\`\`\`json\n${twoStepPlan}\n\`\`\``, 0.01,
+      );
+      // Iter 2 = step 1
+      const iter2 = ctx.db.getLoopIterations(loopId).find((it) => it.iteration_num === 2)!;
+      await ctx.orchestrator.onTaskComplete(loopId, iter2.task_id!, "did a", 0.01);
+      // Iter 3 = step 2
+      const iter3 = ctx.db.getLoopIterations(loopId).find((it) => it.iteration_num === 3)!;
+      await ctx.orchestrator.onTaskComplete(loopId, iter3.task_id!, "did b", 0.01);
+
+      const loop = ctx.db.getLoop(loopId)!;
+      expect(loop.status).toBe("failed");
+      expect(loop.finish_reason).toContain("Plan exhausted");
+      teardown(ctx);
+    });
+
+    test("emits plan notification when plan is persisted", async () => {
+      const ctx = setup();
+      const loopId = await ctx.orchestrator.startLoop(
+        "be", "goal", "file_exists:never.txt",
+        { maxIterations: 10, channel: "telegram", channelChatId: "123" },
+      );
+      const iter1 = ctx.db.getLoopIterations(loopId)[0]!;
+      await ctx.orchestrator.onTaskComplete(loopId, iter1.task_id!, planSummary, 0.01);
+
+      const notifs = ctx.db.getPendingNotifications();
+      const planNote = notifs.find((n) => n.message.includes("plan"));
+      expect(planNote).toBeTruthy();
+      expect(planNote!.chat_id).toBe("123");
+      expect(planNote!.message).toContain("Write model");
       teardown(ctx);
     });
   });

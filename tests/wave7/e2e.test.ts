@@ -101,9 +101,11 @@ describe("W7.4: E2E Integration", () => {
     db.createAgent("be", projectDir, "be--project", "f");
 
     // Start loop
+    // planFirst:false → iter 1 is an execution iter (this test predates
+    // plan-first; the plan path is covered separately in wave4).
     const loopId = await orchestrator.startLoop(
       "be", "Pass all tests", "command:true",
-      { maxIterations: 3 },
+      { maxIterations: 3, planFirst: false },
     );
 
     let loop = db.getLoop(loopId)!;

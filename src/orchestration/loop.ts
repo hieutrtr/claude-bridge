@@ -2,16 +2,20 @@
  * Loop Orchestrator — iterative task execution with done conditions.
  *
  * State machine: running → (dispatch → evaluate → decide) → completed/failed/cancelled
- * Matches Python loop_orchestrator.py behavior.
+ *
+ * Plan-first mode (default): iteration 1 is a planning iteration — the agent
+ * returns a structured JSON plan instead of doing the work. Iterations 2..N+1
+ * each execute one sub-task from the plan. This gives the user early per-step
+ * reports instead of the agent dumping everything into iter 1. Opt out with
+ * planFirst: false.
  */
 
-import type { Loop, LoopIteration } from "../types.js";
+import type { Loop, LoopIteration, LoopPlan, LoopPlanStep } from "../types.js";
 import type { IDatabase } from "../data/interfaces.js";
 import type { IDispatcher } from "../execution/interfaces.js";
 import { startTask } from "../execution/dispatcher.js";
-import type { ILoopOrchestrator, ILoopEvaluator, AgentLoopResult } from "./interfaces.js";
+import type { ILoopOrchestrator, ILoopEvaluator } from "./interfaces.js";
 
-const COST_WARNING_THRESHOLD = 0.80;
 const MAX_FEEDBACK_CHARS = 2000;
 
 export class LoopOrchestrator implements ILoopOrchestrator {
@@ -34,6 +38,7 @@ export class LoopOrchestrator implements ILoopOrchestrator {
       channel?: string;
       channelChatId?: string;
       userId?: string;
+      planFirst?: boolean;
     },
   ): Promise<string> {
     // Validate done condition
@@ -56,7 +61,15 @@ export class LoopOrchestrator implements ILoopOrchestrator {
 
     const maxIterations = options?.maxIterations ?? 10;
     const maxConsecutiveFailures = options?.maxConsecutiveFailures ?? 3;
-    const loopType = options?.loopType ?? this.decideLoopType(goal, doneCondition, null, maxIterations);
+    const planFirst = options?.planFirst ?? true;
+
+    // Plan-first forces bridge loop: an "agent" loop runs everything inside a
+    // single claude session so we can't split iterations for early reports.
+    let loopType = options?.loopType
+      ?? this.decideLoopType(goal, doneCondition, null, maxIterations);
+    if (planFirst && loopType === "agent") {
+      loopType = "bridge";
+    }
     const maxCostUsd = options?.maxCostUsd ?? null;
 
     // Create loop — persist channel info so each iteration task inherits it and
@@ -73,9 +86,10 @@ export class LoopOrchestrator implements ILoopOrchestrator {
       options?.channel ?? null,
       options?.channelChatId ?? null,
       options?.userId ?? null,
+      planFirst,
     );
 
-    // Dispatch first iteration
+    // Dispatch first iteration — planning iter if planFirst, else execution iter.
     await this.dispatchIteration(loopId, 1, null);
 
     return loopId;
@@ -106,7 +120,8 @@ export class LoopOrchestrator implements ILoopOrchestrator {
     const newTotalCost = loop.total_cost_usd + costUsd;
     this.db.updateLoop(loopId, { total_cost_usd: newTotalCost });
 
-    // Check cost limit
+    // Check cost limit — applies before every other branch so a runaway plan
+    // can still be stopped.
     if (loop.max_cost_usd !== null && newTotalCost >= loop.max_cost_usd) {
       this.finalizeLoop(
         loop,
@@ -117,11 +132,20 @@ export class LoopOrchestrator implements ILoopOrchestrator {
       return;
     }
 
+    // Planning iteration path — parse the plan and dispatch the first execution
+    // iter. Done-condition evaluation and failure-count tracking don't apply:
+    // planning produces no code, so it can't satisfy a goal or "fail" in the
+    // same sense.
+    if (this.isPlanningIteration(loop, currentIter)) {
+      await this.handlePlanningCompletion(loop, resultSummary, newTotalCost);
+      return;
+    }
+
     // Check if task itself failed (non-zero exit)
     const task = this.db.getTask(parseInt(taskId, 10));
     const taskFailed = task?.status === "failed";
 
-    // Track consecutive failures
+    // Track consecutive failures (only for execution iterations)
     let consecutiveFailures = loop.consecutive_failures;
     if (taskFailed) {
       consecutiveFailures += 1;
@@ -168,6 +192,18 @@ export class LoopOrchestrator implements ILoopOrchestrator {
 
     if (passed) {
       this.finalizeLoop(loop, "done", reason, newTotalCost);
+      return;
+    }
+
+    // If the plan is exhausted and the done condition still hasn't passed,
+    // fail explicitly rather than looping forever on phantom steps.
+    if (this.isPlanExhausted(loop)) {
+      this.finalizeLoop(
+        loop,
+        "failed",
+        "Plan exhausted but done condition still not satisfied",
+        newTotalCost,
+      );
       return;
     }
 
@@ -328,6 +364,16 @@ export class LoopOrchestrator implements ILoopOrchestrator {
     lines.push(`Loop ${loop.loop_id} — ${loop.status}${cost}`);
     lines.push(`Goal: ${loop.goal}`);
     lines.push(`Done when: ${loop.done_when}`);
+
+    const plan = this.getPlan(loop);
+    if (plan) {
+      lines.push("");
+      lines.push(`Plan (${plan.steps.length} steps${plan.truncated ? ", truncated" : ""}):`);
+      for (const step of plan.steps) {
+        lines.push(`  ${step.id}. ${step.title}`);
+      }
+    }
+
     lines.push("");
 
     for (const iter of iterations) {
@@ -345,7 +391,203 @@ export class LoopOrchestrator implements ILoopOrchestrator {
     return lines.join("\n");
   }
 
-  // --- Private helpers ---
+  // --- Plan-first helpers ---
+
+  /** True iff the completed iteration was the planning iteration. */
+  private isPlanningIteration(loop: Loop, iter: LoopIteration | undefined): boolean {
+    if (!iter) return false;
+    if (loop.plan_enabled !== 1) return false;
+    // A planning iter is iter #1 AND the plan hasn't been stored yet. Once the
+    // plan is stored, iter 1 becomes an execution iter (shouldn't happen in
+    // normal flow, but guards against replays).
+    return iter.iteration_num === 1 && !loop.plan;
+  }
+
+  /**
+   * Parse the plan from the planning iteration's summary and dispatch the
+   * first execution iteration. On parse failure, fall back to legacy mode:
+   * disable plan_enabled and dispatch iter 2 as a regular execution iter.
+   */
+  private async handlePlanningCompletion(
+    loop: Loop,
+    resultSummary: string,
+    totalCost: number,
+  ): Promise<void> {
+    const parsed = this.parsePlan(resultSummary, loop.max_iterations);
+
+    if (!parsed) {
+      // Fallback: turn plan-first off for the rest of the loop and continue.
+      // Notify so the user knows why we didn't split into sub-tasks.
+      this.db.updateLoop(loop.loop_id, { plan_enabled: 0 });
+      this.emitLoopNotification(
+        loop,
+        `⚠ Loop ${loop.loop_id}: could not parse plan from iter 1 output — falling back to single-shot execution.`,
+      );
+      if (loop.current_iteration >= loop.max_iterations) {
+        this.finalizeLoop(
+          loop,
+          "failed",
+          "Plan parse failed and no iterations left for fallback execution",
+          totalCost,
+        );
+        return;
+      }
+      await this.dispatchIteration(loop.loop_id, loop.current_iteration + 1, null);
+      return;
+    }
+
+    // Store plan. Refresh loop state before emitting notifications so any
+    // downstream reader sees the plan.
+    this.db.updateLoop(loop.loop_id, { plan: JSON.stringify(parsed) });
+    const stepsList = parsed.steps.map((s) => `${s.id}. ${s.title}`).join("\n");
+    const truncatedNote = parsed.truncated
+      ? ` (truncated to fit max_iterations=${loop.max_iterations})`
+      : "";
+    this.emitLoopNotification(
+      loop,
+      `📋 Loop ${loop.loop_id} plan${truncatedNote}:\n${stepsList}`,
+    );
+
+    if (loop.current_iteration >= loop.max_iterations) {
+      this.finalizeLoop(
+        loop,
+        "failed",
+        "No iterations left after planning",
+        totalCost,
+      );
+      return;
+    }
+
+    await this.dispatchIteration(loop.loop_id, loop.current_iteration + 1, null);
+  }
+
+  /**
+   * Extract and validate the plan JSON from the agent's summary. Looks for a
+   * fenced ```json block first, then falls back to the first balanced JSON
+   * object that contains a "steps" array. Returns null if no valid plan found.
+   */
+  private parsePlan(summary: string, maxIterations: number): LoopPlan | null {
+    const candidates: string[] = [];
+
+    // Prefer fenced ```json ... ``` blocks. Match non-greedy across newlines.
+    const fencedRe = /```(?:json)?\s*\n([\s\S]*?)```/gi;
+    let m: RegExpExecArray | null;
+    while ((m = fencedRe.exec(summary)) !== null) {
+      candidates.push(m[1]!);
+    }
+
+    // Fallback: raw JSON object literals containing "steps".
+    if (candidates.length === 0) {
+      const stepsIdx = summary.indexOf('"steps"');
+      if (stepsIdx >= 0) {
+        const braceStart = summary.lastIndexOf("{", stepsIdx);
+        if (braceStart >= 0) {
+          const braceEnd = this.findMatchingBrace(summary, braceStart);
+          if (braceEnd > braceStart) {
+            candidates.push(summary.slice(braceStart, braceEnd + 1));
+          }
+        }
+      }
+    }
+
+    for (const raw of candidates) {
+      try {
+        const obj = JSON.parse(raw) as unknown;
+        const plan = this.validatePlan(obj, maxIterations);
+        if (plan) return plan;
+      } catch {
+        // try next candidate
+      }
+    }
+    return null;
+  }
+
+  private findMatchingBrace(text: string, openIdx: number): number {
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let i = openIdx; i < text.length; i++) {
+      const ch = text[i]!;
+      if (escape) { escape = false; continue; }
+      if (ch === "\\") { escape = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) return i;
+      }
+    }
+    return -1;
+  }
+
+  private validatePlan(obj: unknown, maxIterations: number): LoopPlan | null {
+    if (!obj || typeof obj !== "object") return null;
+    const record = obj as Record<string, unknown>;
+    const rawSteps = record["steps"];
+    if (!Array.isArray(rawSteps) || rawSteps.length === 0) return null;
+
+    const steps: LoopPlanStep[] = [];
+    for (let i = 0; i < rawSteps.length; i++) {
+      const s = rawSteps[i];
+      if (!s || typeof s !== "object") continue;
+      const sr = s as Record<string, unknown>;
+      const title = typeof sr["title"] === "string" ? (sr["title"] as string).trim() : "";
+      const description = typeof sr["description"] === "string"
+        ? (sr["description"] as string).trim()
+        : "";
+      if (!title || !description) continue;
+      const step: LoopPlanStep = {
+        id: typeof sr["id"] === "number" ? (sr["id"] as number) : steps.length + 1,
+        title,
+        description,
+      };
+      const verification = typeof sr["verification"] === "string"
+        ? (sr["verification"] as string).trim()
+        : "";
+      if (verification) step.verification = verification;
+      steps.push(step);
+    }
+
+    if (steps.length === 0) return null;
+
+    // Cap plan at (maxIterations - 1) — we already used iter 1 for planning.
+    const maxExecSteps = Math.max(1, maxIterations - 1);
+    let truncated = false;
+    if (steps.length > maxExecSteps) {
+      steps.length = maxExecSteps;
+      truncated = true;
+    }
+
+    // Renumber for consistency regardless of what the agent produced.
+    for (let i = 0; i < steps.length; i++) {
+      steps[i]!.id = i + 1;
+    }
+
+    const plan: LoopPlan = { steps };
+    if (truncated) plan.truncated = true;
+    return plan;
+  }
+
+  private getPlan(loop: Loop): LoopPlan | null {
+    if (!loop.plan) return null;
+    try {
+      return JSON.parse(loop.plan) as LoopPlan;
+    } catch {
+      return null;
+    }
+  }
+
+  /** When plan-first is active and every step has been dispatched. */
+  private isPlanExhausted(loop: Loop): boolean {
+    if (loop.plan_enabled !== 1) return false;
+    const plan = this.getPlan(loop);
+    if (!plan) return false;
+    // Iter 1 = planning, iters 2..plan.steps.length+1 = execution.
+    return loop.current_iteration >= plan.steps.length + 1;
+  }
+
+  // --- Private dispatch helpers ---
 
   private async dispatchIteration(
     loopId: string,
@@ -356,7 +598,7 @@ export class LoopOrchestrator implements ILoopOrchestrator {
     const agent = this.db.getAgent(loop.agent);
     if (!agent) throw new Error(`Loop ${loopId}: agent "${loop.agent}" not found`);
 
-    const prompt = this.buildIterationPrompt(loop.goal, iterationNum, feedback, loop.loop_type, loop.done_when);
+    const prompt = this.buildPrompt(loop, iterationNum, feedback);
 
     // Create task row for this iteration (uses agent's canonical session_id,
     // not a reconstructed one, so it always matches). Inherit the loop's
@@ -402,7 +644,106 @@ export class LoopOrchestrator implements ILoopOrchestrator {
     }
   }
 
-  private buildIterationPrompt(
+  /**
+   * Build the prompt for an iteration. Three modes:
+   *   1. Planning iter (iter 1, plan_enabled, no plan stored yet)
+   *   2. Execution iter with plan (iter 2+, plan available)
+   *   3. Legacy execution iter (plan disabled or plan missing)
+   */
+  private buildPrompt(loop: Loop, iterationNum: number, feedback: string | null): string {
+    if (loop.plan_enabled === 1 && iterationNum === 1 && !loop.plan) {
+      return this.buildPlanningPrompt(loop);
+    }
+
+    const plan = this.getPlan(loop);
+    if (plan) {
+      // iter 1 was planning, so exec step index = iterationNum - 2
+      const stepIdx = iterationNum - 2;
+      const step = plan.steps[stepIdx];
+      if (step) {
+        return this.buildPlanExecutionPrompt(loop, plan, step, stepIdx + 1, feedback);
+      }
+      // No step for this iter — plan is exhausted. This shouldn't be reached
+      // (onTaskComplete catches it first), but keep a defensive legacy prompt.
+    }
+
+    return this.buildLegacyIterationPrompt(
+      loop.goal, iterationNum, feedback, loop.loop_type, loop.done_when,
+    );
+  }
+
+  private buildPlanningPrompt(loop: Loop): string {
+    return [
+      `You are planning a multi-iteration task loop.`,
+      ``,
+      `Goal: ${loop.goal}`,
+      `Done condition: ${loop.done_when}`,
+      `Available iterations for execution: ${Math.max(1, loop.max_iterations - 1)}`,
+      ``,
+      `Break the goal into small, independently-reportable sub-tasks. Each sub-task should fit one iteration (~5-15 min of focused work) and produce a report the user can read. Prefer 3-7 steps. Do NOT produce a single giant step that redoes the whole goal.`,
+      ``,
+      `IMPORTANT: This iteration is for PLANNING ONLY. Do not edit files, run commands, or implement anything. The next iteration will execute step 1.`,
+      ``,
+      `Output the plan as a fenced JSON block with this exact shape:`,
+      ``,
+      "```json",
+      `{`,
+      `  "steps": [`,
+      `    {`,
+      `      "id": 1,`,
+      `      "title": "Short imperative name",`,
+      `      "description": "What to do in this step",`,
+      `      "verification": "How to tell this step is complete"`,
+      `    }`,
+      `  ]`,
+      `}`,
+      "```",
+      ``,
+      `You may include a short prose intro, but the fenced JSON block is required — the bridge parses it to drive subsequent iterations.`,
+    ].join("\n");
+  }
+
+  private buildPlanExecutionPrompt(
+    loop: Loop,
+    plan: LoopPlan,
+    step: LoopPlanStep,
+    currentStepNum: number,
+    feedback: string | null,
+  ): string {
+    const stepsList = plan.steps
+      .map((s) => `${s.id === step.id ? "→" : " "} ${s.id}. ${s.title}`)
+      .join("\n");
+
+    const parts: string[] = [
+      `Loop goal: ${loop.goal}`,
+      ``,
+      `Plan (${plan.steps.length} steps):`,
+      stepsList,
+      ``,
+      `Current step (${currentStepNum}/${plan.steps.length}): ${step.title}`,
+      step.description,
+    ];
+
+    if (step.verification) {
+      parts.push(``);
+      parts.push(`Verification: ${step.verification}`);
+    }
+
+    parts.push(``);
+    parts.push(
+      `IMPORTANT: Focus on THIS step only. Do not work ahead on later steps — the loop will run those in subsequent iterations. When done, summarize what you did and whether verification passed.`,
+    );
+
+    if (feedback) {
+      parts.push(``);
+      parts.push(`Previous iterations:`);
+      parts.push(feedback);
+    }
+
+    return parts.join("\n");
+  }
+
+  private buildLegacyIterationPrompt(
     goal: string,
     iterationNum: number,
     feedback: string | null,

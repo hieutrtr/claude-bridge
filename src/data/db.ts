@@ -31,7 +31,7 @@ const TASK_UPDATABLE = new Set([
 const LOOP_UPDATABLE = new Set([
   "status", "current_iteration", "consecutive_failures", "total_cost_usd",
   "finished_at", "finish_reason", "current_task_id", "loop_type",
-  "max_cost_usd", "pending_approval",
+  "max_cost_usd", "pending_approval", "plan", "plan_enabled",
 ]);
 
 const LOOP_ITER_UPDATABLE = new Set([
@@ -63,6 +63,8 @@ export class BridgeDatabase implements IDatabase {
     this.addColumnIfMissing("loops", "channel", "TEXT");
     this.addColumnIfMissing("loops", "channel_chat_id", "TEXT");
     this.addColumnIfMissing("loops", "user_id", "TEXT");
+    this.addColumnIfMissing("loops", "plan", "TEXT");
+    this.addColumnIfMissing("loops", "plan_enabled", "INTEGER NOT NULL DEFAULT 0");
   }
 
   private addColumnIfMissing(table: string, column: string, decl: string): void {
@@ -171,7 +173,9 @@ export class BridgeDatabase implements IDatabase {
         current_task_id TEXT,
         channel TEXT,
         channel_chat_id TEXT,
-        user_id TEXT
+        user_id TEXT,
+        plan TEXT,
+        plan_enabled INTEGER NOT NULL DEFAULT 0
       );
 
       CREATE TABLE IF NOT EXISTS loop_iterations (
@@ -535,12 +539,13 @@ export class BridgeDatabase implements IDatabase {
     channel: string | null = null,
     channelChatId: string | null = null,
     userId: string | null = null,
+    planEnabled: boolean = false,
   ): string {
     const loopId = crypto.randomUUID().slice(0, 8);
     this.db.run(
-      `INSERT INTO loops (loop_id, agent, project, goal, done_when, loop_type, max_iterations, max_consecutive_failures, max_cost_usd, started_at, channel, channel_chat_id, user_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [loopId, agent, project, goal, doneWhen, loopType, maxIterations, maxConsecutiveFailures, maxCostUsd, utcnow(), channel, channelChatId, userId],
+      `INSERT INTO loops (loop_id, agent, project, goal, done_when, loop_type, max_iterations, max_consecutive_failures, max_cost_usd, started_at, channel, channel_chat_id, user_id, plan_enabled)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [loopId, agent, project, goal, doneWhen, loopType, maxIterations, maxConsecutiveFailures, maxCostUsd, utcnow(), channel, channelChatId, userId, planEnabled ? 1 : 0],
     );
     return loopId;
   }

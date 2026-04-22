@@ -239,6 +239,9 @@ async function handleTool(
           channel: chatId ? "telegram" : undefined,
           channelChatId: chatId,
           userId,
+          planFirst: args["plan_first"] === undefined
+            ? undefined
+            : Boolean(args["plan_first"]),
         },
       );
       return text(`Started loop ${loopId}`);
