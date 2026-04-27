@@ -102,13 +102,64 @@ This is the most fragile area; review carefully.
 
 Read `evaluator.ts`. Per-type check:
 
-- **`command`** — `Bun.spawn(["sh", "-c", cmd])`, 30s timeout. Verify timeout enforcement and that exit 0 = pass. SQL injection / shell injection on `cmd` is an accepted risk (user controls done_when), but document if there's any place we sanitize.
-- **`file_exists`** — relative paths resolved against `projectDir`. Symlinks?
-- **`file_contains`** — `String.includes`, not regex. Document this clearly in the spec; users sometimes assume regex.
-- **`llm_judge`** — spawns claude out-of-band. Cost is *not* tracked (known gap; see `docs/specs/03-orchestration.md` §6 cost blind spot). Confirm error path: missing claude binary → graceful fail.
-- **`manual`** — handled in `LoopOrchestrator.onTaskComplete`, not here. Evaluator's `manual` arm returns `[false, ...]` as defensive default (unreachable in normal flow). Confirm dead-code comment.
+- **`command`** — `Bun.spawn(["sh", "-c", cmd])`, default 30s timeout (`evaluator.ts:92`). Verify timeout enforcement (timer + `proc.kill()`) and explicit timeout-vs-failure detection (`exitCode === null || (proc.killed && exitCode !== 0)`). Exit 0 = pass. Shell injection on `cmd` is an accepted risk (user controls `done_when`); document if any caller sanitizes.
+- **`file_exists`** — relative paths resolved against `projectDir`. `existsSync` follows symlinks; flag if symlink-traversal matters for the project.
+- **`file_contains`** — `String.includes`, not regex. Document clearly; users assume regex. Reads the whole file into memory — flag for large files.
+- **`llm_judge`** — see Phase D.1 below (this is the most fragile evaluator).
+- **`manual`** — handled in `LoopOrchestrator.onTaskComplete`, not here. Evaluator's `manual` arm returns `[false, "Requires manual approval"]` (`evaluator.ts:86`) as defensive default; unreachable in normal flow because the orchestrator short-circuits before calling `evaluate`. Confirm a comment marks it as defensive.
 
-`parseDoneCondition`: `file_contains:path:pattern` splits on the second colon. What about `file_contains:path:with:colons:in:pattern`? The pattern keeps everything after the second colon — verify with a test.
+`parseDoneCondition`: `file_contains:path:pattern` splits on the *first* colon after the type, so `file_contains:src/foo.ts:expected text with: colons` keeps everything after the second colon as the pattern. Verify with a test (`tests/wave4/evaluator.test.ts` if it exists).
+
+#### Phase D.1 — `llm_judge` deep-dive
+
+`evalLlmJudge` (`src/orchestration/evaluator.ts:159`) shells out to a fresh `claude` process to grade the iteration result. It is the only evaluator that calls an LLM, has no test coverage by default, and has several sharp edges. Walk this checklist line by line:
+
+**Spawn shape** (`evaluator.ts:170`):
+
+- Argv: `["claude", "--print", "-p", prompt]`. Verify the binary lookup is via `PATH`, not a hardcoded path. Catch block masks any spawn failure as `"LLM judge unavailable (claude CLI not found)"` — confirm the message doesn't lie if the spawn failed for a different reason (perms, signal).
+- `cwd: projectDir`. The judge inherits whatever `.claude/`, `.mcp.json`, or `CLAUDE.md` lives in the project — that means it can pick up unintended MCP servers or agent configs. Flag if the judge should be isolated (e.g. spawned with `cwd: tmpdir()` or with `--no-mcp` / equivalent flag).
+- No `--dangerously-skip-permissions`. `claude --print -p` typically doesn't invoke tools so this is usually fine, but a malicious or misbehaving rubric could trip the model into wanting to run a tool, which would then prompt and hang. Flag if this is a concern.
+- No `--model` override. The judge uses whatever default the user's `claude` CLI has configured — could be Opus (expensive judge for cheap iterations) or Haiku (under-powered). Flag the lack of explicit model selection.
+- No `--session-id`, no `--agent`. The judge spawn is intentionally stateless — confirm no caller assumes session continuity.
+
+**Timeout handling** (`evaluator.ts:176-181`):
+
+- `setTimeout(timeoutSec * 1000)` then `proc.kill()`. Timer is cleared after `proc.exited` resolves — order matters; if the proc exits naturally first, `clearTimeout` prevents a stray `kill()` of an unrelated future PID (irrelevant in Node since the timer's callback is bound, but worth noting).
+- **Compared to `evalCommand`, the judge does NOT detect timeout as a distinct case.** `evalCommand` returns `"Command timed out after Ns"` when `exitCode === null || (proc.killed && exitCode !== 0)`. `evalLlmJudge` skips this check and falls straight into stdout parsing: a killed claude usually produces empty stdout → `firstLine = ""` → no `PASS`/`FAIL` → returns `"LLM judge response unclear: "` (truncated). The user gets a misleading "ambiguous" failure instead of a "timed out" failure. **🔴 Finding worth raising.**
+
+**Output parsing** (`evaluator.ts:183-192`):
+
+- Reads `stdout` only. **`stderr` is never read.** If claude writes warnings (e.g. "Loading development channels", credential prompts) to stderr, the user sees nothing. Flag as observability gap.
+- Takes `output.trim().split("\n")[0]?.toUpperCase()`, then `.includes("PASS")` / `.includes("FAIL")`. Quirks:
+  - The check is substring, not equality. `"PASSPHRASE"` matches PASS, `"NEED TO FAIL THIS"` matches FAIL. Edge case; document it.
+  - The order is PASS-first. If the first line happens to contain both ("PASS — but only because the FAIL conditions weren't met"), it counts as PASS. Probably the right default but explicit.
+  - Only the first line is examined. If the model writes a preamble before its verdict, the judge fails-closed (returns FAIL with "unclear"). The `LLM_JUDGE_PROMPT` template (`evaluator.ts:14-22`) instructs "Respond with exactly one word: PASS or FAIL / Then on the next line, briefly explain why" — but agent compliance is not guaranteed. Flag the lack of fallback parsing (e.g. scan all lines).
+- Ambiguous output: returns `[false, "LLM judge response unclear: ${output.slice(0, 200)}"]`. Note the slice mismatch — `evalCommand` slices to 2000, `evalLlmJudge` slices to 200 in the unclear branch but returns the **full** `output.trim()` in PASS/FAIL branches. Inconsistent; flag as a smell.
+
+**Prompt template** (`evaluator.ts:14-22 LLM_JUDGE_PROMPT`):
+
+- Uses two `String.prototype.replace` calls (no `g` flag), so only the first occurrence of `{rubric}` and `{result}` is substituted. If the rubric itself contains the literal `{result}`, the second `replace` substitutes it (probably wrong). If the `resultSummary` contains `{rubric}`, no harm because that placeholder was already substituted. Edge case but real — flag the lack of a structural template engine.
+- Falls back to `"No result summary available"` when `resultSummary` is empty. Confirm callers always pass a summary; if the orchestrator ever calls `evaluate` without one, the judge grades nothing.
+- Prompt instructs "exactly one word: PASS or FAIL". Models often ignore the "exactly" constraint and add bullet markers. The substring check tolerates this, but combined with the substring-includes quirk above, "DOES NOT PASS" still matches PASS. **🔴 Worth flagging as a correctness risk** — invert-the-meaning sentences win.
+
+**Cost & rate** (process-level concerns):
+
+- **Cost is not tracked.** The judge spawns claude → consumes tokens → user is billed → `loops.total_cost_usd` does not include this. Cost ceilings (`max_cost_usd`) are bypassed by judge costs. **🔴 Documented blind spot** — link `docs/specs/03-orchestration.md` §6 (Cost tracking). If you change anything in the judge path, decide whether to fix this in the same change.
+- **The judge runs on every non-manual completion** for an `llm_judge` loop. A 10-iteration loop = 10 judge calls, each potentially a full claude invocation. Compounds the cost gap.
+
+**Error handling** (`evaluator.ts:193-195`):
+
+- Single `catch { ... }` returns `"LLM judge unavailable (claude CLI not found)"`. The message is misleading for any non-spawn error (e.g., `proc.exited` rejecting, `Response()` parsing failure). Consider differentiated messages or include the original error.
+- No retries, no exponential backoff. A transient claude/Anthropic API failure fails the iteration's done-check immediately. Flag if reliability matters.
+
+**What good would look like** — list as recommendations, not findings:
+
+- Detect timeout explicitly (mirror `evalCommand`'s `exitCode === null` branch).
+- Read stderr and surface it in the failure reason.
+- Scan all output lines (not just first) for the verdict; require a leading `PASS`/`FAIL` token to avoid the substring trap.
+- Add `--model` flag (configurable) so the judge model is explicit.
+- Track judge cost: capture `--output-format json` from claude, sum its `total_cost_usd` into `loops.total_cost_usd`.
+- Cover with tests: PASS, FAIL, ambiguous, timeout, missing claude binary, prompt with `{result}` literal in rubric.
 
 ### Phase E — Seams (dispatcher + on-complete + startup)
 
