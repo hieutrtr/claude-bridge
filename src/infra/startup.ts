@@ -12,15 +12,18 @@ import { Dispatcher } from "../execution/dispatcher.js";
 import { Notifier } from "../execution/notify.js";
 import { LoopOrchestrator } from "../orchestration/loop.js";
 import { LoopEvaluator } from "../orchestration/evaluator.js";
+import { Scheduler } from "../orchestration/scheduler.js";
 import { startServer } from "../mcp/server.js";
 
 // Watcher is the primary completion path (see watcher.ts for why the stop hook
 // can't read the result). 5s keeps end-to-end completion latency low.
 const WATCHER_INTERVAL_MS = 5_000;
 const NOTIFICATION_INTERVAL_MS = 5_000;
+const SCHEDULER_INTERVAL_MS = 60_000;
 
 export class StartupOrchestrator {
   private watcher: ProcessWatcher | null = null;
+  private scheduler: Scheduler | null = null;
   private notificationTimer: ReturnType<typeof setInterval> | null = null;
   private db: BridgeDatabase | null = null;
 
@@ -45,6 +48,13 @@ export class StartupOrchestrator {
     );
     this.watcher.start(WATCHER_INTERVAL_MS);
     process.stderr.write(`[startup] ProcessWatcher started (${WATCHER_INTERVAL_MS / 1000}s interval)\n`);
+
+    // Start scheduler — polls `schedules` table and dispatches due rows
+    // through the same startTask path as `bridge dispatch`. Without this
+    // wiring, `bridge schedule-add` rows would never fire.
+    this.scheduler = new Scheduler(this.homeDir, this.db, dispatcher);
+    this.scheduler.start(SCHEDULER_INTERVAL_MS);
+    process.stderr.write(`[startup] Scheduler started (${SCHEDULER_INTERVAL_MS / 1000}s interval)\n`);
 
     // Start notification processing loop
     this.startNotificationLoop();
@@ -91,6 +101,10 @@ export class StartupOrchestrator {
     if (this.watcher) {
       this.watcher.stop();
       this.watcher = null;
+    }
+    if (this.scheduler) {
+      this.scheduler.stop();
+      this.scheduler = null;
     }
     if (this.notificationTimer) {
       clearInterval(this.notificationTimer);
