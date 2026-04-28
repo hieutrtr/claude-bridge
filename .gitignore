@@ -1,11 +1,14 @@
 # Claude Code
 .claude/worktrees/
+.claude/settings.local.json
 
 # Dependencies
 node_modules/
+.bun/
 
 # Build output
 dist/
+*.tsbuildinfo
 
 # IDE
 .vscode/
@@ -15,6 +18,9 @@ dist/
 # Bridge runtime
 *.db
 *.log
+
+# Test sandbox leaks (macOS $TMPDIR sometimes resolves under ./var)
+var/
 
 # Environment secrets
 .env
