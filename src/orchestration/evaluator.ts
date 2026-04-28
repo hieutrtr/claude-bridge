@@ -11,6 +11,32 @@ import type { DoneCondition, ILoopEvaluator } from "./interfaces.js";
 
 const VALID_TYPES = new Set(["command", "file_exists", "file_contains", "llm_judge", "manual"]);
 
+/**
+ * Strict verdict parser for `llm_judge` output. Exported for unit testing
+ * without spawning the real `claude` CLI.
+ *
+ * Looks at the first non-empty line of the model's response and requires it
+ * to start with `PASS` or `FAIL` as a whole word. Substring matching (the
+ * earlier behavior) was wrong because "DOES NOT PASS" or "PASSPHRASE" would
+ * read as PASS, and "FAILED" as FAIL. The prompt template asks the model for
+ * "exactly one word: PASS or FAIL" — this parser is the contract enforcer.
+ *
+ * Returns `[true, fullOutput]` for PASS, `[false, fullOutput]` for FAIL, and
+ * `[false, "LLM judge response unclear: <slice>"]` for everything else
+ * (including empty stdout from a killed process). Loop treats unclear as
+ * FAIL, so the loop continues to the next iteration.
+ */
+export function parseJudgeVerdict(rawOutput: string): [boolean, string] {
+  const trimmed = rawOutput.trim();
+  const firstLine = trimmed.split("\n")[0]?.toUpperCase() ?? "";
+  const verdictMatch = firstLine.match(/^\s*(PASS|FAIL)\b/);
+  if (verdictMatch?.[1] === "PASS") return [true, trimmed];
+  if (verdictMatch?.[1] === "FAIL") return [false, trimmed];
+  // Slice 2000 to match evalCommand's output truncation. Earlier 200-char
+  // slice often cut off the model's explanation on line 2.
+  return [false, `LLM judge response unclear: ${rawOutput.slice(0, 2000)}`];
+}
+
 const LLM_JUDGE_PROMPT = `You are evaluating whether a task result meets a rubric.
 
 Rubric: {rubric}
@@ -180,16 +206,14 @@ export class LoopEvaluator implements ILoopEvaluator {
       const exitCode = await proc.exited;
       clearTimeout(timer);
 
-      const output = await new Response(proc.stdout).text();
-      const firstLine = output.trim().split("\n")[0]?.toUpperCase() ?? "";
-
-      if (firstLine.includes("PASS")) {
-        return [true, output.trim()];
-      } else if (firstLine.includes("FAIL")) {
-        return [false, output.trim()];
+      // Detect timeout explicitly so the user gets "judge timed out" instead
+      // of the misleading "ambiguous" verdict that empty stdout would produce.
+      if (exitCode === null || (proc.killed && exitCode !== 0)) {
+        return [false, `LLM judge timed out after ${timeoutSec}s`];
       }
-      // Ambiguous — treat as fail
-      return [false, `LLM judge response unclear: ${output.slice(0, 200)}`];
+
+      const output = await new Response(proc.stdout).text();
+      return parseJudgeVerdict(output);
     } catch {
       return [false, "LLM judge unavailable (claude CLI not found)"];
     }

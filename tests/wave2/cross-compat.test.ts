@@ -108,6 +108,7 @@ describe("W2.6: Cross-Compatibility", () => {
         "consecutive_failures", "total_cost_usd", "max_cost_usd", "pending_approval",
         "started_at", "finished_at", "finish_reason", "current_task_id",
         "channel", "channel_chat_id", "user_id", "plan", "plan_enabled",
+        "pass_threshold", "consecutive_passes",
       ].sort();
       expect(colNames).toEqual(expected);
       rawDb.close();

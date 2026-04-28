@@ -107,6 +107,15 @@ export interface Loop {
   user_id: string | null;
   plan: string | null;
   plan_enabled: number;
+  /**
+   * Number of consecutive PASS verdicts the done condition must produce
+   * before the loop terminates as `done`. Default 1 (legacy behavior — first
+   * PASS wins). Higher values (typically 2–3) make stochastic conditions
+   * (`llm_judge`, flaky `command:`) less likely to false-positive into early
+   * termination. Reset to 0 on any non-PASS evaluation.
+   */
+  pass_threshold: number;
+  consecutive_passes: number;
 }
 
 /** Parsed plan stored JSON-serialized in `Loop.plan`. */

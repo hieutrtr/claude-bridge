@@ -5,7 +5,7 @@ import { describe, test, expect } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { LoopEvaluator } from "../../src/orchestration/evaluator.js";
+import { LoopEvaluator, parseJudgeVerdict } from "../../src/orchestration/evaluator.js";
 
 const evaluator = new LoopEvaluator();
 
@@ -188,6 +188,74 @@ describe("W4.3: LoopEvaluator", () => {
       expect(passed).toBe(false);
       expect(reason).toContain("manual");
       rmSync(tmpDir, { recursive: true, force: true });
+    });
+  });
+
+  describe("parseJudgeVerdict (strict)", () => {
+    // Unit tests for the verdict parser. We don't spawn the real `claude`
+    // CLI here — that's exercised by integration only. These tests close the
+    // historical substring traps ("DOES NOT PASS" reading as PASS, etc.).
+
+    test("PASS as first word → passes", () => {
+      const [passed, reason] = parseJudgeVerdict("PASS\nThe code looks correct.");
+      expect(passed).toBe(true);
+      expect(reason).toContain("PASS");
+    });
+
+    test("FAIL as first word → fails (with full reason returned)", () => {
+      const [passed, reason] = parseJudgeVerdict("FAIL\nMissing tests.");
+      expect(passed).toBe(false);
+      expect(reason).toContain("Missing tests");
+    });
+
+    test("'DOES NOT PASS' is NOT treated as PASS", () => {
+      const [passed, reason] = parseJudgeVerdict("DOES NOT PASS\nrubric not satisfied");
+      expect(passed).toBe(false);
+      expect(reason.toLowerCase()).toContain("unclear");
+    });
+
+    test("'PASSPHRASE' is NOT treated as PASS", () => {
+      const [passed] = parseJudgeVerdict("PASSPHRASE required\nrubric mentions secrets");
+      expect(passed).toBe(false);
+    });
+
+    test("'FAILED to satisfy' is NOT treated as FAIL (word-boundary check)", () => {
+      // FAILED starts with FAIL followed by E (word char) → \b doesn't match
+      // → ambiguous → loop continues. Better to be cautious here than to
+      // false-finalize on a verbose model.
+      const [passed, reason] = parseJudgeVerdict("FAILED to satisfy rubric");
+      expect(passed).toBe(false);
+      expect(reason.toLowerCase()).toContain("unclear");
+    });
+
+    test("PASS with leading whitespace still counts", () => {
+      const [passed] = parseJudgeVerdict("   PASS\nlooks good");
+      expect(passed).toBe(true);
+    });
+
+    test("Empty output → unclear → fails (so loop continues)", () => {
+      const [passed, reason] = parseJudgeVerdict("");
+      expect(passed).toBe(false);
+      expect(reason.toLowerCase()).toContain("unclear");
+    });
+
+    test("Lowercase verdict is honored (uppercased before match)", () => {
+      const [passed] = parseJudgeVerdict("pass\nyes");
+      expect(passed).toBe(true);
+    });
+
+    test("Verdict on line 2 onwards → unclear (only first line is examined)", () => {
+      const [passed, reason] = parseJudgeVerdict("Verdict:\nPASS\nThe rubric matches.");
+      expect(passed).toBe(false);
+      expect(reason.toLowerCase()).toContain("unclear");
+    });
+
+    test("Unclear reason slices to 2000 chars (not 200)", () => {
+      const long = "X".repeat(3000);
+      const [, reason] = parseJudgeVerdict(long);
+      // 2000 chars of X plus the prefix label
+      expect(reason.length).toBeGreaterThan(2000);
+      expect(reason.length).toBeLessThan(2100);
     });
   });
 

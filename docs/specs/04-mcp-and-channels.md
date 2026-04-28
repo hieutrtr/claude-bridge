@@ -133,8 +133,11 @@ tool is one switch arm of `handleTool` in `src/mcp/tool-handlers.ts`.
 `bridge_loop` accepts (beyond the standard `agent`/`goal`/`done_when`):
 `max_iterations`, `loop_type` (`bridge` / `agent` / `auto`), `max_cost_usd`,
 `chat_id` (channel routing for per-iter + end-of-loop notifications),
-`user_id`, and `plan_first` (default true — iter 1 produces a JSON plan
-and iters 2..N+1 execute one sub-task each; see `03-orchestration.md` §1.6).
+`user_id`, `plan_first` (default true — iter 1 produces a JSON plan
+and iters 2..N+1 execute one sub-task each; see `03-orchestration.md` §1.6),
+and `pass_threshold` (default 1 — number of consecutive PASS verdicts
+required to terminate; raise to 2–3 for stochastic conditions like
+`llm_judge`; see `03-orchestration.md` §1.7).
 Set `plan_first: false` to skip planning and attempt the goal directly in
 iter 1. `plan_first: true` overrides `loop_type: "agent"` to `"bridge"`.
 

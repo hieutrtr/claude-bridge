@@ -420,6 +420,7 @@ async function cmdLoop(ctx: CommandContext): Promise<number> {
   const chatId = getArg(ctx.args, "chat-id");
   const userId = getArg(ctx.args, "user-id");
   const noPlan = getFlag(ctx.args, "no-plan");
+  const passThresholdRaw = getArg(ctx.args, "pass-threshold");
 
   if (!name || !goal || !doneWhen) {
     process.stderr.write("Usage: bridge loop <agent> <goal> --done-when <condition>\n");
@@ -439,6 +440,7 @@ async function cmdLoop(ctx: CommandContext): Promise<number> {
     channelChatId: chatId ?? undefined,
     userId: userId ?? undefined,
     planFirst: !noPlan,
+    passThreshold: passThresholdRaw ? parseInt(passThresholdRaw, 10) : undefined,
   });
 
   console.log(`Started loop ${loopId}`);

@@ -39,6 +39,7 @@ export class LoopOrchestrator implements ILoopOrchestrator {
       channelChatId?: string;
       userId?: string;
       planFirst?: boolean;
+      passThreshold?: number;
     },
   ): Promise<string> {
     // Validate done condition
@@ -71,6 +72,7 @@ export class LoopOrchestrator implements ILoopOrchestrator {
       loopType = "bridge";
     }
     const maxCostUsd = options?.maxCostUsd ?? null;
+    const passThreshold = Math.max(1, options?.passThreshold ?? 1);
 
     // Create loop — persist channel info so each iteration task inherits it and
     // so end-of-loop notifications can be routed back to the originating user.
@@ -87,6 +89,7 @@ export class LoopOrchestrator implements ILoopOrchestrator {
       options?.channelChatId ?? null,
       options?.userId ?? null,
       planFirst,
+      passThreshold,
     );
 
     // Dispatch first iteration — planning iter if planFirst, else execution iter.
@@ -190,9 +193,29 @@ export class LoopOrchestrator implements ILoopOrchestrator {
       this.db.updateLoopIteration(currentIter.id, { done_check_passed: passed ? 1 : 0 });
     }
 
+    // Consecutive-pass tracking. Goal: stochastic conditions (`llm_judge`,
+    // flaky `command:`) shouldn't false-positive a loop into early
+    // termination after a single PASS. The user opts into a higher bar with
+    // `pass_threshold`; default 1 preserves "first PASS wins" behavior.
+    // The counter resets on any non-PASS verdict.
+    let newConsecutivePasses = loop.consecutive_passes;
     if (passed) {
-      this.finalizeLoop(loop, "done", reason, newTotalCost);
-      return;
+      newConsecutivePasses += 1;
+      this.db.updateLoop(loopId, { consecutive_passes: newConsecutivePasses });
+      if (newConsecutivePasses >= loop.pass_threshold) {
+        this.finalizeLoop(loop, "done", reason, newTotalCost);
+        return;
+      }
+      // PASS but threshold not met → continue to next iter. Notify so the
+      // user understands why a "PASS" iteration didn't terminate the loop.
+      this.emitLoopNotification(
+        loop,
+        `🟢 Loop ${loop.loop_id} verdict PASS (${newConsecutivePasses}/${loop.pass_threshold}) at iter ${loop.current_iteration} — keep going to confirm.`,
+      );
+    } else if (loop.consecutive_passes > 0) {
+      // Reset on any non-PASS so the streak must be unbroken.
+      newConsecutivePasses = 0;
+      this.db.updateLoop(loopId, { consecutive_passes: 0 });
     }
 
     // If the plan is exhausted and the done condition still hasn't passed,

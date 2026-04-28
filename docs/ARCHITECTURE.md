@@ -252,13 +252,18 @@ All types live in `src/types.ts`. Field names mirror the SQLite schema.
   max_iterations, max_consecutive_failures, current_iteration,
   consecutive_failures, total_cost_usd, max_cost_usd, pending_approval,
   started_at, finished_at, finish_reason, current_task_id, channel,
-  channel_chat_id, user_id, plan, plan_enabled }`.
+  channel_chat_id, user_id, plan, plan_enabled, pass_threshold,
+  consecutive_passes }`.
   `status ∈ {running, paused, done, failed, timeout, cancelled}`. `loop_id`
   is an 8-char UUID slice. `channel/channel_chat_id/user_id` route
   per-iteration and end-of-loop notifications back to the originator. `plan`
   is the JSON-serialized `LoopPlan` when plan-first mode is active;
   `plan_enabled = 1` marks the loop as plan-first (flipped to 0 if plan
-  parsing falls back to legacy execution).
+  parsing falls back to legacy execution). `pass_threshold` is how many
+  consecutive PASS verdicts the done condition must produce before
+  termination (default 1 — first PASS wins; raise to 2–3 for stochastic
+  conditions like `llm_judge`); `consecutive_passes` is the live counter,
+  reset to 0 on any non-PASS verdict.
 - **LoopIteration** — per-iteration record with `task_id`, `prompt`,
   `result_summary`, `done_check_passed`, `cost_usd`, timestamps, `status`.
 - **Schedule** — `{ id, name, agent_name, prompt, interval_minutes, cron_expr,
@@ -384,7 +389,11 @@ so Claude Code's own session continuity applies.
      - condition = parseDoneCondition(done_when)
      - if condition.type == "manual"        -> pending_approval=1, notify
      - else: evaluator.evaluate(...)
-         - if passed                        -> finalizeLoop(done)
+         - if passed:
+             consecutive_passes++
+             if consecutive_passes >= pass_threshold -> finalizeLoop(done)
+             else: notify "PASS (X/N) — keep going" and fall through
+         - else (failed): consecutive_passes = 0
          - if plan exhausted (cur_iter >= plan.steps.length + 1) -> finalizeLoop(failed)
          - if current_iteration >= max_iterations                -> finalizeLoop(failed)
          - else dispatchIteration(loop_id, current+1, feedback)

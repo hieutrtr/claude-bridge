@@ -83,6 +83,7 @@ as well, which is intentional but easy to miss.
 | `running` | `failed` | Planning iter: plan parsed, but no iterations left to execute it | `src/orchestration/loop.ts:451` |
 | `running` | `failed` | `dispatchIteration` throws from `startTask` | `src/orchestration/loop.ts:640` |
 | `running` (or `running`+pending) | `cancelled` | `cancelLoop` | `src/orchestration/loop.ts:263` |
+| `running` | `running` (PASS but threshold not yet met) | `onTaskComplete` → evaluator passes, `consecutive_passes < pass_threshold` → notify + dispatch next iter | `src/orchestration/loop.ts:204` |
 
 All terminal transitions go through `finalizeLoop`
 (`src/orchestration/loop.ts:231`), which writes `status`, `finished_at`,
@@ -235,6 +236,61 @@ plan-first execution for the rest of its life. The only exit is plan
 exhaustion, max iterations, cost limit, consecutive failures during
 execution, done-condition pass, or manual cancel/approve.
 
+### 1.7 Consecutive-PASS threshold
+
+A done condition firing PASS once doesn't always mean the goal is met:
+`llm_judge` is stochastic (the model can have a bad day), and even
+`command:` can flake (intermittent test, race). The consecutive-PASS gate
+makes the loop demand `pass_threshold` PASS verdicts in a row before
+finalising as `done`. Default 1 preserves "first PASS wins"; raise to 2–3
+when the done condition is noisy.
+
+**Persistence** (see `01-data-layer.md`):
+
+- `loops.pass_threshold` (INTEGER, default 1) — locked at `startLoop` time.
+  `startLoop` clamps to `Math.max(1, passThreshold)` so 0 / negative cannot
+  produce a loop that never finalises (`src/orchestration/loop.ts:62`).
+- `loops.consecutive_passes` (INTEGER, default 0) — incremented on PASS,
+  reset to 0 on any non-PASS verdict. Maintained inline in
+  `onTaskComplete` (`src/orchestration/loop.ts:196-217`).
+
+**Logic** (`onTaskComplete`, after `evaluator.evaluate`):
+
+```
+if passed:
+    consecutive_passes++
+    persist consecutive_passes
+    if consecutive_passes >= pass_threshold:
+        finalizeLoop(done)
+        return
+    emitLoopNotification("🟢 verdict PASS (X/N) — keep going to confirm")
+    fall through to next-iter dispatch
+elif consecutive_passes > 0:
+    consecutive_passes = 0
+    persist
+```
+
+The PASS-but-not-yet-threshold branch deliberately falls through to the
+plan-exhaustion / max-iterations / dispatch logic, so a loop that PASSes
+twice when `pass_threshold = 3` is still subject to the budget guards.
+
+**Interaction with other condition types:**
+
+- `manual` — short-circuits in `onTaskComplete` *before* the
+  consecutive-pass logic (`:170`). Threshold has no effect on manual loops;
+  approval is the terminal event, not PASS verdicts.
+- `command` / `file_exists` / `file_contains` — deterministic for the same
+  inputs, so threshold > 1 mostly wastes iterations *unless* the underlying
+  state can change between checks (flaky tests, eventually-consistent file
+  appearance). Document the use case for users; don't error on it.
+- `llm_judge` — the canonical use case. Combined with the strict verdict
+  parser (see §2.4), the gate gives the only real defence against
+  false-positive PASS.
+
+**Notification:** every PASS-below-threshold emits a `🟢 ... PASS (X/N) —
+keep going to confirm` message to `channel_chat_id` (no-op if no channel).
+Helps users understand why a "passing" iteration didn't end the loop.
+
 ---
 
 ## 2. Evaluator
@@ -291,6 +347,35 @@ also fails gracefully with `"LLM judge unavailable"`.
 
 All command- and judge-based evaluations use a 30-second default timeout
 (configurable via `options.timeout` but no caller currently overrides it).
+
+### 2.4 Strict verdict parsing for `llm_judge`
+
+The judge's PASS/FAIL classification is delegated to the pure function
+`parseJudgeVerdict` (`src/orchestration/evaluator.ts`, exported for unit
+testing). Contract:
+
+- Trim the model's stdout, take the first non-empty line, uppercase it.
+- Match `^\s*(PASS|FAIL)\b` — must START with the word, with a word
+  boundary after. Substring matching is forbidden because models routinely
+  emit `"DOES NOT PASS"`, `"FAILED to satisfy"`, or `"PASSPHRASE required"`
+  — all of which the previous `.includes()` check classified incorrectly.
+- `PASS` → `[true, fullOutput]`. `FAIL` → `[false, fullOutput]`. Anything
+  else → `[false, "LLM judge response unclear: <2000-char slice>"]`.
+
+The orchestrator's consecutive-PASS gate (§1.7) treats unclear as a non-PASS
+and resets the counter — desirable, because ambiguous judges should not
+accumulate toward termination.
+
+`evalLlmJudge` also explicitly detects timeout (`exitCode === null ||
+(proc.killed && exitCode !== 0)`) and returns `"LLM judge timed out after
+Ns"` — so a killed claude doesn't masquerade as an "unclear verdict".
+
+**Known judge gaps** (still open, see `skills/loop-code-review.md` Phase
+D.1): cost not tracked against `loops.total_cost_usd`; no `--model` pin
+(judge uses user's CLI default); inherits `cwd=projectDir` so picks up the
+project's `.mcp.json` and `CLAUDE.md`; stderr never read; ensemble /
+re-judge not supported (the consecutive-PASS gate is the current
+mitigation).
 
 ---
 

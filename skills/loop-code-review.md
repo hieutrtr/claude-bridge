@@ -122,19 +122,19 @@ Read `evaluator.ts`. Per-type check:
 - No `--model` override. The judge uses whatever default the user's `claude` CLI has configured — could be Opus (expensive judge for cheap iterations) or Haiku (under-powered). Flag the lack of explicit model selection.
 - No `--session-id`, no `--agent`. The judge spawn is intentionally stateless — confirm no caller assumes session continuity.
 
-**Timeout handling** (`evaluator.ts:176-181`):
+**Timeout handling** (`evaluator.ts:176-187`):
 
-- `setTimeout(timeoutSec * 1000)` then `proc.kill()`. Timer is cleared after `proc.exited` resolves — order matters; if the proc exits naturally first, `clearTimeout` prevents a stray `kill()` of an unrelated future PID (irrelevant in Node since the timer's callback is bound, but worth noting).
-- **Compared to `evalCommand`, the judge does NOT detect timeout as a distinct case.** `evalCommand` returns `"Command timed out after Ns"` when `exitCode === null || (proc.killed && exitCode !== 0)`. `evalLlmJudge` skips this check and falls straight into stdout parsing: a killed claude usually produces empty stdout → `firstLine = ""` → no `PASS`/`FAIL` → returns `"LLM judge response unclear: "` (truncated). The user gets a misleading "ambiguous" failure instead of a "timed out" failure. **🔴 Finding worth raising.**
+- `setTimeout(timeoutSec * 1000)` then `proc.kill()`. Timer is cleared after `proc.exited` resolves.
+- Timeout is now detected explicitly: `if (exitCode === null || (proc.killed && exitCode !== 0)) return [false, "LLM judge timed out after Ns"]`. This was previously missing — a killed claude masqueraded as an "unclear verdict" — and was fixed alongside the strict-verdict change. ✅ Done. If you re-introduce that gap (e.g. by removing the check), it'll silently regress to "ambiguous" failures.
 
-**Output parsing** (`evaluator.ts:183-192`):
+**Output parsing** (`evaluator.ts:189` → delegates to `parseJudgeVerdict`):
 
-- Reads `stdout` only. **`stderr` is never read.** If claude writes warnings (e.g. "Loading development channels", credential prompts) to stderr, the user sees nothing. Flag as observability gap.
-- Takes `output.trim().split("\n")[0]?.toUpperCase()`, then `.includes("PASS")` / `.includes("FAIL")`. Quirks:
-  - The check is substring, not equality. `"PASSPHRASE"` matches PASS, `"NEED TO FAIL THIS"` matches FAIL. Edge case; document it.
-  - The order is PASS-first. If the first line happens to contain both ("PASS — but only because the FAIL conditions weren't met"), it counts as PASS. Probably the right default but explicit.
-  - Only the first line is examined. If the model writes a preamble before its verdict, the judge fails-closed (returns FAIL with "unclear"). The `LLM_JUDGE_PROMPT` template (`evaluator.ts:14-22`) instructs "Respond with exactly one word: PASS or FAIL / Then on the next line, briefly explain why" — but agent compliance is not guaranteed. Flag the lack of fallback parsing (e.g. scan all lines).
-- Ambiguous output: returns `[false, "LLM judge response unclear: ${output.slice(0, 200)}"]`. Note the slice mismatch — `evalCommand` slices to 2000, `evalLlmJudge` slices to 200 in the unclear branch but returns the **full** `output.trim()` in PASS/FAIL branches. Inconsistent; flag as a smell.
+- Stdout only. **`stderr` is never read.** If claude writes warnings (`"Loading development channels"`, credential prompts) to stderr, the user sees nothing. Flag as observability gap (still open).
+- Verdict parsing is now in the pure exported function `parseJudgeVerdict` (`evaluator.ts`):
+  - Takes `output.trim().split("\n")[0]?.toUpperCase()`, then `^\s*(PASS|FAIL)\b`.
+  - Strict word-boundary match closes the historical substring traps: `"DOES NOT PASS"`, `"PASSPHRASE"`, `"FAILED to satisfy"` all read as **unclear** (treated as FAIL → loop continues). ✅ Done. Tests in `tests/wave4/evaluator.test.ts` `describe("parseJudgeVerdict (strict)")` pin the contract — if you relax the regex back to `.includes()`, those tests fail.
+  - Only the first line is examined. The prompt template asks for "exactly one word: PASS or FAIL" then explanation on line 2. If the model puts a preamble before the verdict, judge returns unclear (loop continues — desired behavior).
+- Ambiguous slice is now 2000 chars (matching `evalCommand`). Earlier 200-char slice often cut off the explanation on line 2. ✅ Fixed.
 
 **Prompt template** (`evaluator.ts:14-22 LLM_JUDGE_PROMPT`):
 
@@ -152,14 +152,22 @@ Read `evaluator.ts`. Per-type check:
 - Single `catch { ... }` returns `"LLM judge unavailable (claude CLI not found)"`. The message is misleading for any non-spawn error (e.g., `proc.exited` rejecting, `Response()` parsing failure). Consider differentiated messages or include the original error.
 - No retries, no exponential backoff. A transient claude/Anthropic API failure fails the iteration's done-check immediately. Flag if reliability matters.
 
-**What good would look like** — list as recommendations, not findings:
+**Mitigation already in code** (don't re-flag these):
 
-- Detect timeout explicitly (mirror `evalCommand`'s `exitCode === null` branch).
-- Read stderr and surface it in the failure reason.
-- Scan all output lines (not just first) for the verdict; require a leading `PASS`/`FAIL` token to avoid the substring trap.
-- Add `--model` flag (configurable) so the judge model is explicit.
-- Track judge cost: capture `--output-format json` from claude, sum its `total_cost_usd` into `loops.total_cost_usd`.
-- Cover with tests: PASS, FAIL, ambiguous, timeout, missing claude binary, prompt with `{result}` literal in rubric.
+- Strict verdict via `parseJudgeVerdict` — substring traps closed.
+- Explicit timeout detection — returns `"LLM judge timed out after Ns"`.
+- 2000-char slice for unclear (consistent with `evalCommand`).
+- **Consecutive-PASS gate** (see `docs/specs/03-orchestration.md` §1.7) — `pass_threshold` requires N consecutive PASS verdicts before terminating. Default 1 keeps legacy behavior; users opt into 2–3 for stochastic conditions. Implemented at `src/orchestration/loop.ts:196-217`. This is the structural defence against single-PASS false positives.
+
+**Still open — list as recommendations, not findings:**
+
+- Read stderr and surface it in the failure reason (observability).
+- Add `--model` flag (configurable) so the judge model is explicit, not whatever the user's CLI default is.
+- Track judge cost: capture `--output-format json` from claude, sum its `total_cost_usd` into `loops.total_cost_usd`. Right now `pass_threshold > 1` multiplies the untracked judge cost.
+- Isolate `cwd` so the judge doesn't pick up the project's `.mcp.json` / `CLAUDE.md` (could leak unintended MCP servers / instructions into the judge).
+- Re-judge on `unclear` once before defaulting to FAIL (cheap, reduces false-fail when the model adds a preamble).
+- Differentiate `catch` errors (currently all map to `"claude CLI not found"`).
+- Cover with integration test: real `claude` binary using a temp `--model haiku` invocation, gated behind an env flag so CI without `claude` doesn't run it.
 
 ### Phase E — Seams (dispatcher + on-complete + startup)
 

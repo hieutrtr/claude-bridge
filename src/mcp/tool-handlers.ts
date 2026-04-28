@@ -242,6 +242,9 @@ async function handleTool(
           planFirst: args["plan_first"] === undefined
             ? undefined
             : Boolean(args["plan_first"]),
+          passThreshold: args["pass_threshold"] === undefined
+            ? undefined
+            : Number(args["pass_threshold"]),
         },
       );
       return text(`Started loop ${loopId}`);

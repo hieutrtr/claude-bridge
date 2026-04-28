@@ -57,6 +57,14 @@ export interface ILoopOrchestrator {
        * planning entirely and have iter 1 attempt the full goal directly.
        */
       planFirst?: boolean;
+      /**
+       * Number of consecutive PASS verdicts the done condition must produce
+       * before the loop terminates as `done`. Default 1 (legacy behavior —
+       * first PASS wins). Higher values make stochastic conditions
+       * (`llm_judge`, flaky `command:`) less likely to false-positive into
+       * early termination. Counter resets to 0 on any non-PASS evaluation.
+       */
+      passThreshold?: number;
     },
   ): Promise<string>;
 

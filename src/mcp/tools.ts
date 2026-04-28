@@ -172,6 +172,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         chat_id: { type: "string", description: "Channel chat_id to send per-iteration and end-of-loop notifications to" },
         user_id: { type: "string", description: "Originating user id (optional, for audit)" },
         plan_first: { type: "boolean", description: "Plan-first mode (default true). Iter 1 produces a JSON plan; iters 2..N+1 execute one sub-task each. Set false to skip planning and attempt the goal in iter 1." },
+        pass_threshold: { type: "number", description: "Number of consecutive PASS verdicts required to terminate the loop (default 1). Higher values (2–3) make stochastic conditions like llm_judge less likely to false-positive into early termination. Counter resets on any non-PASS verdict." },
       },
       required: ["agent", "goal", "done_when"],
     },

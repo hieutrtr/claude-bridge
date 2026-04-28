@@ -150,6 +150,14 @@ Plan-first columns (see `03-orchestration.md` §1.6):
   `truncated: true` means the agent's plan had more steps than
   `max_iterations - 1` allowed.
 
+Consecutive-PASS columns (see `03-orchestration.md` §1.7):
+- `pass_threshold` (INTEGER, default 1) — how many consecutive PASS verdicts
+  the done condition must produce before the loop terminates. Default 1
+  preserves "first PASS wins". `LoopOrchestrator.startLoop` clamps to ≥ 1.
+- `consecutive_passes` (INTEGER, default 0) — live counter incremented on
+  every PASS verdict and reset to 0 on any non-PASS. The loop finalizes as
+  `done` when this counter first hits `pass_threshold`.
+
 Writes go through `updateLoop` (`src/data/db.ts:563`) using the `LOOP_UPDATABLE`
 whitelist at `src/data/db.ts:31` (which includes `plan` and `plan_enabled`).
 
@@ -315,9 +323,10 @@ run on every connection.
   subsequent opens, but note it will not modify an existing table.
 - `BridgeDatabase.runMigrations` (`src/data/db.ts:62`) is the only place that
   retrofits columns onto pre-existing tables. It currently adds to `loops`:
-  `channel`, `channel_chat_id`, and `user_id` (for installs that pre-date
-  channel-aware loops), plus `plan` (TEXT) and `plan_enabled` (INTEGER
-  DEFAULT 0) for plan-first mode. It does so by calling
+  `channel`, `channel_chat_id`, and `user_id` (channel-aware loops);
+  `plan` (TEXT) and `plan_enabled` (INTEGER DEFAULT 0) for plan-first mode;
+  `pass_threshold` (INTEGER DEFAULT 1) and `consecutive_passes` (INTEGER
+  DEFAULT 0) for the consecutive-PASS gate. It does so by calling
   `addColumnIfMissing` (`src/data/db.ts:68`), which reads
   `PRAGMA table_info(<table>)` and only issues `ALTER TABLE ... ADD COLUMN`
   when the column is absent.

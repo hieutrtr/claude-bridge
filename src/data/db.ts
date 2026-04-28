@@ -32,6 +32,7 @@ const LOOP_UPDATABLE = new Set([
   "status", "current_iteration", "consecutive_failures", "total_cost_usd",
   "finished_at", "finish_reason", "current_task_id", "loop_type",
   "max_cost_usd", "pending_approval", "plan", "plan_enabled",
+  "pass_threshold", "consecutive_passes",
 ]);
 
 const LOOP_ITER_UPDATABLE = new Set([
@@ -65,6 +66,8 @@ export class BridgeDatabase implements IDatabase {
     this.addColumnIfMissing("loops", "user_id", "TEXT");
     this.addColumnIfMissing("loops", "plan", "TEXT");
     this.addColumnIfMissing("loops", "plan_enabled", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumnIfMissing("loops", "pass_threshold", "INTEGER NOT NULL DEFAULT 1");
+    this.addColumnIfMissing("loops", "consecutive_passes", "INTEGER NOT NULL DEFAULT 0");
   }
 
   private addColumnIfMissing(table: string, column: string, decl: string): void {
@@ -175,7 +178,9 @@ export class BridgeDatabase implements IDatabase {
         channel_chat_id TEXT,
         user_id TEXT,
         plan TEXT,
-        plan_enabled INTEGER NOT NULL DEFAULT 0
+        plan_enabled INTEGER NOT NULL DEFAULT 0,
+        pass_threshold INTEGER NOT NULL DEFAULT 1,
+        consecutive_passes INTEGER NOT NULL DEFAULT 0
       );
 
       CREATE TABLE IF NOT EXISTS loop_iterations (
@@ -540,12 +545,13 @@ export class BridgeDatabase implements IDatabase {
     channelChatId: string | null = null,
     userId: string | null = null,
     planEnabled: boolean = false,
+    passThreshold: number = 1,
   ): string {
     const loopId = crypto.randomUUID().slice(0, 8);
     this.db.run(
-      `INSERT INTO loops (loop_id, agent, project, goal, done_when, loop_type, max_iterations, max_consecutive_failures, max_cost_usd, started_at, channel, channel_chat_id, user_id, plan_enabled)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [loopId, agent, project, goal, doneWhen, loopType, maxIterations, maxConsecutiveFailures, maxCostUsd, utcnow(), channel, channelChatId, userId, planEnabled ? 1 : 0],
+      `INSERT INTO loops (loop_id, agent, project, goal, done_when, loop_type, max_iterations, max_consecutive_failures, max_cost_usd, started_at, channel, channel_chat_id, user_id, plan_enabled, pass_threshold)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [loopId, agent, project, goal, doneWhen, loopType, maxIterations, maxConsecutiveFailures, maxCostUsd, utcnow(), channel, channelChatId, userId, planEnabled ? 1 : 0, Math.max(1, passThreshold)],
     );
     return loopId;
   }

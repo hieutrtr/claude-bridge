@@ -395,6 +395,7 @@ describe("W4.2: LoopOrchestrator", () => {
         finish_reason: null, current_task_id: null,
         channel: null, channel_chat_id: null, user_id: null,
         plan: null, plan_enabled: 0,
+        pass_threshold: 1, consecutive_passes: 0,
       }];
       const result = ctx.orchestrator.formatLoopList(loops);
       expect(result).toContain("Fix tests");
@@ -415,6 +416,7 @@ describe("W4.2: LoopOrchestrator", () => {
         finish_reason: "done", current_task_id: null,
         channel: null, channel_chat_id: null, user_id: null,
         plan: null, plan_enabled: 0,
+        pass_threshold: 1, consecutive_passes: 0,
       };
       const iterations = [{
         id: 1, loop_id: "abc", iteration_num: 1, task_id: "1",
@@ -451,6 +453,109 @@ describe("W4.2: LoopOrchestrator", () => {
       const result = await ctx.orchestrator.getLoopStatus(loopId);
       expect(result).not.toBeNull();
       expect(result!.loop_id).toBe(loopId);
+      teardown(ctx);
+    });
+  });
+
+  describe("consecutive-pass threshold", () => {
+    test("default pass_threshold is 1 (legacy: first PASS wins)", async () => {
+      const ctx = setup();
+      const loopId = await startLegacyLoop(ctx.orchestrator,
+        "be", "goal", "command:true", { maxIterations: 5 },
+      );
+      const loop = ctx.db.getLoop(loopId)!;
+      expect(loop.pass_threshold).toBe(1);
+      expect(loop.consecutive_passes).toBe(0);
+      teardown(ctx);
+    });
+
+    test("pass_threshold=2 keeps loop running after first PASS", async () => {
+      const ctx = setup();
+      // command:true always passes — perfect for testing the threshold gate.
+      const loopId = await startLegacyLoop(ctx.orchestrator,
+        "be", "goal", "command:true",
+        { maxIterations: 5, passThreshold: 2 },
+      );
+      const iter1 = ctx.db.getLoopIterations(loopId)[0]!;
+      await ctx.orchestrator.onTaskComplete(loopId, iter1.task_id!, "first attempt", 0.01);
+
+      const loop = ctx.db.getLoop(loopId)!;
+      // First PASS: counter at 1, threshold 2 → continue, NOT done.
+      expect(loop.status).toBe("running");
+      expect(loop.consecutive_passes).toBe(1);
+      expect(loop.current_iteration).toBe(2);
+      teardown(ctx);
+    });
+
+    test("pass_threshold=2 finalizes done after second consecutive PASS", async () => {
+      const ctx = setup();
+      const loopId = await startLegacyLoop(ctx.orchestrator,
+        "be", "goal", "command:true",
+        { maxIterations: 5, passThreshold: 2 },
+      );
+      const iter1 = ctx.db.getLoopIterations(loopId)[0]!;
+      await ctx.orchestrator.onTaskComplete(loopId, iter1.task_id!, "pass 1", 0.01);
+      const iter2 = ctx.db.getLoopIterations(loopId).find((it) => it.iteration_num === 2)!;
+      await ctx.orchestrator.onTaskComplete(loopId, iter2.task_id!, "pass 2", 0.01);
+
+      const loop = ctx.db.getLoop(loopId)!;
+      expect(loop.status).toBe("done");
+      expect(loop.consecutive_passes).toBe(2);
+      teardown(ctx);
+    });
+
+    test("non-PASS resets the consecutive counter", async () => {
+      const ctx = setup();
+      // Use file_exists with a path we toggle: present for iter 1 (pass),
+      // absent for iter 2 (fail), present for iter 3 (pass) — counter must
+      // reset between iter 2 and iter 3.
+      const target = join(ctx.tmpDir, "marker.txt");
+      const { writeFileSync, rmSync: rm } = require("fs") as typeof import("fs");
+      writeFileSync(target, "x");
+
+      const loopId = await startLegacyLoop(ctx.orchestrator,
+        "be", "goal", "file_exists:marker.txt",
+        { maxIterations: 5, passThreshold: 2 },
+      );
+      const iter1 = ctx.db.getLoopIterations(loopId)[0]!;
+      await ctx.orchestrator.onTaskComplete(loopId, iter1.task_id!, "iter1", 0.01);
+      // After iter 1: counter=1, still running.
+      expect(ctx.db.getLoop(loopId)!.consecutive_passes).toBe(1);
+
+      // Iter 2 should fail (file removed).
+      rm(target);
+      const iter2 = ctx.db.getLoopIterations(loopId).find((it) => it.iteration_num === 2)!;
+      await ctx.orchestrator.onTaskComplete(loopId, iter2.task_id!, "iter2", 0.01);
+      // After iter 2: counter reset to 0.
+      expect(ctx.db.getLoop(loopId)!.consecutive_passes).toBe(0);
+      expect(ctx.db.getLoop(loopId)!.status).toBe("running");
+      teardown(ctx);
+    });
+
+    test("PASS-but-not-yet-threshold emits a progress notification", async () => {
+      const ctx = setup();
+      const loopId = await startLegacyLoop(ctx.orchestrator,
+        "be", "goal", "command:true",
+        { maxIterations: 5, passThreshold: 3, channel: "telegram", channelChatId: "123" },
+      );
+      const iter1 = ctx.db.getLoopIterations(loopId)[0]!;
+      await ctx.orchestrator.onTaskComplete(loopId, iter1.task_id!, "ok", 0.01);
+
+      const notifs = ctx.db.getPendingNotifications();
+      const passNote = notifs.find((n) => n.message.includes("verdict PASS"));
+      expect(passNote).toBeTruthy();
+      expect(passNote!.message).toContain("(1/3)");
+      expect(passNote!.chat_id).toBe("123");
+      teardown(ctx);
+    });
+
+    test("passThreshold less than 1 is clamped to 1", async () => {
+      const ctx = setup();
+      const loopId = await startLegacyLoop(ctx.orchestrator,
+        "be", "goal", "command:true",
+        { maxIterations: 5, passThreshold: 0 },
+      );
+      expect(ctx.db.getLoop(loopId)!.pass_threshold).toBe(1);
       teardown(ctx);
     });
   });

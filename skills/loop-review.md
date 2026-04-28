@@ -122,6 +122,9 @@ Run through this list and note every match. Each becomes a finding in the report
 - [ ] **Done check trivially false** — `done_when` is `file_exists:` for a path that never plausibly gets created (typo?)
 - [ ] **Channel routing missing** — `channel_chat_id IS NULL` but loop should report somewhere
 - [ ] **No reports emitted** — pending iterations exist but `notifications` table has nothing for this loop's task IDs
+- [ ] **Pass-threshold misconfigured for stochastic condition** — `done_when` starts with `llm_judge:` but `pass_threshold = 1`. Single PASS from a noisy judge can false-finalize. Recommend `--pass-threshold 2` (or 3 if cost permits).
+- [ ] **Pass-threshold wasted on deterministic condition** — `done_when` is `file_exists:` / `file_contains:` but `pass_threshold > 1`. Re-checking deterministic state burns iterations for no signal. Only meaningful when state can change between checks (flaky tests, etc.).
+- [ ] **Threshold never reached but PASSes accumulated** — `consecutive_passes > 0` then reset multiple times. Likely judge variance — bump `pass_threshold`, or switch to a deterministic condition if available.
 
 ## Output template
 

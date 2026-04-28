@@ -138,7 +138,7 @@ handlers must not close it themselves.
 
 | Command | Handler | One-liner |
 | --- | --- | --- |
-| `loop <agent> <goal> --done-when <cond> [--max ...] [--max-failures ...] [--type ...] [--max-cost ...] [--channel ...] [--chat-id ...] [--user-id ...] [--no-plan]` | `cmdLoop` at `src/cli/index.ts:411` | Starts a `LoopOrchestrator` run; prints the new `loop_id`. Plan-first is on by default — pass `--no-plan` to skip the planning iter and run single-shot. |
+| `loop <agent> <goal> --done-when <cond> [--max ...] [--max-failures ...] [--type ...] [--max-cost ...] [--channel ...] [--chat-id ...] [--user-id ...] [--no-plan] [--pass-threshold N]` | `cmdLoop` at `src/cli/index.ts:411` | Starts a `LoopOrchestrator` run; prints the new `loop_id`. Plan-first is on by default — pass `--no-plan` to skip the planning iter. `--pass-threshold N` requires N consecutive PASS verdicts before terminating (default 1; raise to 2–3 for `llm_judge` / flaky `command:`). |
 | `loop-status [name] [--loop-id id]` | `cmdLoopStatus` at `src/cli/index.ts:448` | Single loop detail if `--loop-id` given, else list of active loops. |
 | `loop-cancel <loop_id>` | `cmdLoopCancel` at `src/cli/index.ts:477` | Cancel a running loop. |
 | `loop-approve <loop_id>` | `cmdLoopApprove` at `src/cli/index.ts:490` | Approve a loop waiting for human review. |
