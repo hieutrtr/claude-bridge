@@ -52,16 +52,19 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 
 describe("notify.ts coverage", () => {
   describe("formatMessage", () => {
-    test("truncates long prompt", () => {
-      const longPrompt = "x".repeat(100);
+    test("truncates long prompt with ellipsis", () => {
+      const longPrompt = "x".repeat(200);
       const msg = notifier.formatMessage(makeTask({ prompt: longPrompt }), "backend");
-      expect(msg).toContain("...");
+      expect(msg).toContain("…");
+      expect(msg).not.toContain("x".repeat(200));
     });
 
-    test("truncates long result summary", () => {
+    test("long result summary is included verbatim — converter wraps in blockquote", () => {
       const longSummary = "y".repeat(300);
       const msg = notifier.formatMessage(makeTask({ result_summary: longSummary }), "backend");
-      expect(msg).toContain("...");
+      expect(msg).toContain("y".repeat(300));
+      // Markdown blockquote prefix per line.
+      expect(msg).toMatch(/^> y/m);
     });
 
     test("includes num_turns", () => {
@@ -74,20 +77,22 @@ describe("notify.ts coverage", () => {
       expect(msg).toContain("30s");
     });
 
-    test("shows error for non-done status", () => {
+    test("shows error for non-done status as a markdown blockquote", () => {
       const msg = notifier.formatMessage(
         makeTask({ status: "failed", error_message: "Build failed", result_summary: null }),
         "backend",
       );
-      expect(msg).toContain("Error: Build failed");
+      expect(msg).toContain("Build failed");
+      expect(msg).toMatch(/^> Build failed/m);
+      expect(msg).toContain("❌");
     });
 
-    test("no result_summary for non-done shows no Result line", () => {
+    test("no result_summary and no error keeps body empty", () => {
       const msg = notifier.formatMessage(
         makeTask({ status: "failed", result_summary: null, error_message: null }),
         "backend",
       );
-      expect(msg).not.toContain("Result:");
+      expect(msg).not.toMatch(/^> /m);
     });
 
     test("includes all meta fields", () => {
@@ -105,8 +110,9 @@ describe("notify.ts coverage", () => {
         makeTask({ cost_usd: null, duration_ms: null, num_turns: null }),
         "backend",
       );
-      // Should not contain a | separator for meta
-      expect(msg.includes(" | ")).toBe(false);
+      // Meta appears as a trailing italic markdown line (`_$x · ...s · ...turns_`).
+      expect(msg).not.toContain("turns_");
+      expect(msg).not.toContain("$0");
     });
   });
 
