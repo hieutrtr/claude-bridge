@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.1] — 2026-04-30
+
+### Fixed
+
+- **Plugin install path was broken in 1.0.0** — the published tarball was missing
+  `mcp.json` (the Claude Code plugin's MCP server manifest), `skills/` (the four
+  bundled slash commands `/dispatch`, `/status`, `/loop-review`,
+  `/loop-code-review`), and `assets/` (the README hero image). Users installing
+  via `bun install -g` were unaffected (CLI runtime only needs `src/`), but
+  `/plugin install hieutrtr/claude-bridge` could not start the MCP server.
+  Extend the `files` allowlist in `package.json` to include all three.
+
+---
+
 ## [1.0.0] — 2026-04-30
 
 ### Removed
