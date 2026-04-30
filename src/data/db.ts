@@ -6,6 +6,8 @@
  */
 
 import { Database } from "bun:sqlite";
+import { mkdirSync } from "fs";
+import { dirname } from "path";
 import type { IDatabase } from "./interfaces.js";
 import type {
   Agent,
@@ -48,6 +50,7 @@ export class BridgeDatabase implements IDatabase {
   private db: Database;
 
   constructor(dbPath: string) {
+    mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath, { create: true });
     this.db.exec("PRAGMA journal_mode=WAL");
     this.db.exec("PRAGMA foreign_keys=ON");

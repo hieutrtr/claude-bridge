@@ -137,8 +137,8 @@ That's the whole loop. Setup once on the laptop, drive forever from chat.
 | **curl** | Required | Almost always preinstalled |
 | **[Bun](https://bun.sh) ≥ 1.1** | Required (runtime) | The installer below auto-installs it. SQLite is bundled inside Bun — nothing to install separately. |
 | **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** | Required | Bridge spawns `claude` for every task. Install + log in via Anthropic's official flow before running `bridge dispatch`. |
+| **tmux** | Required | The daemon wrapper runs the bot inside a tmux session. macOS: `brew install tmux` · Debian: `sudo apt install tmux` |
 | **Telegram bot token** | Required for the Telegram channel | Get one from [@BotFather](https://t.me/BotFather) |
-| **tmux** | Optional | Only needed if you skip the daemon and use the fallback persistent session. |
 
 ---
 

@@ -6,6 +6,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.3] — 2026-04-30
+
+### Fixed
+
+- **Every command failed on a fresh machine with "database not found"** —
+  `BridgeDatabase` and `MessageDatabase` constructors call `bun:sqlite`'s
+  `Database(path, { create: true })`, which creates the file but not its parent
+  directory. On a brand-new install where `~/.claude-bridge/` does not exist,
+  every command (including `bridge setup-bot`) errored out before its handler
+  ran. Both constructors now `mkdirSync(dirname(path), { recursive: true })`
+  first. Added a regression test at `tests/wave2/db-core.test.ts`.
+- **`setup-bot` repo-root resolution was relying on its fallback** — the walk-up
+  logic checked `pkg.name === "claude-bridge"`, which became false after the
+  v1.0.0 rename to `@hieutrtr/claude-bridge`; the function silently fell back
+  to a relative resolve (`src/cli/../..`) that happened to be correct.
+  Simplified to use that relative resolve directly, and added an `existsSync`
+  check on the bridge MCP server path with a clear error message if the
+  package layout is broken.
+
+### Changed
+
+- **`tmux` promoted from Optional to Required in Prerequisites** — the daemon
+  wrapper script in `src/infra/daemon.ts` always launches the bot inside a
+  tmux session, so `bridge install --auto-start` fails without tmux. README
+  was incorrect; install.sh now also detects and prints platform-specific
+  install hints.
+
+---
+
 ## [1.0.2] — 2026-04-30
 
 ### Added

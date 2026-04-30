@@ -79,6 +79,20 @@ else
   echo "    this script finishes: https://docs.anthropic.com/en/docs/claude-code"
 fi
 
+# ── tmux (warn, don't auto-install) ────────────────────────────────────────
+# The daemon wrapper runs the bot inside a tmux session (see
+# src/infra/daemon.ts), so `bridge install --auto-start` will fail without it.
+if command -v tmux >/dev/null 2>&1; then
+  green "    tmux: $(tmux -V)"
+else
+  yellow "    tmux not found on PATH."
+  echo "    Required by 'bridge install --auto-start' (daemon mode). Install:"
+  echo "      macOS:   brew install tmux"
+  echo "      Debian:  sudo apt install tmux"
+  echo "      Fedora:  sudo dnf install tmux"
+  echo "      Arch:    sudo pacman -S tmux"
+fi
+
 # ── Install claude-bridge ──────────────────────────────────────────────────
 bold "==> Installing $PACKAGE globally with Bun"
 bun install -g "$PACKAGE"

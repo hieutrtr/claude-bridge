@@ -1,6 +1,6 @@
 {
   "name": "@hieutrtr/claude-bridge",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "type": "module",
   "description": "Multi-session Claude Code dispatch — official plugin for Claude Code",
   "homepage": "https://github.com/hieutrtr/claude-bridge",

@@ -94,29 +94,13 @@ async function ask(question: string): Promise<string> {
 }
 
 /**
- * Walk up from the CLI's own file location until we find the claude-bridge repo root
- * (identified by package.json with `"name": "claude-bridge"`). Returns absolute path.
+ * Resolve the claude-bridge package root.
+ *
+ * setup-bot.ts ships at `<package-root>/src/cli/setup-bot.ts` in both layouts
+ * (source checkout via `bun link` and `node_modules/@hieutrtr/claude-bridge/`
+ * after `bun install -g`), so two levels up is unambiguous.
  */
 function findRepoRoot(): string {
-  // import.meta.url points to this file; walk up looking for package.json.
-  let dir = dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < 10; i++) {
-    const pkgPath = join(dir, "package.json");
-    if (existsSync(pkgPath)) {
-      try {
-        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as {
-          name?: string;
-        };
-        if (pkg.name === "claude-bridge") return dir;
-      } catch {
-        /* keep walking */
-      }
-    }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  // Fallback: two levels up from this file (src/cli/ -> repo root)
   return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 }
 
@@ -189,6 +173,14 @@ export async function cmdSetupBot(ctx: CommandContext): Promise<number> {
   // 5. Write .mcp.json — include TELEGRAM_BOT_TOKEN in env only if we have one.
   const repoRoot = findRepoRoot();
   const serverPath = join(repoRoot, "src", "mcp", "server.ts");
+  if (!existsSync(serverPath)) {
+    process.stderr.write(
+      `ERROR: cannot locate the bridge MCP server at ${serverPath}.\n` +
+      `The claude-bridge install looks broken — try reinstalling:\n` +
+      `  bun install -g @hieutrtr/claude-bridge\n`,
+    );
+    return 1;
+  }
   const mcpEnv: Record<string, string> = {
     CLAUDE_BRIDGE_HOME: ctx.bridgeHome,
   };

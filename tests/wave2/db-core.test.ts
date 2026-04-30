@@ -32,6 +32,15 @@ describe("W2.2: BridgeDatabase Core", () => {
       expect(db2).toBeDefined();
       db2.close();
     });
+
+    test("creates parent directory if it does not exist (fresh-machine path)", () => {
+      // Simulates a fresh install where ~/.claude-bridge does not exist yet.
+      // Without auto-mkdir, bun:sqlite throws ENOENT and every command fails.
+      const nestedPath = join(tmpDir, "nested", "deeper", "fresh.db");
+      const fresh = new BridgeDatabase(nestedPath);
+      expect(fresh).toBeDefined();
+      fresh.close();
+    });
   });
 
   describe("Agent CRUD", () => {
