@@ -125,9 +125,10 @@ describe("W3.2: Dispatcher", () => {
       const { mkdirSync } = await import("fs");
       mkdirSync(join(tmpDir, "workspaces", "test--proj", "tasks"), { recursive: true });
 
-      // Dispatch with a test command override env
+      // Inject a harmless long-running binary so the test does not depend on
+      // the claude CLI being installed on the runner.
       const pid = await dispatcher.dispatch(task, "bridge--test--proj", "/tmp", {
-        env: { BRIDGE_TEST_MODE: "true" },
+        env: { BRIDGE_CLAUDE_BINARY: "sleep" },
       });
       expect(pid).toBeGreaterThan(0);
 

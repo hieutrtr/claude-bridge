@@ -103,8 +103,11 @@ export class Dispatcher implements IDispatcher {
     const stdoutFd = openSync(resultFile, "w");
     const stderrFd = openSync(stderrFile, "w");
 
+    // Binary override for tests — production paths always use "claude".
+    const binary = env.BRIDGE_CLAUDE_BINARY || "claude";
+
     // Spawn detached process
-    const proc = Bun.spawn(["claude", ...args], {
+    const proc = Bun.spawn([binary, ...args], {
       cwd: projectDir,
       stdout: stdoutFd,
       stderr: stderrFd,
