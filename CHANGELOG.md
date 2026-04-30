@@ -6,6 +6,54 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.0] — 2026-04-30
+
+### Removed
+
+- **`legacy/` directory** — the frozen Python source kept as reference during the
+  beta is dropped. The final Python release remains recoverable at the
+  `v0.5.10-python-final` git tag.
+- **`MIGRATION-CUTOVER-PLAN.md`** — transitional migration scaffolding.
+- **`README_en.md`** — stale English README; the primary `README.md` is now in
+  English and is the single source.
+- **Pre-migration design docs** — `plan/` and `research/` moved under
+  `docs/archive/` for historical reference; they no longer describe the running
+  system.
+
+### Notes
+
+`1.0.0` is the stable cutover from the `1.0.0-beta` line. No functional changes
+versus the beta — this release marks the deprecation of the Python implementation
+and the cleanup of migration-era artifacts on `main`.
+
+---
+
+## [1.0.0-beta] — 2026-04-10
+
+### Changed — Full TypeScript Migration
+
+Claude Bridge has been completely rewritten from Python to TypeScript (Bun runtime).
+This is a breaking change from the Python version (0.5.x).
+
+- **Runtime**: Python 3.11+ → Bun (TypeScript)
+- **Test suite**: pytest (405 tests) → bun test (541 tests across 36 files, 90%+ coverage)
+- **Dependencies**: pip/pipx → `bun install` (`@modelcontextprotocol/sdk`, `grammy`, `zod`)
+- **CLI**: `python -m claude_bridge.cli` → `bun run src/cli/index.ts`
+- **MCP server**: FastMCP (Python) → `@modelcontextprotocol/sdk` (TypeScript)
+- **Stop hook**: `on_complete.py` → `on-complete.ts`
+- **Project structure**: `src/claude_bridge/` → modular `src/` (cli/, data/, execution/, orchestration/, infra/, mcp/, channel/)
+- **Old code**: Moved to `legacy/` for reference (not deleted)
+
+### Migration from Python
+
+1. Stop all running instances: `bridge stop`
+2. `git pull` and `bun install`
+3. Regenerate agent files: `bun run src/cli/index.ts create-agent <name> <path>`
+4. Re-run setup for bot dirs: `bun run src/cli/index.ts setup-bot <bot-dir>`
+5. SQLite database is compatible — no data migration needed
+
+---
+
 ## [0.5.8] — 2026-04-09
 
 ### Fixed

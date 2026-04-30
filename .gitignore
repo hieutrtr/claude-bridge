@@ -1,17 +1,14 @@
 # Claude Code
 .claude/worktrees/
+.claude/settings.local.json
 
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
+# Dependencies
+node_modules/
+.bun/
+
+# Build output
 dist/
-build/
-*.egg
-.eggs/
-
-# Keep pre-built channel server JS in package (needed for pip install)
-!src/claude_bridge/channel_server/dist/
+*.tsbuildinfo
 
 # IDE
 .vscode/
@@ -22,16 +19,15 @@ build/
 *.db
 *.log
 
-# Environment secrets (keep .env.example tracked)
-channel/.env
+# Test sandbox leaks (macOS $TMPDIR sometimes resolves under ./var)
+var/
+
+# Environment secrets
 .env
+channel/.env
 
 # OS
 .DS_Store
 
 # Claude
 .mcp.json
-
-# Pytest
-.pytest_cache/
-

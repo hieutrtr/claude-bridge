@@ -1,0 +1,9 @@
+{
+  "name": "claude-bridge",
+  "version": "1.0.0",
+  "description": "Multi-session Claude Code dispatch from Telegram, Discord, and Slack. Orchestrate multiple agents across projects with goal loops, scheduling, and team access control.",
+  "authors": ["Hieu TRAN"],
+  "keywords": ["channel", "mcp", "telegram", "discord", "slack", "multi-agent", "dispatch"],
+  "homepage": "https://github.com/hieutrtr/claude-bridge",
+  "license": "MIT"
+}

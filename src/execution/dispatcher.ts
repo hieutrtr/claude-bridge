@@ -1,0 +1,195 @@
+/**
+ * Dispatcher — spawns Claude Code processes for tasks.
+ *
+ * Uses Bun.spawn() with detached process groups for isolation.
+ * Matches Python dispatcher.py behavior.
+ */
+
+import { join } from "path";
+import { createHash } from "crypto";
+import { mkdirSync, openSync } from "fs";
+import type { Agent, Task } from "../types.js";
+import type { IDatabase } from "../data/interfaces.js";
+import type { IDispatcher, DispatchOptions } from "./interfaces.js";
+
+export class Dispatcher implements IDispatcher {
+  constructor(private homeDir: string) {}
+
+  /**
+   * Convert session_id + optional task_id to a deterministic UUID.
+   * Used as --session-id for Claude Code to maintain session continuity.
+   */
+  sessionIdToUuid(sessionId: string, taskId?: number): string {
+    const input = taskId !== undefined ? `${sessionId}:${taskId}` : sessionId;
+    const hash = createHash("md5").update(input).digest("hex");
+    // Format as UUID v4-like
+    return [
+      hash.slice(0, 8),
+      hash.slice(8, 12),
+      hash.slice(12, 16),
+      hash.slice(16, 20),
+      hash.slice(20, 32),
+    ].join("-");
+  }
+
+  /** Get the result file path for a task. */
+  getResultFile(sessionId: string, taskId: number): string {
+    return join(this.homeDir, "workspaces", sessionId, "tasks", `${taskId}.result.json`);
+  }
+
+  /** Get the stderr file path for a task. */
+  getStderrFile(sessionId: string, taskId: number): string {
+    return join(this.homeDir, "workspaces", sessionId, "tasks", `${taskId}.stderr`);
+  }
+
+  /** Check if a process is still running. */
+  isRunning(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Spawn a Claude Code process for a task.
+   * Returns PID of the spawned process.
+   */
+  async dispatch(
+    task: Task,
+    agentFileName: string,
+    projectDir: string,
+    options?: DispatchOptions,
+  ): Promise<number> {
+    const resultFile = this.getResultFile(task.session_id, task.id);
+    const stderrFile = this.getStderrFile(task.session_id, task.id);
+    const sessionUuid = this.sessionIdToUuid(task.session_id, task.id);
+
+    // Ensure tasks directory exists
+    const tasksDir = join(this.homeDir, "workspaces", task.session_id, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+
+    // Build claude command arguments.
+    //
+    // `claude -p --output-format json` writes the result JSON to stdout. There
+    // is no --output-file flag; stdout must be redirected to resultFile so the
+    // Stop hook's parseResultFile can read it.
+    //
+    // --dangerously-skip-permissions is required for background subprocess mode:
+    // without a TTY there is no way to answer permission prompts, so the task
+    // would hang indefinitely on the first tool call.
+    const args = [
+      "--agent", agentFileName,
+      "--session-id", sessionUuid,
+      "--output-format", "json",
+      "--dangerously-skip-permissions",
+    ];
+
+    if (options?.model) {
+      args.push("--model", options.model);
+    }
+
+    args.push("-p", task.prompt);
+
+    // Build environment
+    const env: Record<string, string> = {
+      ...process.env as Record<string, string>,
+      CLAUDE_BRIDGE_HOME: this.homeDir,
+      ...options?.env,
+    };
+
+    // Open result + stderr files for writing
+    const stdoutFd = openSync(resultFile, "w");
+    const stderrFd = openSync(stderrFile, "w");
+
+    // Binary override for tests — production paths always use "claude".
+    const binary = env.BRIDGE_CLAUDE_BINARY || "claude";
+
+    // Spawn detached process
+    const proc = Bun.spawn([binary, ...args], {
+      cwd: projectDir,
+      stdout: stdoutFd,
+      stderr: stderrFd,
+      env,
+    });
+
+    // Unref so the process doesn't keep the parent alive
+    proc.unref();
+
+    return proc.pid;
+  }
+
+  /**
+   * Cancel a running task.
+   * Graceful: SIGTERM → wait timeout → SIGKILL.
+   * Returns true if the process was killed.
+   */
+  async cancel(pid: number, graceful: boolean = true, timeout: number = 10): Promise<boolean> {
+    if (!this.isRunning(pid)) {
+      return false;
+    }
+
+    try {
+      if (graceful) {
+        process.kill(pid, "SIGTERM");
+        // Wait for process to die
+        const start = Date.now();
+        while (Date.now() - start < timeout * 1000) {
+          if (!this.isRunning(pid)) return true;
+          await Bun.sleep(100);
+        }
+        // Force kill if still alive
+        if (this.isRunning(pid)) {
+          process.kill(pid, "SIGKILL");
+          await Bun.sleep(100);
+        }
+      } else {
+        process.kill(pid, "SIGKILL");
+        await Bun.sleep(100);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/**
+ * Begin executing a pending task: flip agent to running, mark task running
+ * with started_at, spawn the claude subprocess, and record the pid. On spawn
+ * failure, mark the task failed and release the agent.
+ *
+ * Shared by the CLI `dispatch` command, MCP `bridge_dispatch` tool, and the
+ * stop-hook's auto-dequeue path so all three take the same bookkeeping steps.
+ */
+export async function startTask(
+  db: IDatabase,
+  dispatcher: IDispatcher,
+  task: Task,
+  agent: Agent,
+): Promise<number> {
+  db.updateAgentState(task.session_id, "running");
+  db.updateTask(task.id, {
+    status: "running",
+    started_at: new Date().toISOString(),
+  });
+  try {
+    const pid = await dispatcher.dispatch(
+      task,
+      agent.agent_file,
+      agent.project_dir,
+      { model: agent.model },
+    );
+    db.updateTask(task.id, { pid });
+    return pid;
+  } catch (err) {
+    db.updateTask(task.id, {
+      status: "failed",
+      error_message: `Dispatch failed: ${(err as Error).message}`,
+      completed_at: new Date().toISOString(),
+    });
+    db.updateAgentState(task.session_id, "idle");
+    throw err;
+  }
+}

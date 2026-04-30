@@ -1,8 +1,53 @@
 {
-  "name": "claude-bridge",
-  "version": "0.3.5",
-  "private": true,
+  "name": "@hieutrtr/claude-bridge",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Multi-session Claude Code dispatch — official plugin for Claude Code",
+  "homepage": "https://github.com/hieutrtr/claude-bridge",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hieutrtr/claude-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hieutrtr/claude-bridge/issues"
+  },
+  "bin": {
+    "bridge": "./src/cli/index.ts"
+  },
+  "files": [
+    "src/**/*.ts",
+    ".claude-plugin/**",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "bun": ">=1.1.0"
+  },
   "scripts": {
-    "build": "bun build channel/server.ts --outfile src/claude_bridge/channel_server/dist/server.js --target bun --bundle --minify"
-  }
+    "start": "bun run src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target node",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run typecheck && bun test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "grammy": "^1.21.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.4.0"
+  },
+  "keywords": [
+    "claude-code",
+    "plugin",
+    "channel",
+    "mcp",
+    "telegram",
+    "discord",
+    "slack"
+  ],
+  "license": "MIT"
 }
