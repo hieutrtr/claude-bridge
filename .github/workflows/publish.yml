@@ -43,8 +43,53 @@ jobs:
           fi
           echo "Tag v$TAG_VERSION matches package.json"
 
-      - name: Inspect tarball contents
-        run: npm pack --dry-run
+      - name: Assert tarball includes runtime-critical paths
+        # Catches the class of bug where `files` allowlist drops a runtime path
+        # (e.g. v1.0.0 shipped without mcp.json/skills/). npm pack will succeed
+        # silently with a slimmer tarball; this step turns that into a CI fail.
+        run: |
+          set -euo pipefail
+          npm pack
+          TARBALL=$(ls hieutrtr-claude-bridge-*.tgz | head -1)
+          echo "::group::Tarball contents ($TARBALL)"
+          tar -tzf "$TARBALL" | sort
+          echo "::endgroup::"
+          tar -tzf "$TARBALL" | sort > /tmp/tarball-files.txt
+
+          REQUIRED=(
+            "package/package.json"
+            "package/README.md"
+            "package/CHANGELOG.md"
+            "package/LICENSE"
+            "package/mcp.json"
+            "package/.claude-plugin/plugin.json"
+            "package/skills/dispatch.md"
+            "package/skills/status.md"
+            "package/skills/loop-review.md"
+            "package/skills/loop-code-review.md"
+            "package/assets/hero-flow.jpg"
+            "package/src/cli/index.ts"
+            "package/src/mcp/server.ts"
+            "package/src/execution/notify.ts"
+            "package/src/channel/telegram/format.ts"
+            "package/src/channel/telegram/markdown-to-html.ts"
+          )
+
+          MISSING=()
+          for path in "${REQUIRED[@]}"; do
+            if ! grep -qxF "$path" /tmp/tarball-files.txt; then
+              MISSING+=("$path")
+            fi
+          done
+
+          if [ ${#MISSING[@]} -gt 0 ]; then
+            echo "::error::Tarball is missing $(( ${#MISSING[@]} )) required path(s):"
+            printf '::error::  %s\n' "${MISSING[@]}"
+            echo ""
+            echo "Update the \`files\` allowlist in package.json to include these paths."
+            exit 1
+          fi
+          echo "All ${#REQUIRED[@]} required paths present in tarball."
 
   publish:
     name: Publish
