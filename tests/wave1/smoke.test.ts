@@ -66,13 +66,13 @@ describe("W1.3: Skills & Smoke Test", () => {
     test("can import TOOL_NAMES", async () => {
       const mod = await import("../../src/mcp/tools.js");
       expect(mod.TOOL_NAMES).toBeArray();
-      expect(mod.TOOL_NAMES.length).toBe(26);
+      expect(mod.TOOL_NAMES.length).toBe(27);
     });
 
     test("can import TOOL_DEFINITIONS", async () => {
       const mod = await import("../../src/mcp/tools.js");
       expect(mod.TOOL_DEFINITIONS).toBeArray();
-      expect(mod.TOOL_DEFINITIONS.length).toBe(26);
+      expect(mod.TOOL_DEFINITIONS.length).toBe(27);
     });
 
     test("can import buildCliArgs", async () => {

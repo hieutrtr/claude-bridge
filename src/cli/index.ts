@@ -6,7 +6,7 @@
  * Uses manual arg parsing (no external deps).
  */
 
-import { join } from "path";
+import { join, isAbsolute } from "path";
 import { homedir } from "os";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
@@ -114,7 +114,9 @@ async function cmdCreateAgent(ctx: CommandContext): Promise<number> {
 
   const resolvedPath = path.startsWith("~")
     ? join(homedir(), path.slice(1))
-    : join(process.cwd(), path);
+    : isAbsolute(path)
+      ? path
+      : join(process.cwd(), path);
 
   // Validate
   const session = new SessionManager(ctx.bridgeHome);

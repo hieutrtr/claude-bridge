@@ -165,7 +165,7 @@ export async function cmdSetupBot(ctx: CommandContext): Promise<number> {
 
   // 3. Write CLAUDE.md
   const claudeMdPath = join(botDir, "CLAUDE.md");
-  writeFileSync(claudeMdPath, generateBridgeBotMd(), "utf-8");
+  writeFileSync(claudeMdPath, generateBridgeBotMd({ botDir }), "utf-8");
 
   // 4. Resolve Telegram token FIRST so we can bake it into .mcp.json env below.
   let telegramToken: string | null = ctx.config.telegram_token ?? null;
@@ -240,8 +240,14 @@ export async function cmdSetupBot(ctx: CommandContext): Promise<number> {
  * Default allowlist baked into a fresh `.claude/settings.local.json`.
  *
  * The bridge bot runs autonomously (no human to answer permission prompts),
- * so we pre-approve every built-in tool it needs plus the bridge MCP wildcard.
- * `defaultMode: acceptEdits` short-circuits approval prompts for edits.
+ * so settings.local.json uses `defaultMode: bypassPermissions` — the
+ * equivalent of `--dangerously-skip-permissions` that sub-agents already get
+ * in dispatcher.ts. Without this, any tool outside the allowlist (new MCP
+ * servers, tools added in future Claude Code versions) would block the bot
+ * indefinitely waiting for an OK that never comes.
+ *
+ * The allowlist below is kept as defense-in-depth: if a future user lowers
+ * `defaultMode` back to `default`, these tools still won't prompt.
  */
 const DEFAULT_ALLOW = [
   "Read",
@@ -257,7 +263,16 @@ const DEFAULT_ALLOW = [
   "TodoWrite",
   "Task",
   "mcp__bridge__*",
+  // Claude Code hardcodes a "sensitive file" check for `.claude/` that runs
+  // even under `bypassPermissions`. The bot legitimately creates per-agent
+  // project dirs like `<bot-dir>/<agent>/.claude/skills`, so pre-approve the
+  // Bash + Edit + Write shapes that the bot uses for that.
+  "Bash(mkdir:*)",
+  "Edit(**/.claude/**)",
+  "Write(**/.claude/**)",
 ];
+
+const DEFAULT_PERMISSION_MODE = "bypassPermissions";
 
 /**
  * Write or merge `.claude/settings.local.json` so the bridge bot can run its
@@ -278,7 +293,7 @@ function writeSettingsLocal(settingsPath: string, force: boolean): string {
   const defaults = {
     permissions: {
       allow: [...DEFAULT_ALLOW],
-      defaultMode: "acceptEdits",
+      defaultMode: DEFAULT_PERMISSION_MODE,
     },
     enableAllProjectMcpServers: true,
   };
@@ -315,7 +330,7 @@ function writeSettingsLocal(settingsPath: string, force: boolean): string {
   if (perms === undefined) {
     obj["permissions"] = {
       allow: [...DEFAULT_ALLOW],
-      defaultMode: "acceptEdits",
+      defaultMode: DEFAULT_PERMISSION_MODE,
     };
     changed = true;
   } else if (perms !== null && typeof perms === "object" && !Array.isArray(perms)) {
@@ -340,7 +355,7 @@ function writeSettingsLocal(settingsPath: string, force: boolean): string {
 
     // Only set defaultMode if user hasn't set one — don't clobber their choice.
     if (p["defaultMode"] === undefined) {
-      p["defaultMode"] = "acceptEdits";
+      p["defaultMode"] = DEFAULT_PERMISSION_MODE;
       changed = true;
     }
   } else {

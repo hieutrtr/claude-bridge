@@ -2,7 +2,7 @@
  * W7.1: Native MCP Tool Handlers Tests
  */
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, chmodSync } from "fs";
+import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync, writeFileSync, chmodSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { BridgeDatabase } from "../../src/data/db.js";
@@ -167,6 +167,61 @@ describe("W7.1: Native MCP Tool Handlers", () => {
     test("shows no pending notifications", async () => {
       const result = await executeToolNative("bridge_get_notifications", {});
       expect(result.content[0]!.text).toContain("No pending");
+    });
+  });
+
+  describe("bridge_write_file", () => {
+    test("writes a file inside the agent's project_dir, creating parents", async () => {
+      const projectDir = join(tmpDir, "proj");
+      mkdirSync(projectDir, { recursive: true });
+      db.createAgent("alpha", projectDir, "alpha--proj", "f");
+
+      const result = await executeToolNative("bridge_write_file", {
+        agent: "alpha",
+        relative_path: ".claude/skills/demo/SKILL.md",
+        content: "hello world",
+      });
+
+      expect(result.isError).toBeUndefined();
+      const written = join(projectDir, ".claude/skills/demo/SKILL.md");
+      expect(existsSync(written)).toBe(true);
+      expect(readFileSync(written, "utf-8")).toBe("hello world");
+    });
+
+    test("rejects absolute relative_path", async () => {
+      db.createAgent("alpha", tmpDir, "alpha--p", "f");
+      const result = await executeToolNative("bridge_write_file", {
+        agent: "alpha",
+        relative_path: "/etc/passwd",
+        content: "x",
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain("must be relative");
+    });
+
+    test("rejects path traversal with ..", async () => {
+      const projectDir = join(tmpDir, "proj");
+      mkdirSync(projectDir, { recursive: true });
+      db.createAgent("alpha", projectDir, "alpha--proj", "f");
+
+      const result = await executeToolNative("bridge_write_file", {
+        agent: "alpha",
+        relative_path: "../escape.md",
+        content: "x",
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain("must stay inside");
+      expect(existsSync(join(tmpDir, "escape.md"))).toBe(false);
+    });
+
+    test("rejects unknown agent", async () => {
+      const result = await executeToolNative("bridge_write_file", {
+        agent: "ghost",
+        relative_path: "foo.md",
+        content: "x",
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain("not found");
     });
   });
 

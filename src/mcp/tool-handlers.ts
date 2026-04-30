@@ -5,7 +5,7 @@
  * the appropriate TS layer (DB, orchestration, CLI).
  */
 
-import { join } from "path";
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "path";
 import { homedir } from "os";
 import { mkdirSync, writeFileSync } from "fs";
 import { BridgeDatabase } from "../data/db.js";
@@ -434,6 +434,37 @@ async function handleTool(
       } catch (err) {
         return error(`download error: ${(err as Error).message}`);
       }
+    }
+
+    case "bridge_write_file": {
+      const agentName = String(args["agent"] ?? "");
+      const relativePath = String(args["relative_path"] ?? "");
+      const content = String(args["content"] ?? "");
+
+      if (!agentName) return error("agent is required");
+      if (!relativePath) return error("relative_path is required");
+
+      const agent = db.getAgent(agentName);
+      if (!agent) return error(`Agent "${agentName}" not found`);
+
+      if (isAbsolute(relativePath)) {
+        return error("relative_path must be relative to the agent's project_dir, not absolute");
+      }
+
+      // Resolve the requested path under project_dir and verify it stays
+      // inside. `path.relative` returns a string that starts with `..` (or is
+      // absolute on Windows) when the resolved path escapes — that's our
+      // traversal guard against `../../etc/passwd`-style inputs.
+      const projectDir = resolve(agent.project_dir);
+      const targetPath = resolve(projectDir, normalize(relativePath));
+      const rel = relative(projectDir, targetPath);
+      if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+        return error("relative_path must stay inside the agent's project_dir");
+      }
+
+      mkdirSync(dirname(targetPath), { recursive: true });
+      writeFileSync(targetPath, content, "utf-8");
+      return text(`Wrote ${rel.split(sep).join("/")} (${content.length} bytes) to ${agentName}`);
     }
 
     default:

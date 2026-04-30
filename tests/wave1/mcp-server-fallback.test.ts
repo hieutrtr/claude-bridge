@@ -1,18 +1,18 @@
 /**
  * W1.2: MCP Server with Python Fallback Tests
  *
- * Tests that all 26 tools are registered (24 original + 2 channel tools:
- * bridge_check_messages, download_attachment) and that the fallback
- * mechanism (shelling out to bridge) works correctly.
+ * Tests that all 27 tools are registered (24 original + 2 channel tools:
+ * bridge_check_messages, download_attachment + bridge_write_file) and
+ * that the fallback mechanism (shelling out to bridge) works correctly.
  */
 import { describe, test, expect } from "bun:test";
 import { TOOL_NAMES, TOOL_DEFINITIONS, buildCliArgs } from "../../src/mcp/tools.js";
 
 describe("W1.2: MCP Server with Python Fallback", () => {
   describe("Tool registry", () => {
-    test("exports TOOL_NAMES with all 26 tools", () => {
+    test("exports TOOL_NAMES with all 27 tools", () => {
       expect(TOOL_NAMES).toBeArray();
-      expect(TOOL_NAMES.length).toBe(26);
+      expect(TOOL_NAMES.length).toBe(27);
     });
 
     test("all expected tool names are present", () => {
@@ -43,6 +43,7 @@ describe("W1.2: MCP Server with Python Fallback", () => {
         "bridge_schedule_resume",
         "bridge_check_messages",
         "download_attachment",
+        "bridge_write_file",
       ];
       for (const name of expected) {
         expect(TOOL_NAMES).toContain(name);
@@ -51,9 +52,9 @@ describe("W1.2: MCP Server with Python Fallback", () => {
   });
 
   describe("Tool definitions", () => {
-    test("exports TOOL_DEFINITIONS with all 26 tools", () => {
+    test("exports TOOL_DEFINITIONS with all 27 tools", () => {
       expect(TOOL_DEFINITIONS).toBeArray();
-      expect(TOOL_DEFINITIONS.length).toBe(26);
+      expect(TOOL_DEFINITIONS.length).toBe(27);
     });
 
     test("each definition has name, description, and inputSchema", () => {
