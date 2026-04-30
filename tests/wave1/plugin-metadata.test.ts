@@ -97,8 +97,8 @@ describe("W1.1: Plugin Metadata & Structure", () => {
   describe("package.json", () => {
     const pkg = readJSON("package.json");
 
-    test("name is claude-bridge", () => {
-      expect(pkg["name"]).toBe("claude-bridge");
+    test("name is @hieutrtr/claude-bridge", () => {
+      expect(pkg["name"]).toBe("@hieutrtr/claude-bridge");
     });
 
     test("has bin entry for bridge", () => {

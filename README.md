@@ -76,9 +76,8 @@ Bridge runs an MCP server (`src/mcp/server.ts`). Your bridge-bot directory conta
 **One-time setup, on your laptop:**
 
 ```bash
-# 1. Install
-git clone https://github.com/hieutrtr/claude-bridge.git
-cd claude-bridge && bun install && bun link
+# 1. Install (requires Bun: https://bun.sh)
+bun install -g @hieutrtr/claude-bridge
 
 # 2. Scaffold a bot project (interactive — prompts for Telegram token)
 bridge setup-bot ~/projects/bridge-bot
@@ -141,15 +140,33 @@ That's the whole loop. Setup once on the laptop, drive forever from chat.
 
 ## Installation
 
+### From npm (recommended)
+
+```bash
+bun install -g @hieutrtr/claude-bridge
+bridge --help
+```
+
+> `npm install -g @hieutrtr/claude-bridge` works too, but the runtime requires Bun (uses `bun:sqlite`, `Bun.spawn`).
+
+### As a Claude Code plugin
+
+From inside Claude Code:
+
+```
+/plugin install hieutrtr/claude-bridge
+```
+
+### From source (contributors)
+
 ```bash
 git clone https://github.com/hieutrtr/claude-bridge.git
 cd claude-bridge
 bun install
 bun link             # makes `bridge` available on PATH
-bun run build        # bundles src/index.ts to dist/index.js
 ```
 
-Run directly from source without linking:
+Run directly without linking:
 
 ```bash
 bun run src/cli/index.ts <command>
