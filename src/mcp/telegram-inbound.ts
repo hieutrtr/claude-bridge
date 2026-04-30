@@ -1,8 +1,6 @@
 /**
  * Telegram inbound handler — grammy bot that pushes messages into the MCP
- * channel via `notifications/claude/channel`.
- *
- * Ported from legacy/channel/server.ts. Uses our MessageDatabase for inbound
+ * channel via `notifications/claude/channel`. Uses MessageDatabase for inbound
  * tracking (matches the `inbound_messages` table in `messages.db`).
  */
 

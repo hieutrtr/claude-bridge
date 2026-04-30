@@ -414,8 +414,8 @@ src/
   index.ts         Public API barrel
 
 tests/             Bun test suite (wave1/ ... wave7/ + coverage/)
-docs/              Deep docs (see ARCHITECTURE.md)
-legacy/            Old Python/JS implementation — reference only, deprecated
+docs/              Deep docs (see ARCHITECTURE.md); pre-1.0 design notes under docs/archive/
+specs/             Task specifications
 ```
 
 ---

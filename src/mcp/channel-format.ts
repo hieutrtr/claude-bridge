@@ -4,9 +4,6 @@
  *
  * Claude Code renders these into a `<channel source="bridge" chat_id="..."
  * tracking_id="..." ts="...">...</channel>` tag in the model's context.
- *
- * Minimal reimplementation inspired by legacy/channel/format.ts. We do NOT
- * import from legacy/ — this file owns the meta shape for the ported flow.
  */
 
 export type ChannelMeta = Record<string, string>;

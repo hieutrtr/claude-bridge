@@ -49,14 +49,12 @@ src/                     TypeScript source (Bun runtime)
   config.ts              Configuration
   types.ts               Shared types
   index.ts               Package entry point
-tests/                   Bun test suite (36 files, 90%+ coverage)
+tests/                   Bun test suite (37 files, 90%+ coverage)
   wave1/ ... wave7/      Feature wave tests
   coverage/              Extra coverage tests
-legacy/                  Old Python/JS code (reference-only, deprecated)
-plan/                    Architecture docs
 specs/                   Task specifications
-research/                Research notes
 docs/                    Documentation
+  archive/               Frozen pre-1.0 design + research notes (plan/, research/)
 ```
 
 ## Key Concepts

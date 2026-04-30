@@ -43,8 +43,8 @@ const server = new Server(
 // grammy's polling loop has already written to stdout — the client sees an
 // interleaved JSON-RPC frame and the whole session dies.
 //
-// Adapted from legacy/channel/server.ts: track tool-call in-flight and queue
-// notifications until the handler returns, then flush.
+// Track tool-call in-flight and queue notifications until the handler returns,
+// then flush.
 
 let toolCallInFlight = false;
 const pendingNotifications: Array<{ method: string; params: Record<string, unknown> }> = [];
