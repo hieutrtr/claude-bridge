@@ -6,6 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.2] — 2026-04-30
+
+### Added
+
+- **One-liner installer (`install.sh`)** — `curl -fsSL .../install.sh | bash` on a
+  fresh machine: detects platform (macOS/Linux), checks `git`/`curl`, installs
+  Bun if missing (via the official `bun.sh/install` installer), warns if the
+  Claude Code CLI is absent (does not auto-install — Anthropic's flow needs
+  manual login), then `bun install -g @hieutrtr/claude-bridge`. Surfaces a PATH
+  hint if Bun's global bin is not on `PATH` after install.
+- **README Prerequisites section** — explicit table of required vs optional
+  tools and how to get each, replacing the loose bullet list. SQLite is now
+  documented as bundled-in-Bun (nothing to install separately).
+
+---
+
 ## [1.0.1] — 2026-04-30
 
 ### Fixed

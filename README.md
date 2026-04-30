@@ -76,8 +76,8 @@ Bridge runs an MCP server (`src/mcp/server.ts`). Your bridge-bot directory conta
 **One-time setup, on your laptop:**
 
 ```bash
-# 1. Install (requires Bun: https://bun.sh)
-bun install -g @hieutrtr/claude-bridge
+# 1. Install (auto-installs Bun if missing; assumes Claude Code CLI is already set up)
+curl -fsSL https://raw.githubusercontent.com/hieutrtr/claude-bridge/main/install.sh | bash
 
 # 2. Scaffold a bot project (interactive — prompts for Telegram token)
 bridge setup-bot ~/projects/bridge-bot
@@ -128,19 +128,33 @@ That's the whole loop. Setup once on the laptop, drive forever from chat.
 
 ---
 
-## Requirements
+## Prerequisites
 
-- [Bun](https://bun.sh) — runtime, package manager, test runner.
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — `claude` on `PATH`.
-- macOS (launchd) or Linux (systemd user unit) for daemon mode.
-- A Telegram bot token from [@BotFather](https://t.me/BotFather) for the Telegram channel.
-- `tmux` if you skip the daemon and use the fallback persistent session.
+| Tool | Required? | How to get it |
+|---|---|---|
+| **macOS or Linux** | Required | Windows users: use WSL2 |
+| **git** | Required | macOS: `xcode-select --install` · Debian: `sudo apt install git` |
+| **curl** | Required | Almost always preinstalled |
+| **[Bun](https://bun.sh) ≥ 1.1** | Required (runtime) | The installer below auto-installs it. SQLite is bundled inside Bun — nothing to install separately. |
+| **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** | Required | Bridge spawns `claude` for every task. Install + log in via Anthropic's official flow before running `bridge dispatch`. |
+| **Telegram bot token** | Required for the Telegram channel | Get one from [@BotFather](https://t.me/BotFather) |
+| **tmux** | Optional | Only needed if you skip the daemon and use the fallback persistent session. |
 
 ---
 
 ## Installation
 
-### From npm (recommended)
+### One-liner (fresh machine)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hieutrtr/claude-bridge/main/install.sh | bash
+```
+
+The script verifies the prerequisites, installs Bun if missing, and runs `bun install -g @hieutrtr/claude-bridge`. It does **not** install Claude Code — that needs an Anthropic login flow you have to walk through manually.
+
+> Want to inspect first? `curl -fsSL .../install.sh -o install.sh && less install.sh && bash install.sh`
+
+### Manual install (already have Bun)
 
 ```bash
 bun install -g @hieutrtr/claude-bridge
