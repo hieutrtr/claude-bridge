@@ -6,6 +6,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.0] — 2026-04-30
+
+### Removed
+
+- **`legacy/` directory** — the frozen Python source kept as reference during the
+  beta is dropped. The final Python release remains recoverable at the
+  `v0.5.10-python-final` git tag.
+- **`MIGRATION-CUTOVER-PLAN.md`** — transitional migration scaffolding.
+- **`README_en.md`** — stale English README; the primary `README.md` is now in
+  English and is the single source.
+- **Pre-migration design docs** — `plan/` and `research/` moved under
+  `docs/archive/` for historical reference; they no longer describe the running
+  system.
+
+### Notes
+
+`1.0.0` is the stable cutover from the `1.0.0-beta` line. No functional changes
+versus the beta — this release marks the deprecation of the Python implementation
+and the cleanup of migration-era artifacts on `main`.
+
+---
+
 ## [1.0.0-beta] — 2026-04-10
 
 ### Changed — Full TypeScript Migration
