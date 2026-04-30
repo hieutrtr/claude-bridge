@@ -295,24 +295,50 @@ export async function startTelegramInbound(
   });
 
   // Start polling with drop_pending_updates so we don't replay old messages.
-  // bot.start() resolves when polling stops — we fire-and-forget here and let
-  // stop() await the returned promise.
+  // bot.start() resolves when polling stops (graceful or error). Without a
+  // restart loop, a single 409 Conflict / 502 / network blip kills inbound
+  // forever — the MCP server stays alive but no messages arrive (observed in
+  // production after long-running task dispatches).
   let resolveStarted: () => void = () => {};
   const started = new Promise<void>((res) => { resolveStarted = res; });
 
-  const startPromise: Promise<void> = bot.start({
-    drop_pending_updates: true,
-    onStart: () => {
-      process.stderr.write("[telegram-inbound] polling started\n");
-      resolveStarted();
-    },
-  }).catch((err: Error) => {
-    process.stderr.write(`[telegram-inbound] polling failed: ${err.message}\n`);
-    // Unblock startTelegramInbound even on auth failure.
-    resolveStarted();
-  });
+  let stopRequested = false;
+  let interruptSleep: () => void = () => {};
 
-  // Wait for either onStart or auth failure — with a 3s timeout so a
+  const startPromise: Promise<void> = (async () => {
+    let backoff = 1000;
+    while (!stopRequested) {
+      try {
+        await bot.start({
+          drop_pending_updates: true,
+          onStart: () => {
+            process.stderr.write("[telegram-inbound] polling started\n");
+            backoff = 1000;            // reset backoff on each healthy start
+            resolveStarted();
+          },
+        });
+        // Resolved without throwing → bot.stop() was called → exit loop.
+        if (stopRequested) return;
+        process.stderr.write(
+          "[telegram-inbound] polling exited without error, restarting in 1s\n",
+        );
+      } catch (err) {
+        process.stderr.write(
+          `[telegram-inbound] polling failed: ${(err as Error).message} — retrying in ${backoff}ms\n`,
+        );
+        // Unblock initial startTelegramInbound() wait if first attempt failed.
+        resolveStarted();
+      }
+      if (stopRequested) return;
+      await new Promise<void>((res) => {
+        const t = setTimeout(res, backoff);
+        interruptSleep = () => { clearTimeout(t); res(); };
+      });
+      backoff = Math.min(backoff * 2, 30_000);
+    }
+  })();
+
+  // Wait for either onStart or first-attempt failure — with a 3s timeout so a
   // missing/bad token doesn't hang the MCP server startup.
   const timeout = new Promise<void>((res) => {
     const t = setTimeout(res, 3000);
@@ -324,6 +350,8 @@ export async function startTelegramInbound(
   return {
     bot,
     stop: async () => {
+      stopRequested = true;
+      interruptSleep();
       try { await bot.stop(); } catch { /* ignore */ }
       try { await startPromise; } catch { /* ignore */ }
     },

@@ -6,6 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.4] — 2026-04-30
+
+### Fixed
+
+- **Telegram inbound silently stopped after long-running task dispatches** —
+  `bot.start()` resolves when polling halts (graceful or error). The previous
+  `.catch()` only logged a single line to stderr and gave up, so a single 409
+  Conflict, 502, or network blip killed inbound forever: the MCP server stayed
+  alive but no Telegram messages reached the bot, forcing the user to `/mcp`
+  reconnect after every task. Polling now runs in a retry loop with
+  exponential backoff (1s → 30s cap) and resets on each healthy `onStart`.
+  `stop()` flips a flag and interrupts the backoff sleep so shutdown stays
+  prompt. Regression tests live at
+  `tests/coverage/telegram-inbound-retry.test.ts`.
+
 ## [1.0.3] — 2026-04-30
 
 ### Fixed
