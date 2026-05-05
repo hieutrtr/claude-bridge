@@ -18,9 +18,57 @@ Trong số sản phẩm Anthropic ship, Claude Code là cái đang lan nhanh nh�
 
 ---
 
+## 1.5. Claude Code không chỉ là tool, nó là coding infrastructure
+
+Phần này đáng đọc kỹ vì nó là khung tư duy quyết định *vì sao* claude-bridge thin đến vậy — và vì sao nó vẫn có giá trị mà không cần tự viết agent loop.
+
+### Infrastructure là gì?
+
+**Coding infrastructure** là layer cung cấp building block — process, context, sandbox, observability, RBAC — để các product/tool khác build trên đó. Cách dễ nhớ: **Docker** là container infrastructure cho deploy, **Postgres** là data infrastructure cho persistence, **Kubernetes** là orchestration infrastructure cho workload. Tương tự, **Claude Code = coding agent infrastructure** cho AI-assisted development. Bạn không "dùng" Postgres trực tiếp như sản phẩm cuối; bạn build app Postgres-backed. Claude Code cũng vậy: nó là primitive để bạn build coding workflow của riêng mình, không phải end-product để bạn "dùng" rồi thôi.
+
+Tiêu chí của "infrastructure" — và Claude Code thoả từng cái:
+
+- **Well-defined interface** (CLI flags, Agent SDK, MCP, hooks)
+- **Composable** (nhiều process / instance / agent song song trên cùng host)
+- **Observable** (transcripts, JSON output, hooks fire vào mỗi step)
+- **Programmable** (headless mode, exit codes, structured output)
+- **Trust boundary rõ ràng** (sandbox, permission mode, `--allowedTools`)
+
+### Bằng chứng: Anthropic đang build platform, không phải product
+
+Bằng chứng số một là **headless mode** — Claude Code expose flag `-p` (`--print`) để chạy non-interactive: nhận prompt qua stdin, trả output qua stdout, exit như một Unix tool bình thường. Nó được thiết kế cho server environment, không cần TTY, gọi từ cron job / GitHub Actions / shell script ([Claude Code Docs — Headless](https://code.claude.com/docs/en/headless)). Nếu Anthropic chỉ muốn bán "1 cái terminal đẹp", họ đã không cần `-p` ngay từ đầu.
+
+Thứ hai, Anthropic chính thức publish **Claude Agent SDK** (Python + TypeScript, npm `@anthropic-ai/claude-agent-sdk`) — package "same tools, agent loop, and context management that power Claude Code" thành thư viện public. Đầu 2026, họ đổi tên từ "Claude Code SDK" → "Claude Agent SDK" để chốt lại định vị: đây là SDK cho coding agent **dùng chung**, không gắn cứng với CLI ([Agent SDK overview](https://code.claude.com/docs/en/agent-sdk/overview), [anthropics/claude-agent-sdk-python](https://github.com/anthropics/claude-agent-sdk-python)).
+
+Thứ ba, **MCP (Model Context Protocol)** cho phép tool/system bên ngoài plug vào agent qua interface chuẩn — đặc trưng rất "infrastructure": open protocol thay vì closed product. Thứ tư, **hooks system** (`PreToolUse`, `PostToolUse`, `Stop`, ...) cho phép layer khác hook vào lifecycle để observability hoặc policy enforcement — `PreToolUse` thậm chí có thể *block* một edit nguy hiểm trước khi nó xảy ra, không user nào bypass được kể cả với `--dangerously-skip-permissions` ([Hooks guide](https://code.claude.com/docs/en/hooks-guide)). Cộng lại: CLI + SDK + MCP + hooks = bộ primitive để build platform, không phải feature riêng của một sản phẩm. Roadmap autonomous mode + checkpoints Anthropic vừa announce càng đẩy mạnh hướng đi này ([Enabling Claude Code to work more autonomously](https://www.anthropic.com/news/enabling-claude-code-to-work-more-autonomously)).
+
+### claude-bridge build TRÊN infrastructure đó, không thay nó
+
+claude-bridge là 1 ví dụ concrete. Nó **không reinvent agent**, không tự gọi Claude API, không tự viết tool loop. Nó chỉ:
+
+- Spawn nhiều Claude Code subprocess qua headless mode (`claude --agent ... -p "..."`).
+- Cài Stop hook vào agent `.md` để biết khi nào task xong → ghi SQLite → ping notification.
+- Đăng ký MCP server `bridge_*` (24 tool) cho Claude Code session của bot gọi vào.
+- Add Telegram channel ở đầu vào, queue + loop + schedule + cost-tracking ở giữa, SQLite làm state store.
+- Worktree isolation thì gọi flag `isolation: worktree` của Claude Code chứ không tự dựng container.
+
+```
+[ User-facing app: claude-bridge / Cursor / Sourcegraph Cody / ... ]
+                              ↓
+[ Claude Code infrastructure: CLI + SDK + MCP + hooks + headless ]
+                              ↓
+              [ Claude API: Opus / Sonnet / Haiku ]
+```
+
+Ý nghĩa: claude-bridge là app tier 1, chạy trên runtime tier 2 (Claude Code), trên model tier 3 (Claude API). Mỗi tier có công việc riêng, không lấn nhau. Nếu mai Anthropic ship feature mới ở tier 2 (built-in retry, longer-horizon checkpoints, sandbox tốt hơn), claude-bridge thừa kế miễn phí mà không cần rewrite. Đó mới là cách build trên infrastructure: không cạnh tranh, mà cộng hưởng.
+
+---
+
 ## 2. claude-bridge là cái gì
 
 Trong hai câu: claude-bridge là một **thin orchestrator** đứng giữa channel chat (Telegram hôm nay, Discord/Slack sắp có) và Claude Code CLI cục bộ. Bạn nhắn một câu vào bot, nó parse thành tool call, spawn `claude` đúng project, rồi ping ngược kết quả về cho bạn — y như có một con junior dev luôn sẵn sàng.
+
+Như đã nói ở §1.5, claude-bridge **orchestrate Claude Code subprocess** thay vì replicate cuộc gọi model. Toàn bộ "thông minh" — agent loop, context management, tool execution, sandbox — đều của Claude Code. Bridge chỉ thêm: cửa vào (channel), cửa ra (notification), và bộ điều phối (queue / loop / schedule / cost) ở giữa.
 
 ### High-level flow
 
